@@ -1,0 +1,10 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus project edit`. The whole config is replaced on every run.
+#
+# Only the admin creates instances here, so the project is not restricted.
+description: "Infrastructure: broadcast, brain, egress proxy, intranet."
+config:
+  features.images: "false"
+  features.profiles: "true"
+  features.storage.volumes: "true"
+  features.networks: "false"

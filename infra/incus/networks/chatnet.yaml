@@ -1,0 +1,14 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus network edit`. The whole config is replaced on every run.
+#
+# No NAT and no IPv6: nothing on this network can reach the internet.
+# The host firewall only lets targets reach the egress proxy and the
+# intranet on infranet, and blocks DNS to the host.
+description: "Targets controlled by chat. Routed through the host firewall; no NAT, no IPv6, no DNS."
+config:
+  ipv4.address: "${CHATNET_GW}/${CHATNET_PREFIX}"
+  ipv4.nat: "false"
+  ipv4.dhcp: "true"
+  ipv4.dhcp.ranges: "${CHATNET_DHCP_RANGE}"
+  ipv6.address: "none"
+  dns.mode: "none"

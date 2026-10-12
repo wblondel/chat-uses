@@ -1,0 +1,31 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus profile edit --project targets`. Replaced on every run.
+#
+# Each target gets a fixed address at creation, e.g.:
+#   incus launch <image> target-1 --project targets -p target-desktop \
+#     --device eth0,ipv4.address=10.30.0.10
+description: "Desktop target controlled by chat (pinned CPUs, hard limits, isolated network)"
+config:
+  boot.autostart: "true"
+  limits.cpu: "${CPUS_TARGETS}"
+  limits.memory: "${MEM_TARGET}"
+  limits.processes: "${TARGET_PROCESSES}"
+  limits.disk.priority: "2"
+  security.privileged: "false"
+  security.nesting: "false"
+  security.idmap.isolated: "true"
+devices:
+  root:
+    type: disk
+    path: /
+    pool: "${POOL_NAME}"
+    size: "${DISK_TARGET}"
+  eth0:
+    type: nic
+    name: eth0
+    network: "${CHATNET_NAME}"
+    limits.egress: "${TARGET_NET_LIMIT}"
+    limits.ingress: "${TARGET_NET_LIMIT}"
+    security.port_isolation: "true"
+    security.mac_filtering: "true"
+    security.ipv4_filtering: "true"

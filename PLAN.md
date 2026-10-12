@@ -38,8 +38,8 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 
 | Phase | Name | Size | Status |
 |---|---|---|---|
-| 0 | Groundwork (accounts, server check) | S | ☐ |
-| 1 | Host foundation (Debian, Incus, networks) | M | ☐ |
+| 0 | Groundwork (accounts, server check) | S | ◐ tooling ready, manual steps left (`docs/phase0.md`) |
+| 1 | Host foundation (Debian, Incus, networks) | M | ◐ code ready, run on the server (`docs/phase1.md`) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ☐ |
 | 3 | Broadcast pipeline | M | ☐ |
 | 4 | Control plane MVP | L | ☐ |
@@ -150,10 +150,10 @@ Total RAM ≈ 13.5 GiB, leaving some headroom. Platform War (two targets) needs 
 
 Two Incus bridges:
 
-- **`infranet`** (e.g. `10.20.0.0/24`, NAT to internet): `bcast`, `brain`, `egress`, `intranet`.
-- **`chatnet`** (e.g. `10.30.0.0/24`, **no NAT, no IPv6, no DNS**): targets. `bcast`, `brain`, `egress` and `intranet` get a second NIC on `chatnet`.
+- **`infranet`** (`10.20.0.0/24`, NAT to internet): `bcast` .10, `brain` .11, `egress` .12, `intranet` .13 (fixed addresses).
+- **`chatnet`** (`10.30.0.0/24`, **no NAT, no IPv6, no DNS**): targets only.
 
-Incus network ACLs on `chatnet` with **default drop** in both directions, then only these flows:
+Traffic between them is **routed through the host**, so every packet crosses the host firewall (`infra/host/nftables.nft.tmpl`, default drop), which allows only these flows (implemented in Phase 1, see `docs/phase1.md`):
 
 | From | To | Port | Purpose |
 |---|---|---|---|
@@ -170,7 +170,7 @@ Incus network ACLs on `chatnet` with **default drop** in both directions, then o
 | internet | host | 443/tcp | Public static site (Caddy) |
 | internet | host | 22/tcp, 51820/udp | SSH (keys only), WireGuard |
 
-Host nftables: default-drop input except the rows above; forward policy drops anything from `chatnet` that isn't explicitly allowed (defence in depth on top of Incus ACLs). Per-NIC bandwidth caps on targets with Incus `limits.egress` / `limits.ingress`.
+On top of the firewall, target NICs have `security.port_isolation` (targets can't reach each other), MAC/IPv4 anti-spoofing, and bandwidth caps (`limits.egress` / `limits.ingress`). The firewall is one table that never flushes the ruleset, so it coexists with the tables Incus manages. `infra/tests/net-isolation.sh` checks all of this, including a packet capture on the public interface (a no-NAT network can leak packets that never get replies).
 
 ### 5.4 Trust boundaries
 
@@ -543,7 +543,7 @@ Other rulesets override what they need (e.g. `living-pc.yaml` disables `newrun` 
 | Setting | Value |
 |---|---|
 | `limits.cpu` | `3-7` |
-| `limits.memory` | `8GiB`, `limits.memory.swap: false` |
+| `limits.memory` | `8GiB` (restricted projects can't set `limits.memory.swap`, so the host runs without swap) |
 | `limits.processes` | `2048` |
 | root disk `size` | `40GiB` |
 | disk I/O | lower priority than infra (`limits.disk.priority`) |
@@ -583,7 +583,7 @@ Other rulesets override what they need (e.g. `living-pc.yaml` disables `newrun` 
 
 ### 7.6 Moderation
 
-- **Roles:** Owner, Moderator (Discord role; YouTube moderators are recognized from chat badges), Regular, Muted.
+- **Roles:** Owner, Moderator (Discord role; YouTube moderators are recognized from chat badges), Regular. Muting uses Discord's built-in timeouts.
 - **Cross-platform bans** by unified ID with a duration (`/ban yt:UC… 7d`). Optionally mirror to YouTube's own ban via the API (⚠️ verify quota cost).
 - **Lockdown mode** (raid response): only users with ≥ N points or the Regular role can send commands.
 - **Night mode** (24/7 phase): stricter laws when no moderator is online (higher quorums, democracy only, lower rate limits).
@@ -621,12 +621,15 @@ Automate what can be automated (`control/tests/redteam/`), and record results in
 
 ### Phase 0 — Groundwork · S
 
-- [ ] Check server type (VPS vs Root Server). Measure steal time under load: run `stress-ng --cpu 8` and watch the `st` column of `mpstat 1` / `top` for 10 minutes.
+Runbook: **`docs/phase0.md`**. Tooling is in the repo; the remaining items are manual.
+
+- [x] Tooling: `infra/host/server-check.sh` (server facts + CPU steal under load), `infra/discord/setup_server.py` (roles and channels, with tests).
+- [ ] Check server type (VPS vs Root Server) and measure steal time: `infra/host/server-check.sh`.
 - [ ] Choose a channel name and branding; register a domain for the public site.
 - [ ] YouTube: enable live streaming on the channel (verification can take up to 24 h). Set defaults: ultra-low latency, not made for kids, slow mode, blocked words list.
 - [ ] Google Cloud: a dedicated project, YouTube Data API v3 enabled, an API key (for reading chat) and an OAuth client (for later broadcast management).
   - ⚠️ Gotcha: OAuth apps left in "Testing" status get refresh tokens that expire after 7 days. Move the app to "In production" (an unverified-app warning is fine for personal use).
-- [ ] Discord: create the server, application and bot; enable the Message Content intent; create channels `#announcements`, `#rules`, `#control`, `#general`, `#theorycraft`, `#graveyard`, `#achievements`, `#clips`, private `#mod-alerts` and `#ops`, and a Stage channel "📻 Machine audio" for later. Create roles Owner, Moderator, Regular, Muted.
+- [ ] Discord: create the server, application and bot (Message Content intent on, Public Bot off), then run `setup_server.py` to create the channels `#announcements`, `#rules`, `#control`, `#general`, `#theorycraft`, `#graveyard`, `#achievements`, `#clips`, private `#mod-alerts` and `#ops`, the Stage channel "📻 Machine audio" (needs Community enabled), and the roles Owner, Moderator, Regular.
 - [ ] Turn on 2FA everywhere; store credentials in a password manager.
 - [ ] Decide the audience language(s) (drives wordlists and overlay text).
 - [ ] Recruit 2–3 trusted moderators for the beta.
@@ -635,16 +638,19 @@ Automate what can be automated (`control/tests/redteam/`), and record results in
 
 ### Phase 1 — Host foundation · M
 
-- [ ] Install Debian 13 minimal from the netcup image. SSH keys only, no root password login, `unattended-upgrades`, timezone, NTP.
-- [ ] nftables: default-drop input except SSH, WireGuard (and 443 later). Persist the config in `infra/host/nftables.conf`.
-- [ ] WireGuard tunnel for your admin laptop.
-- [ ] Install Incus. `incus admin init` with a **btrfs** pool (loop-backed, ~200 GiB, to start).
-- [ ] Create networks `infranet` (NAT) and `chatnet` (`ipv4.nat=false`, `ipv6.address=none`, no DNS), and ACLs with default drop + the flows in 5.3.
-- [ ] Create projects `infra` and `targets` (`restricted=true`, resource limits).
-- [ ] Create profiles `target-desktop`, `infra-bcast`, `infra-brain`, `infra-egress`, `infra-intranet` as YAML in `infra/incus/`.
-- [ ] Write `infra/host/bootstrap.sh` to apply all of the above idempotently. Test it by running it twice.
+Runbook: **`docs/phase1.md`**. Code is written and was tested in a simulated host; it still has to run on the real server.
 
-**Done when:** a throwaway Debian container on `chatnet` passes red-team tests 5–7, and `bootstrap.sh` can rebuild the setup from scratch.
+- [x] `infra/host/bootstrap.sh` (idempotent, steps can run alone) with config in `infra/host/host.env.example` → `/etc/chat-uses/host.env`.
+- [x] SSH keys only (with a lockout guard and rollback), automatic security updates, timezone, kernel settings.
+- [x] nftables host firewall (`infra/host/nftables.nft.tmpl`): default drop, SSH + WireGuard (+ 443 later), routed `chatnet` ↔ `infranet` flows from 5.3. Never flushes Incus's tables.
+- [x] WireGuard admin tunnel + `infra/host/wg-add-peer.sh`.
+- [x] Incus: btrfs pool (loop-backed, 200 GiB), networks `infranet` (NAT) and `chatnet` (no NAT, no IPv6, no DNS), projects `infra` and `targets` (`restricted=true`, snapshots allowed, caps), profiles `bcast`, `brain`, `egress`, `intranet`, `target-desktop` as YAML in `infra/incus/`.
+- [x] `infra/tests/net-isolation.sh` (red-team tests 5–7, with a negative control done during development).
+- [ ] Install Debian 13 from the netcup image and run `bootstrap.sh` on the server.
+- [ ] Add your laptop to the tunnel.
+- [ ] Isolation test passes on the server, and again after a reboot.
+
+**Done when:** the isolation test passes on the server and after a reboot, and `bootstrap.sh` can rebuild the setup from scratch.
 
 ### Phase 2 — Golden target image: Debian 13 + Xfce · M
 
@@ -887,3 +893,7 @@ Answer these and move the answers to the decision log:
 | Date | # | Decision | Reason |
 |---|---|---|---|
 | 2026-10-12 | D1–D12 | Initial decisions (section 4) | Initial plan |
+| 2026-10-12 | D13 | `chatnet` ↔ `infranet` traffic is routed through the host and filtered by one nftables table; infra containers have no NIC on `chatnet`, and Incus network ACLs aren't used | One place to reason about every allowed flow; verified by the isolation test and its negative control |
+| 2026-10-12 | D14 | No `limits.memory.swap` on targets; the host should run without swap (bootstrap warns) | Restricted Incus projects treat it as a low-level option and refuse it |
+| 2026-10-12 | D15 | Discord moderation uses built-in timeouts; no "Muted" role | Native, no permission-overwrite edge cases |
+| 2026-10-12 | D16 | Incus HTTPS API stays off until Phase 4 (brain) | Nothing needs it yet; no listener means no exposure |

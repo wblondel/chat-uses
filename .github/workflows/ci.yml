@@ -1,0 +1,18 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x infra/host/*.sh infra/tests/*.sh
+      - name: Discord setup tests
+        run: python3 -W error::ResourceWarning -m unittest discover -s infra/discord -v

@@ -1,0 +1,27 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus profile edit --project infra`. Replaced on every run.
+#
+# Create the instance with its fixed address, e.g.:
+#   incus launch <image> bcast --project infra -p bcast --device eth0,ipv4.address=${BCAST_IP}
+description: "Broadcast: Xvfb, Chromium layout, audio mix, ffmpeg encoder, MediaMTX, forwarder"
+config:
+  boot.autostart: "true"
+  boot.autostart.priority: "30"
+  limits.cpu: "${CPUS_BCAST}"
+  limits.cpu.priority: "10"
+  limits.memory: "${MEM_BCAST}"
+  limits.memory.swap: "false"
+  security.privileged: "false"
+  security.nesting: "false"
+devices:
+  root:
+    type: disk
+    path: /
+    pool: "${POOL_NAME}"
+    size: "${DISK_BCAST}"
+  eth0:
+    type: nic
+    name: eth0
+    network: "${INFRANET_NAME}"
+    security.mac_filtering: "true"
+    security.ipv4_filtering: "true"

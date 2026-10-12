@@ -1,0 +1,10 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus network edit`. The whole config is replaced on every run.
+description: "Infrastructure containers (broadcast, brain, egress proxy, intranet). NAT to the internet."
+config:
+  ipv4.address: "${INFRANET_GW}/${INFRANET_PREFIX}"
+  ipv4.nat: "true"
+  ipv4.dhcp: "true"
+  ipv4.dhcp.ranges: "${INFRANET_DHCP_RANGE}"
+  ipv6.address: "none"
+  dns.domain: "infra"

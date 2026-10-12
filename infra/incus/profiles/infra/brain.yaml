@@ -1,0 +1,27 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus profile edit --project infra`. Replaced on every run.
+#
+# Create the instance with its fixed address, e.g.:
+#   incus launch <image> brain --project infra -p brain --device eth0,ipv4.address=${BRAIN_IP}
+description: "Control plane: chat adapters, referee, injector, overlay and admin API"
+config:
+  boot.autostart: "true"
+  boot.autostart.priority: "20"
+  limits.cpu: "${CPUS_BRAIN}"
+  limits.cpu.priority: "10"
+  limits.memory: "${MEM_BRAIN}"
+  limits.memory.swap: "false"
+  security.privileged: "false"
+  security.nesting: "false"
+devices:
+  root:
+    type: disk
+    path: /
+    pool: "${POOL_NAME}"
+    size: "${DISK_BRAIN}"
+  eth0:
+    type: nic
+    name: eth0
+    network: "${INFRANET_NAME}"
+    security.mac_filtering: "true"
+    security.ipv4_filtering: "true"
