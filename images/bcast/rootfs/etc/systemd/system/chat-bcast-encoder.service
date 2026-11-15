@@ -1,5 +1,5 @@
 [Unit]
-Description=chat-uses broadcast: 1080p30 x264 encoder into MediaMTX
+Description=chat-uses broadcast: 1080p30 x264 encoder, limiter and watchdog, RTMP into MediaMTX
 PartOf=chat-bcast.target
 Wants=chat-bcast-xvfb.service chat-bcast-audio.service chat-bcast-mediamtx.service chat-bcast-browser.service
 After=chat-bcast-xvfb.service chat-bcast-audio.service chat-bcast-mediamtx.service chat-bcast-browser.service

@@ -4,9 +4,16 @@
 The target serves raw PCM (s16le, 48 kHz, stereo) on TCP AUDIO_PORT; pacat
 plays it into the sink "target", which feeds "mix" (chat-bcast-scene mutes
 it). Reading never waits for pacat: whenever pacat is behind
-(a stall here, or a burst after a network hiccup), the excess is dropped.
+(a stall here, or a burst after a network hiccup), sound is dropped.
 Queueing it instead would leave the sound late against the picture for the
 rest of the stream.
+
+What waits in the pipe to pacat only drains in real time, so a backlog stays
+until something drops it. Dropping just what doesn't fit would leave the pipe
+nearly full after any hiccup: the sound later than needed, and every small
+burst afterwards overflowing into a click (found on the server). So the relay
+catches up in one go, down to LOW: when the pipe is full, and when the backlog
+never fell below SETTLE for a whole WINDOW.
 
 A stall or disconnect ends the script; systemd restarts it, which also
 follows the target through reboots. The limiter (chat can't blast the
@@ -17,13 +24,19 @@ import fcntl
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import time
 
 FRAME = 4  # bytes per sample frame: 2 channels x 16 bit
 CHUNK = 4096  # bytes per pipe write (1024 frames, 21 ms); <= PIPE_BUF, so atomic
-PIPE_BYTES = 16384  # pacat's queue, ~85 ms: anything beyond it is dropped
+PIPE_BYTES = 16384  # pacat's queue, ~85 ms
+MS = 192  # bytes per millisecond
+LOW = 15 * MS  # catching up stops at this backlog
+SETTLE = 40 * MS  # a backlog that never falls below this...
+WINDOW = 10  # ...for this many seconds is caught up too
 TIMEOUT = 5  # seconds without data = the target is gone
 SCENE = "/var/lib/chat-bcast/control/scene.json"
 
@@ -40,6 +53,11 @@ def apply_scene_mute():
     except (OSError, ValueError, AttributeError):
         scene = "live"
     subprocess.run(["pactl", "set-sink-mute", "target", "0" if scene == "live" else "1"], check=False)
+
+
+def backlog(fd):
+    """Bytes waiting in the pipe (Linux answers FIONREAD on the write end too)."""
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0"))[0]
 
 
 def main():
@@ -59,7 +77,9 @@ def main():
     os.set_blocking(out, False)
 
     pending = b""  # tail of the last read that wasn't a whole frame
-    dropped = 0  # bytes dropped since pacat last kept up
+    catching_up = None  # why we're dropping sound, or None
+    dropped = 0  # bytes dropped while catching up
+    floor, window_start = PIPE_BYTES, time.monotonic()  # lowest backlog this window
     while True:
         try:
             data = sock.recv(65536)
@@ -70,18 +90,30 @@ def main():
         data = pending + data
         whole = len(data) - len(data) % FRAME
         pending = data[whole:]
+
+        waiting = backlog(out)
+        floor = min(floor, waiting)
+        if time.monotonic() - window_start >= WINDOW:
+            if floor > SETTLE and not catching_up:
+                catching_up = f"{floor // MS} ms backlog for {WINDOW} s"
+            floor, window_start = PIPE_BYTES, time.monotonic()
+        if catching_up:
+            if waiting > LOW:
+                dropped += whole
+                continue
+            print(f"{time.strftime('%H:%M:%S')} behind ({catching_up}): dropped {dropped // MS} ms to catch up",
+                  file=sys.stderr, flush=True)
+            catching_up, dropped = None, 0
+
         for i in range(0, whole, CHUNK):
             try:
                 os.write(out, data[i:min(i + CHUNK, whole)])
-            except BlockingIOError:
-                dropped += min(CHUNK, whole - i)
-                continue
+            except BlockingIOError:  # pipe full
+                catching_up = "pipe full"
+                dropped += whole - i
+                break
             except BrokenPipeError:
                 sys.exit("pacat exited")
-            if dropped:
-                print(f"{time.strftime('%H:%M:%S')} behind: dropped {dropped // 192} ms to catch up",
-                      file=sys.stderr, flush=True)
-                dropped = 0
 
 
 if __name__ == "__main__":

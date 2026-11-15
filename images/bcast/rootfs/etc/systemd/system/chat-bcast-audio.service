@@ -1,5 +1,5 @@
 [Unit]
-Description=chat-uses broadcast: PulseAudio mixer, sink "mix"
+Description=chat-uses broadcast: PulseAudio mixer, sinks "mix" and "target"
 PartOf=chat-bcast.target
 
 [Service]

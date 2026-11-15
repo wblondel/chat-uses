@@ -13,8 +13,15 @@ else
 	echo "idle: no stream key in $key_file and no FORWARD_URL"
 	exec sleep infinity
 fi
+# At boot this starts before the encoder publishes "live": wait for it, so a
+# normal start doesn't fail once and leave an error in the journal.
+live=rtmp://127.0.0.1:1935/live
+if ! timeout 10 ffprobe -v quiet -i "$live" </dev/null; then
+	echo "waiting for the encoder to publish $live"
+	until timeout 10 ffprobe -v quiet -i "$live" </dev/null; do sleep 2; done
+fi
 # Read over RTMP like the encoder publishes (one clock for both tracks). Over
 # RTSP, MediaMTX's AAC packets also carry no keyframe flag, and -c copy drops
 # every packet until it sees one: the audio would silently vanish.
 exec ffmpeg -nostdin -hide_banner -loglevel warning \
-	-i rtmp://127.0.0.1:1935/live -map 0:v -map 0:a -c copy -f flv "$url"
+	-i "$live" -map 0:v -map 0:a -c copy -f flv "$url"

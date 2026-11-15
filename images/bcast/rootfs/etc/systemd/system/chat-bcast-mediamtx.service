@@ -1,5 +1,5 @@
 [Unit]
-Description=chat-uses broadcast: MediaMTX, stream "live" on RTSP 127.0.0.1:8554
+Description=chat-uses broadcast: MediaMTX, stream "live" (RTMP/RTSP on loopback, HLS preview on :8888)
 PartOf=chat-bcast.target
 
 [Service]

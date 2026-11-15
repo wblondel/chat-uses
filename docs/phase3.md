@@ -236,6 +236,9 @@ fresh bcast. Results:
   picture came back by itself and the sound 4 s after the target restarted;
 - sound relay or player frozen for 2 s: dropped the backlog and was back in
   sync (+11 to +16 ms) instead of 2 s late for the rest of the stream;
+- after a short hiccup (found on the server: a few 2–8 ms clicks when a
+  sound started), the relay now catches up in one go to a low backlog
+  instead of staying nearly full, so later sounds play without drops;
 - encoder frozen: the watchdog restarted it after 12 s;
 - BRB scene: full-frame cover with custom text, the target's tone gone from
   the stream (−inf dB), still muted after a PulseAudio restart, and back at
