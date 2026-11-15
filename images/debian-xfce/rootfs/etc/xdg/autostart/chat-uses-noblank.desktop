@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Keep the screen on
+Comment=chat-uses: never blank the screen; the stream must always show the desktop
+Exec=sh -c 'xset s off s noblank -dpms 2>/dev/null; true'
+NoDisplay=true

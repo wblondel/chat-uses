@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- chat-uses settings for user chat, layered over the package defaults:
+     no compositor (CPU goes to the stream), one workspace. -->
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+    <property name="workspace_count" type="int" value="1"/>
+    <property name="title_font" type="string" value="Sans Bold 11"/>
+  </property>
+</channel>

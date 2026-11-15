@@ -12,6 +12,7 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 |---|---|---|
 | 0 — Groundwork | [docs/phase0.md](docs/phase0.md) | `infra/host/server-check.sh`, `infra/discord/setup_server.py` |
 | 1 — Host foundation | [docs/phase1.md](docs/phase1.md) | `infra/host/bootstrap.sh`, `infra/host/wg-add-peer.sh`, `infra/tests/net-isolation.sh` |
+| 2 — Target image | [docs/phase2.md](docs/phase2.md) | `images/debian-xfce/build.sh`, `images/debian-xfce/check.sh` |
 
 ## Layout
 
@@ -20,5 +21,6 @@ infra/host/      host bootstrap, firewall template, config (host.env.example)
 infra/incus/     networks, projects and profiles as YAML
 infra/tests/     isolation tests
 infra/discord/   Discord server setup (stdlib Python) and its tests
+images/          target images (debian-xfce) and probes for VNC and audio
 docs/            runbooks
 ```

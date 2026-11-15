@@ -20,12 +20,14 @@ jobs:
           shellcheck --version | sed -n 2p
           python3 --version
       - name: shellcheck
-        run: shellcheck -x infra/host/*.sh infra/tests/*.sh
+        run: shellcheck -x infra/host/*.sh infra/tests/*.sh images/*/*.sh
       - name: Pinned Zabbly key matches the fingerprint in bootstrap.sh
         run: |
           want=$(sed -n 's/^ZABBLY_FINGERPRINT="\([0-9A-F]*\)"$/\1/p' infra/host/bootstrap.sh)
           got=$(gpg --show-keys --with-colons infra/host/zabbly.asc | awk -F: '/^fpr/ {print $10; exit}')
           echo "expected ${want:-<missing>}, key file has ${got:-<none>}"
           test -n "$want" && test "$want" = "$got"
+      - name: Python tools compile
+        run: python3 -m py_compile images/tools/*.py
       - name: Discord setup tests
         run: python3 -W error::ResourceWarning -m unittest discover -s infra/discord -v

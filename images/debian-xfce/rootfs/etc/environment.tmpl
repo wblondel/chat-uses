@@ -1,0 +1,8 @@
+# chat-uses: the only ways out of chatnet are the egress proxy and the
+# intranet (PLAN.md 7.2). Rendered at image build from host.env.
+http_proxy=http://${EGRESS_IP}:${PROXY_PORT}
+https_proxy=http://${EGRESS_IP}:${PROXY_PORT}
+HTTP_PROXY=http://${EGRESS_IP}:${PROXY_PORT}
+HTTPS_PROXY=http://${EGRESS_IP}:${PROXY_PORT}
+no_proxy=localhost,127.0.0.1,${INTRANET_IP}
+NO_PROXY=localhost,127.0.0.1,${INTRANET_IP}

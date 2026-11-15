@@ -1,0 +1,3 @@
+// chat-uses: packages come through the egress proxy (PLAN.md 7.2).
+Acquire::http::Proxy "http://${EGRESS_IP}:${PROXY_PORT}";
+Acquire::https::Proxy "http://${EGRESS_IP}:${PROXY_PORT}";
