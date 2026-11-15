@@ -42,7 +42,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 1 | Host foundation (Debian, Incus, networks) | M | ✅ done on the server (section 15, P1) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
 | 3 | Broadcast pipeline | M | ◐ pipeline and 1 h YouTube stream done on the server (section 15, P3); 6 h with the target at its CPU cap left |
-| 4 | Control plane MVP | L | ☐ |
+| 4 | Control plane MVP | L | ◐ core done (`control/`: parser, grid, rate limits, store, simulator); desktop control, overlay link, chat adapters next |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
 | 6 | Governance and time travel | L | ☐ |
 | 7 | Closed beta → soft launch | M | ☐ |
@@ -696,15 +696,16 @@ Runbook: **`docs/phase3.md`**. Code is written and was tested in the Debian 13 s
 
 ### Phase 4 — Control plane MVP · L
 
-- [ ] Python project in `control/`: `uv` for dependencies, `ruff`, `pyright`, `pytest`; a GitHub Actions workflow running lint + unit tests.
+- [x] Python project in `control/`: `uv` for dependencies, `ruff`, `pyright` (strict), `pytest`; a CI job running lint, types, tests and the chat simulator.
 - [ ] YouTube adapter: video ID set from the admin dashboard → `videos.list` (`liveStreamingDetails.activeLiveChatId`) → `liveChatMessages.streamList` over gRPC with resume tokens and reconnect. ⚠️ Verify the quota cost of `streamList` on the quota page.
 - [ ] Discord adapter: `!` commands in `#control`, slash commands, author roles (Moderator, Regular) mapped onto the unified identity.
-- [ ] Identity and presence tracking; SQLite store; append-only `events` log.
-- [ ] Parser for tier-0 input commands (6.1), with unit tests including malformed and hostile input.
-- [ ] Rate limits (per user and global).
-- [ ] Anarchy executor, VNC injector, keymap, grid with sub-cells.
+- [x] Identity and presence tracking; SQLite store; append-only `events` log (enforced by triggers).
+- [x] Parser for tier-0 input and meta commands (6.1), with unit tests including malformed and hostile input (D32).
+- [x] Rate limits (per user and global).
+- [x] Keymap (VNC keysyms) and grid with sub-cells.
+- [ ] Anarchy executor and VNC injector.
 - [ ] Overlay HUD: command log with filtered names and platform icons, grid labels and flash, cursor, connection status.
-- [ ] Chat simulator (`sim/`): N fake users with configurable behaviour.
+- [x] Chat simulator (`sim/`): N fake users (regulars, spammers, trolls, chatters) through the real pipeline.
 - [ ] Develop against a local Incus setup (Linux laptop) or on the server outside stream hours.
 
 **Done when:** on an unlisted stream, you and a friend control the desktop from both YouTube and Discord, and the command-to-visible latency is measured and written down.
@@ -882,7 +883,7 @@ Answer these and move the answers to the decision log:
 4. Scheduled streams only, or aim for 24/7 after Phase 10?
 5. Monetization (memberships, Super Chat effects) from day one or later?
 6. ~~720p vs 1080p after the Phase 3 benchmark?~~ 1080p decided (D21); the benchmark only tunes bitrate, preset and the CPU split.
-7. Python for the control plane, or TypeScript? (Default: Python; decide before Phase 4.)
+7. ~~Python for the control plane, or TypeScript?~~ Python (D5), kept at the start of Phase 4.
 8. First retro OS for the Time Machine season?
 
 ---
@@ -931,6 +932,8 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D29 | MediaMTX pinned (v1.21.3) and checked against its SHA-256 at build; API, metrics, pprof, playback, WebRTC, SRT and Media-over-QUIC off; RTMP and RTSP on loopback only; HLS on 8888 for the WireGuard preview. `images/build.sh <name>` builds any image; `host.env` gains `TARGET_IP` and `BRAIN_PORT` | Not packaged in Debian; smallest surface (MoQ is on by default). One build script for every image |
 | 2026-11-15 | D30 | Targets get a hard CPU cap on top of pinning: `limits.cpu.allowance` from `TARGET_CPU_ALLOWANCE`, default `15ms/10ms` (1.5 CPUs' worth on the 3 pinned cores, in 10 ms windows so a throttled target pauses ~5 ms at a time, not ~50 ms as with `150ms/100ms`); raise it on a Root Server | The server is a netcup VPS Lite: shared vCores, sold for lightweight workloads, and sustained 100 % use reportedly gets throttled. Chat will keep a target busy for hours; with the cap, the whole server peaks around 45 % (bcast up to 1.8, target 1.5, the rest small) and sits around 25 % normally |
 | 2026-11-15 | D31 | `audio-in` is a jitter buffer: it holds `AUDIO_BUFFER_MS` (120 ms) of the target's sound and feeds pacat at real-time pace by the clock; sound later than that plays as silence and is dropped when it arrives; `AUDIO_DELAY` defaults to −100 ms to compensate | Found on the server: with the target at its CPU cap, small cuts in the sound. Reproduced by pausing the target's recorder: 60 ms pauses gave 7 gaps in 10 s with the old 40 ms player buffer, 100 ms pauses 18. A bigger pacat buffer made it worse (PulseAudio commits part of it to the sink). With the relay's buffer: no gaps up to 100 ms pauses, every longer cut logged; sync −23 to +1 ms with the compensation |
+| 2026-11-15 | D32 | Refusals brain shows on stream (invalid command, rate limit, filter) use fixed wording and never repeat what chat wrote | Otherwise `!click <slur>` would put the slur on stream through the error message itself. Tested with a marker word across every refusal path |
+| 2026-11-15 | D33 | CI fails on invisible bidi, zero-width and control characters in any tracked text file (`.github/no-invisible-chars.py`); tests write them as escapes | Trojan Source: such characters make code read differently than it runs. Found while writing the parser's hostile-input tests: the escapes had been decoded into real characters, and ruff flagged lookalike letters but not the bidi override |
 | 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |
 | 2026-11-15 | P1 | Phase 1 on the server: `bootstrap.sh` built the host from a fresh Debian 13.7 install (Incus from Zabbly), admin user with key-only SSH and root SSH login turned off, WireGuard tunnel to the laptop; `net-isolation.sh` passes every check, again after a reboot | Phase 1 done. The first runs from a terminal failed the allowed paths: the test's own fake services died under `incus exec`'s pseudo-terminal (test fixed, firewall was right) |
 | 2026-11-15 | P2 | Phase 2 on the server: `images/debian-xfce/check.sh` 12/12. VNC 6.4 s and desktop 8.3 s after launch; the four services active under systemd; 1600×900 framebuffer; PCM at 192 016 B/s, test tone −11.7 dBFS; snapshot of the running desktop in 0.1 s, restored while running in 1.5 s with the change undone | Phase 2 done: boot < 30 s and restore < 15 s met with a wide margin |

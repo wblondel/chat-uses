@@ -1,0 +1,41 @@
+[project]
+name = "chatuses"
+version = "0.1.0"
+description = "chat-uses control plane (brain): chat commands in, desktop input out"
+readme = "README.md"
+requires-python = ">=3.13"
+# Runtime: standard library only so far. The web server (overlay websocket,
+# admin API) and the YouTube/Discord clients arrive with their own steps.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16",
+    "pyright>=1.1.400",
+]
+
+[project.scripts]
+chatuses-sim = "chatuses.sim.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chatuses"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

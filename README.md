@@ -25,5 +25,6 @@ infra/discord/   Discord server setup (stdlib Python) and its tests
 images/          images built by images/build.sh: the target (debian-xfce) and the
                  broadcaster (bcast); probes for VNC and audio
 overlay/         the stream layout page (served by bcast)
+control/         the control plane ("brain", Python): chat commands in, desktop input out
 docs/            runbooks
 ```
