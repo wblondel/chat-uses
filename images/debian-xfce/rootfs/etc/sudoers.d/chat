@@ -1,0 +1,2 @@
+# chat-uses: chat is root inside its container; that's the game.
+chat ALL=(ALL:ALL) NOPASSWD: ALL

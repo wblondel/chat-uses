@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- chat-uses settings for user chat, layered over the package defaults:
+     legible on a 1080p stream. Grayscale anti-aliasing, because coloured
+     subpixel fringes smear after video encoding. -->
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="EnableEventSounds" type="bool" value="false"/>
+    <property name="EnableInputFeedbackSounds" type="bool" value="false"/>
+  </property>
+  <property name="Xft" type="empty">
+    <property name="DPI" type="int" value="120"/>
+    <property name="Antialias" type="int" value="1"/>
+    <property name="Hinting" type="int" value="1"/>
+    <property name="HintStyle" type="string" value="hintslight"/>
+    <property name="RGBA" type="string" value="none"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="CursorThemeSize" type="int" value="32"/>
+    <property name="FontName" type="string" value="Sans 11"/>
+    <property name="MonospaceFontName" type="string" value="Monospace 11"/>
+  </property>
+</channel>

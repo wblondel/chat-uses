@@ -40,7 +40,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 |---|---|---|---|
 | 0 | Groundwork (accounts, server check) | S | ◐ tooling ready, manual steps left (`docs/phase0.md`) |
 | 1 | Host foundation (Debian, Incus, networks) | M | ◐ code ready, run on the server (`docs/phase1.md`) |
-| 2 | Golden target image: Debian 13 + Xfce | M | ☐ |
+| 2 | Golden target image: Debian 13 + Xfce | M | ◐ code ready, build on the server (`docs/phase2.md`) |
 | 3 | Broadcast pipeline | M | ☐ |
 | 4 | Control plane MVP | L | ☐ |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
@@ -72,7 +72,7 @@ Pillars, used to settle design arguments:
 | Constraint | Consequence |
 |---|---|
 | No nested virtualization (no `/dev/kvm`) | Linux targets run as **system containers** at native speed. Other OSes run in **QEMU software emulation (TCG)**: several times slower; XP-era is fine, Windows 7 is sluggish, 10/11 is unusable. |
-| 8 vCPU, no GPU | Software video encoding (x264). **720p30** is the default; 1080p only if benchmarks allow. CPU must be split so chat can't starve the encoder. |
+| 8 vCPU, no GPU | Software video encoding (x264) at **1080p30**, which takes about half the CPUs. CPU must be split so chat can't starve the encoder. |
 | 16 GB RAM | One desktop target with ~8 GB, or two light targets. |
 | 320 GB SSD | Snapshots must be copy-on-write (btrfs). Keep an eye on snapshot growth. |
 | netcup acceptable use policy | Any abuse report (DDoS, spam, scanning) can lock the server. The target **never** gets unfiltered internet. |
@@ -96,10 +96,10 @@ These are the defaults. Change them deliberately and log it in section 15.
 | D4 | Target interface | Every target exposes **VNC** (screen + input), **raw PCM audio over TCP**, and a **power/snapshot API** (Incus API for containers, QMP for QEMU). | The rest of the system never needs to know which OS is running. |
 | D5 | Control plane | **Python 3.13, asyncio, one process ("brain")** + SQLite. Libraries: `discord.py`, `grpcio` (YouTube chat stream), a VNC client (`asyncvnc` or `vncdotool` — evaluate; a minimal RFB client is a fallback), `qemu.qmp`, `httpx` (Incus REST), `pytesseract`, FastAPI/uvicorn, `pydantic`. | Best library coverage for this mix; one process is easiest to debug. Split into services only if needed. |
 | D6 | Overlay | **One web page** (Vite + TypeScript) containing noVNC (view-only) and the HUD, fed by a websocket from brain. | The whole stream layout is HTML; easy to iterate and theme. |
-| D7 | Broadcast | **Xvfb + Chromium kiosk + ffmpeg (x264) → MediaMTX → forwarder to YouTube (RTMPS)**. 720p30, ~4 Mbps. | Lighter than headless OBS; MediaMTX decouples encoding from the YouTube connection and also feeds clips/previews. |
+| D7 | Broadcast | **Xvfb + Chromium kiosk + ffmpeg (x264) → MediaMTX → forwarder to YouTube (RTMPS)**. 1080p30, ~6–8 Mbps CBR (D21). | Lighter than headless OBS; MediaMTX decouples encoding from the YouTube connection and also feeds clips/previews. |
 | D8 | YouTube chat | **Official `liveChatMessages.streamList`** (gRPC server-push). Fallback: `chat-downloader`. Feedback goes on the overlay, **not** as chat replies. | Low latency, official, no polling. Chat replies cost quota and spam chat. |
 | D9 | Discord | `discord.py` bot: `!` commands in `#control` + slash commands + a button "control panel". Audio relay later (see Phase 11). | Familiar UX for both platforms. |
-| D10 | First target | **Debian 13 + Xfce**, desktop at **1024×576** | Fits 1:1 in a 1280×720 stream with room for the HUD; crisp text. |
+| D10 | First target | **Debian 13 + Xfce**, desktop at **1600×900**, fonts scaled up (D21) | Fits 1:1 in a 1920×1080 stream with room for the HUD; crisp text that survives YouTube's re-encoding. |
 | D11 | First ruleset | **Roguelike** (runs, lives, permadeath) | Strongest hook; gives every crash a story. |
 | D12 | Config as code | All host and image setup as idempotent shell scripts + Incus YAML in this repo. | Server can be rebuilt from scratch after a compromise or reinstall. |
 
@@ -137,14 +137,14 @@ CPU numbers are vCPU indexes 0–7. "Pinned" uses Incus `limits.cpu` with a rang
 
 | Instance | Project | Role | CPUs | RAM | Disk |
 |---|---|---|---|---|---|
-| `bcast` | infra | Xvfb, Chromium layout, PulseAudio mix, websockify, ffmpeg encoder, MediaMTX, forwarder, clip recorder | 0–1 (pinned) | 2 GiB | 20 GiB |
-| `brain` | infra | Control plane, overlay/admin API, OCR | 2 (pinned) | 1.5 GiB | 10 GiB |
-| `egress` | infra | Squid allowlist proxy | 2 (shared) | 256 MiB | 5 GiB |
-| `intranet` | infra | kiwix-serve + static pages | 2 (shared) | 512 MiB | 10–20 GiB |
-| `target-*` | targets | The machine chat controls | 3–7 (pinned) | 8 GiB | 40 GiB quota |
+| `bcast` | infra | Xvfb, Chromium layout, PulseAudio mix, websockify, ffmpeg encoder, MediaMTX, forwarder, clip recorder | 0–3 (pinned; 1080p encode + layout) | 3 GiB | 20 GiB |
+| `brain` | infra | Control plane, overlay/admin API, OCR | 4 (pinned) | 1.5 GiB | 10 GiB |
+| `egress` | infra | Squid allowlist proxy | 4 (shared) | 256 MiB | 5 GiB |
+| `intranet` | infra | kiwix-serve + static pages | 4 (shared) | 512 MiB | 10–20 GiB |
+| `target-*` | targets | The machine chat controls | 5–7 (pinned) | 8 GiB | 40 GiB quota |
 | host | — | sshd, Incus, nftables, WireGuard, backups | unpinned | ~1.5 GiB | — |
 
-Total RAM ≈ 13.5 GiB, leaving some headroom. Platform War (two targets) needs a re-budget: e.g. targets on 3–4 and 5–7 with 4 GiB each, and a 1080p benchmark (Phase 11).
+Total RAM ≈ 14.5 GiB, leaving some headroom. The 1080p split (D21) gives broadcast 4 vCPUs and targets 3; the Phase 3 benchmark confirms or adjusts it. Platform War (two targets) needs a re-budget, likely smaller desktops (Phase 11).
 
 ### 5.3 Networks and ports
 
@@ -185,32 +185,34 @@ On top of the firewall, target NICs have `security.port_isolation` (targets can'
 
 ### 5.5 Video and audio pipeline (in `bcast`)
 
-1. **Display:** `Xvfb :99 -screen 0 1280x720x24`.
-2. **Layout:** Chromium in kiosk mode at 1280×720 on `:99`, loading `http://brain:8080/layout`. The page embeds noVNC (view-only, connected through websockify to the target's VNC) and the HUD.
+1. **Display:** `Xvfb :99 -screen 0 1920x1080x24`.
+2. **Layout:** Chromium in kiosk mode at 1920×1080 on `:99`, loading `http://brain:8080/layout`. The page embeds noVNC (view-only, connected through websockify to the target's VNC) and the HUD.
 3. **Cursor:** noVNC shows the remote cursor as a *local* CSS cursor, which a headless capture won't show (⚠️ verify in Phase 3). Plan: the overlay draws its own large cursor at the position the injector last set, labelled with who moved it. This is better for viewers anyway.
 4. **Audio in:** a service reads raw PCM (s16le, 48 kHz, stereo) from `target:4712`, passes it through a limiter and volume cap (ffmpeg `alimiter`), and plays it into the PulseAudio null sink `mix`. It reconnects forever. Chromium's sound effects (vote passed, death jingle) also go to `mix`.
 5. **Encode** (sketch, tune in Phase 3):
    ```
-   ffmpeg -f x11grab -framerate 30 -video_size 1280x720 -draw_mouse 0 -i :99 \
+   ffmpeg -f x11grab -framerate 30 -video_size 1920x1080 -draw_mouse 0 -i :99 \
           -f pulse -i mix.monitor \
-          -c:v libx264 -preset veryfast -b:v 4000k -maxrate 4000k -bufsize 8000k \
-          -g 60 -keyint_min 60 -sc_threshold 0 -pix_fmt yuv420p \
-          -c:a aac -b:a 160k -ar 48000 \
+          -c:v libx264 -preset veryfast -b:v 7000k -minrate 7000k -maxrate 7000k -bufsize 7000k \
+          -x264-params nal-hrd=cbr -bf 2 -g 60 -keyint_min 60 -sc_threshold 0 -flags +cgop -pix_fmt yuv420p \
+          -c:a aac -b:a 128k -ar 48000 -ac 2 \
           -f rtsp rtsp://127.0.0.1:8554/live
    ```
-   Try with and without `-tune zerolatency` (lower latency vs better quality).
+   This follows YouTube's live encoder guidance for 1080p30: constant bitrate in the 4–10 Mbps range, a keyframe every 2 seconds (60 frames) with closed GOPs, 2 B-frames, 128 kbps AAC stereo. Avoid `-tune zerolatency` (it disables B-frames). Pick the bitrate and preset in the Phase 3 benchmark; text-heavy screens look better toward the top of the range.
 6. **MediaMTX** receives `live` and serves it locally (RTSP/HLS/WebRTC).
 7. **Forwarder:** `ffmpeg -i rtsp://127.0.0.1:8554/live -c copy -f flv <YouTube RTMPS URL>/<key>` in a restart loop. If YouTube drops, only this process restarts; the encoder keeps running. Copy the ingest URL from YouTube Studio (it's `rtmps://a.rtmps.youtube.com/live2` at time of writing).
 8. **Clip ring buffer:** `ffmpeg -i rtsp://…/live -c copy -f segment -segment_time 10 -segment_wrap 12 …` keeps the last 2 minutes on disk for event clips (Phase 10).
 
 All of these are systemd units with `Restart=always`. If brain dies, the layout shows a "controls offline" card and the stream continues.
 
-### 5.6 Overlay layout (1280×720)
+### 5.6 Overlay layout (1920×1080)
+
+Desktop 1600×900 at the top left, shown 1:1; a 320 px column on the right and a 180 px strip at the bottom (D21).
 
 ```
 ┌──────────────────────────────────────────────┬─1─────────────┐
 │                                              │2  RUN #47      │
-│        TARGET SCREEN 1024×576 (1:1)          │3  ♥♥♥ lives    │
+│        TARGET SCREEN 1600×900 (1:1)          │3  ♥♥♥ lives    │
 │                                              │4  ⏱ 02:13:44   │
 │                                              │5  ANARCHY ◄▮► │
 │                                              │6  DEMOCRACY    │
@@ -226,7 +228,7 @@ All of these are systemd units with `Restart=always`. If brain dies, the layout 
 
 - Grid **labels sit outside the target area** (letters under it, numbers to its right), so they never hide content. Grid lines flash over the target for 3 s after each click or on `!grid`.
 - Full-screen states: Starting soon, BRB / panic, content hold, death screen, run start.
-- For other target resolutions (e.g. retro 800×600, 640×480), the layout computes the target box and scales down only if needed.
+- For other target resolutions (e.g. retro 800×600, 640×480), the layout computes the target box. Pixel-art OSes are scaled up by whole numbers (2×) so they stay sharp.
 - Test legibility on a phone before going live.
 
 ### 5.7 Control plane (brain) modules
@@ -351,9 +353,9 @@ chat-uses/
 
 ### 6.2 Grid
 
-- 1024×576 target → **16 columns (A–P) × 9 rows (1–9)** of 64 px cells.
-- Sub-cells: each cell split 3×3, numbered like a phone keypad, ≈ 21 px precision. `F7` alone = centre (same as `F7.5`).
-- Other resolutions: `cols = round(width / 64)`, `rows = round(height / 64)`, cell size = width/cols × height/rows.
+- 1600×900 target → **16 columns (A–P) × 9 rows (1–9)** of 100 px cells.
+- Sub-cells: each cell split 3×3, numbered like a phone keypad, ≈ 33 px precision. `F7` alone = centre (same as `F7.5`).
+- Other resolutions: keep 16 × 9 cells for 16:9 screens; otherwise `cols = round(width / 100)`, `rows = round(height / 100)`, cell size = width/cols × height/rows.
 - Grid math is pure and unit-tested.
 
 ### 6.3 Modes: anarchy and democracy
@@ -654,24 +656,25 @@ Runbook: **`docs/phase1.md`**. Code is written and was tested in a simulated hos
 
 ### Phase 2 — Golden target image: Debian 13 + Xfce · M
 
-- [ ] `images/debian-xfce/build.sh`: launch `images:debian/13` in project `targets` and install:
-  - Xfce, TigerVNC (`Xvnc` at 1024×576, shared sessions allowed, listening on the `chatnet` IP only), dbus-x11;
-  - PipeWire/PulseAudio with `module-simple-protocol-tcp` (record only, s16le, 48 kHz, stereo) on port 4712;
-  - larger default fonts and cursor; screensaver, lock screen and power management disabled;
-  - `firefox-esr` with enterprise policies (proxy locked, allowlist, intranet homepage), apt proxy config;
+Runbook: **`docs/phase2.md`**. Code is written and was tested in the Debian 13 simulation; it still has to run on the real server.
+
+- [x] `images/debian-xfce/build.sh`: a short-lived builder container on `infranet` runs `provision.sh` and is published as `chat-uses/debian-xfce` (plus a dated alias per build, for rollback). The image has:
+  - Xfce on TigerVNC (`Xtigervnc :0`, 1600×900, DPI 120, shared sessions, port 5900);
+  - PulseAudio with one null sink, `stream`, whose sound is served as raw PCM (s16le, 48 kHz, stereo) on port 4712, record only;
+  - grayscale font smoothing, 32 px cursor, no compositor, no screen lock or blanking, branded wallpaper, preseeded panel (no first-start dialog);
+  - `firefox-esr` with enterprise policies (proxy locked, every site but the intranet blocked, intranet homepage), apt and shell proxy settings;
   - a `chat` user with passwordless sudo (chat is root inside the container; that's the game);
-  - systemd units for Xvnc, the Xfce session and the audio TCP server, all auto-restarting;
-  - branded wallpaper.
-- [ ] Publish it as an Incus image `golden/debian-xfce-v1`; record the version.
-- [ ] Measure time to boot to desktop, snapshot time, and restore time.
-- [x] ~~Decide whether `incus snapshot restore` needs a stop/start on a running container~~: it doesn't (Phase 1 simulation). Restore in the restricted project needs the D19 workaround.
+  - systemd units `chat-xvnc`, `chat-audio`, `chat-session`, all auto-restarting.
+- [x] `images/debian-xfce/check.sh` + `images/tools/vncshot.py`, `pcmprobe.py`: launch a test target and check VNC size, a real desktop on screen (saved as PNG), the audio stream and an audible test tone, the services, and snapshot/restore timings.
+- [x] ~~Decide whether `incus snapshot restore` needs a stop/start on a running container~~: it doesn't. Restore in the restricted project works on Incus 7.6 (D20).
+- [ ] Build and check on the server; record boot, snapshot and restore times in section 15.
 
 **Done when:** from a test container on `chatnet` you can see the desktop via VNC and hear audio from port 4712; boot < 30 s and restore < 15 s (or the measured numbers are accepted in the decision log).
 
 ### Phase 3 — Broadcast pipeline · M
 
 - [ ] `bcast` container: Xvfb, PulseAudio with null sink `mix`, Chromium kiosk, websockify, ffmpeg encoder, MediaMTX, forwarder, audio-in service. All systemd units with `Restart=always`.
-- [ ] Minimal static layout page: noVNC view-only box at 1024×576, placeholder sidebar and bottom strip, a "controls offline" state when the brain websocket is down, Starting soon and BRB scenes.
+- [ ] Minimal static layout page at 1920×1080: noVNC view-only box at 1600×900, placeholder 320 px sidebar and 180 px bottom strip, a "controls offline" state when the brain websocket is down, Starting soon and BRB scenes.
 - [ ] Check how the remote cursor appears; implement the overlay-drawn cursor if needed (5.5).
 - [ ] Unlisted YouTube test streams: 1 h, then 6 h while the target runs `stress-ng` on its cores. Measure encoder speed, dropped frames, CPU per component, A/V sync and end-to-end latency in ultra-low-latency mode.
 - [ ] Decide final resolution, bitrate and `-tune zerolatency` (record in the decision log).
@@ -864,7 +867,7 @@ Answer these and move the answers to the decision log:
 3. VPS or Root Server, and what is the measured steal time?
 4. Scheduled streams only, or aim for 24/7 after Phase 10?
 5. Monetization (memberships, Super Chat effects) from day one or later?
-6. 720p vs 1080p after the Phase 3 benchmark?
+6. ~~720p vs 1080p after the Phase 3 benchmark?~~ 1080p decided (D21); the benchmark only tunes bitrate, preset and the CPU split.
 7. Python for the control plane, or TypeScript? (Default: Python; decide before Phase 4.)
 8. First retro OS for the Time Machine season?
 
@@ -903,3 +906,5 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D18 | CI runs on Ubuntu 26.04 LTS with `actions/checkout@v7` | Latest LTS runner; v7 runs on Node.js 24 (Node 20 deprecated) |
 | 2026-11-15 | D19 | ~~**Open (Phase 6):** how to restore snapshots in the restricted `targets` project~~ **Resolved by D20.** Original note: Recommended: a small root-side helper that checks the snapshot's config has no low-level keys (`raw.*`, `security.privileged`…), lifts `restricted.containers.lowlevel` for the restore and blocks it again. Alternative: copy the snapshot into a new container and swap names (keeps the project untouched, but loses the snapshot history on the old instance) | Debian 13's Incus refuses restores there ("Changing `volatile.*` is forbidden"): since the CVE-2026-48751 fix, restore is checked against the low-level rule, which also catches Incus's own `volatile.*` keys. Both options tested in the simulation; never keep `lowlevel` allowed, since brain's certificate (Phase 4) is scoped to this project |
 | 2026-11-15 | D20 | Incus from **Zabbly's stable channel** (`INCUS_SOURCE=zabbly-stable`), key pinned in the repo and checked in CI; `unattended-upgrades` takes its updates; re-run the isolation test after each Incus release | Upstream fixed the volatile-key restore refusal in Incus 7.5 (PR #3994). Tested on Incus 7.6: restore works in the restricted project, the CVE-2026-48751 poisoned-snapshot replay is still refused, bootstrap and isolation test pass. Debian's 6.0.4 and backported 7.0.2 still refuse restores. Cost: third-party repo, monthly feature releases |
+| 2026-11-15 | D21 | **1080p30 stream**, desktop **1600×900 at 1:1** in a framed layout (320 px HUD column, 180 px bottom strip), fonts scaled (DPI 120); CPU split: broadcast 0–3, brain/egress/intranet 4, targets 5–7 | YouTube re-encodes 720p too softly for a text-heavy desktop; 1080p gets better renditions. 1:1 pixels keep text crisp; the frame keeps the HUD off the desktop chat clicks on. The 16×9 click grid stays, with 100 px cells. Cost: about 4 vCPUs for encode and layout instead of 2 |
+| 2026-11-15 | D22 | Target Xfce settings live in `/home/chat/.config/xfce4/xfconf/`, layered over Debian's defaults; never replace package files in `/etc/xdg` | Overwriting Debian's `xfce4-session.xml` removed the failsafe session and the desktop never started (found in the Phase 2 simulation) |

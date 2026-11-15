@@ -1,0 +1,23 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus profile edit --project infra`. Replaced on every run.
+#
+# Short-lived containers that build images (images/*/build.sh). They sit on
+# infranet because they need the internet for packages, and borrow the
+# targets' CPUs and memory budget since they run before any target does.
+description: "Image builder: short-lived, on infranet for package downloads"
+config:
+  limits.cpu: "${CPUS_TARGETS}"
+  limits.memory: "${MEM_TARGET}"
+  security.privileged: "false"
+  security.nesting: "false"
+devices:
+  root:
+    type: disk
+    path: /
+    pool: "${POOL_NAME}"
+    size: "${DISK_TARGET}"
+  eth0:
+    type: nic
+    name: eth0
+    network: "${INFRANET_NAME}"
+    security.mac_filtering: "true"

@@ -1,0 +1,14 @@
+[Unit]
+Description=chat-uses display: TigerVNC X server on :0, VNC on port 5900
+After=network.target
+
+[Service]
+User=chat
+EnvironmentFile=/etc/chat-uses/target.env
+# No VNC password: only brain and bcast can reach port 5900 (host firewall).
+ExecStart=/usr/bin/Xtigervnc :0 -geometry $GEOMETRY -depth 24 -dpi $DPI -rfbport 5900 -SecurityTypes None -AlwaysShared -desktop chat-uses -nolisten tcp
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

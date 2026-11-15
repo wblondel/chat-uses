@@ -1,0 +1,14 @@
+[Unit]
+Description=chat-uses audio: PulseAudio sink "stream", raw PCM on port 4712
+After=network.target
+
+[Service]
+User=chat
+Environment=HOME=/home/chat
+RuntimeDirectory=chat-audio
+ExecStart=/usr/bin/pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit -n -F /etc/chat-uses/audio.pa --log-target=stderr
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

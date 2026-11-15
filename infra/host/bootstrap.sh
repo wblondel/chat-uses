@@ -24,7 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 STEPS=(packages admin-user ssh system updates firewall wireguard incus storage networks projects profiles summary)
 
 PACKAGES=(
-	ca-certificates curl jq gettext-base sudo
+	ca-certificates curl jq gettext-base sudo python3
 	unattended-upgrades apt-listchanges
 	nftables wireguard-tools qrencode tcpdump
 	# Container-only Incus: the "incus" package adds QEMU for VMs, which this
