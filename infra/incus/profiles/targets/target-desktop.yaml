@@ -8,6 +8,7 @@ description: "Desktop target controlled by chat (pinned CPUs, hard limits, isola
 config:
   boot.autostart: "true"
   limits.cpu: "${CPUS_TARGETS}"
+  limits.cpu.allowance: "${TARGET_CPU_ALLOWANCE}"
   limits.memory: "${MEM_TARGET}"
   limits.processes: "${TARGET_PROCESSES}"
   limits.disk.priority: "2"

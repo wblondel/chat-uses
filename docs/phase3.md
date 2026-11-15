@@ -175,12 +175,19 @@ deploy again afterwards.
    The key goes into bcast only (`root:bcast 0640`), never into an image.
    Errors from the forwarder may print the ingest URL, key included, to the
    journal inside bcast: don't paste those logs anywhere public.
-3. Stream **1 hour**, then **6 hours** with the target under full CPU load:
-   in a terminal on the target, `for i in 1 2 3; do yes >/dev/null & done`
-   (one per target CPU). Record from the encoder's journal:
-   speed, dropped frames; from the host: `incus info bcast --project infra`
-   CPU; from YouTube Studio: stream health, and the delay between doing
-   something on the target and seeing it on YouTube.
+3. Stream **1 hour**, then **6 hours** with the target busy up to its CPU
+   cap (PLAN.md D30: 1.5 CPUs' worth by default). Make sure the cap is in
+   place first (`sudo infra/host/bootstrap.sh profiles` applies it to running
+   targets too), then load the target from the host:
+   ```bash
+   sudo incus exec -T -n phase2-check --project targets -- sh -c 'for i in 1 2 3; do timeout 6h yes >/dev/null 2>&1 & done'
+   ```
+   On a VPS, don't load every core of the server for hours: shared vCores
+   under sustained full load risk throttling, which is what the cap is for.
+   Record from the encoder's journal: speed, dropped frames; from the host:
+   `incus info bcast --project infra` CPU; from YouTube Studio: stream
+   health, and the delay between doing something on the target and seeing it
+   on YouTube.
 4. Put the numbers in PLAN.md section 15, decide bitrate and preset there, and
    tick Phase 3.
 

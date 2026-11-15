@@ -87,6 +87,8 @@ step_preflight() {
 		max=$(tr ',-' '\n' <<<"$spec" | sort -n | tail -1)
 		((max < ncpu)) || die "$var='$spec' uses CPU $max but this server has $ncpu CPUs (0-$((ncpu - 1)))"
 	done
+	[[ $TARGET_CPU_ALLOWANCE =~ ^([0-9]+ms/[0-9]+ms|[0-9]+%)$ ]] ||
+		die "TARGET_CPU_ALLOWANCE='$TARGET_CPU_ALLOWANCE' must look like 150ms/100ms (hard cap) or 50% (soft share)"
 	info "WAN interface: $WAN_IF, public IPv4: ${WG_ENDPOINT:-none found}, CPUs: $ncpu"
 }
 
