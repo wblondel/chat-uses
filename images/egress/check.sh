@@ -3,9 +3,10 @@
 #
 # From inside a running target (where chat is), through the proxy: the
 # allowlisted Debian archive works over HTTP and HTTPS and apt can update;
-# other sites, addresses typed directly, private addresses (brain's feed on
-# infranet), CONNECT to other ports and other ports all refused; downloads
-# are capped near EGRESS_BYTES_PER_SECOND. Without the proxy, no way out.
+# other sites, addresses typed directly, infranet (brain's feed, the host),
+# CONNECT to other ports and other ports are all refused at once; an HTTPS
+# download is capped near EGRESS_BYTES_PER_SECOND. Without the proxy, no way
+# out.
 #
 # Usage:
 #   sudo images/egress/check.sh [--target NAME]
@@ -58,7 +59,7 @@ read -r _ code _ <<<"$(fetch -x "$PROXY" -I http://deb.debian.org/debian/dists/t
 if [[ $code == 200 ]]; then pass "HTTP to deb.debian.org"; else fail "HTTP to deb.debian.org: status ${code:-none}"; fi
 read -r connect _ _ <<<"$(fetch -x "$PROXY" -I https://deb.debian.org/debian/dists/trixie/InRelease)"
 if [[ $connect == 200 ]]; then pass "HTTPS (CONNECT) to deb.debian.org:443"; else fail "CONNECT to deb.debian.org:443: ${connect:-none}"; fi
-if in_target timeout 120 apt-get update -qq >/dev/null 2>&1; then
+if in_target timeout 120 apt-get update -qq --error-on=any >/dev/null 2>&1; then
 	pass "apt-get update in the target (its apt points at the proxy)"
 else
 	fail "apt-get update failed in the target"
@@ -79,19 +80,20 @@ refused() { # description, then curl arguments
 refused "a site not on the list (http://example.com)" http://example.com/
 refused "the same over HTTPS" https://example.com/
 refused "an address typed directly (http://1.1.1.1)" http://1.1.1.1/
-refused "brain's feed on infranet (private address)" "http://$BRAIN_IP:$BRAIN_PORT/healthz"
+refused "brain's feed on infranet" "http://$BRAIN_IP:$BRAIN_PORT/healthz"
 refused "the host's address on infranet" "http://$INFRANET_GW/"
 refused "CONNECT to an allowed name on another port (22)" -p http://deb.debian.org:22/
 refused "plain HTTP on another port (8080)" http://deb.debian.org:8080/
 
 log "Bandwidth"
+# Over HTTPS: the cap must hold for CONNECT tunnels too, not only plain HTTP.
 cap=$EGRESS_BYTES_PER_SECOND
-read -r _ code speed <<<"$(TIME=60 fetch -x "$PROXY" http://deb.debian.org/debian/dists/trixie/main/binary-amd64/Packages.xz)"
+read -r _ code speed <<<"$(TIME=60 fetch -x "$PROXY" https://deb.debian.org/debian/dists/trixie/main/binary-amd64/Packages.xz)"
 speed=${speed%.*}
 if [[ $code != 200 || -z $speed ]]; then
 	fail "test download failed (status ${code:-none})"
-elif ((speed <= cap * 12 / 10)); then
-	pass "a download ran at $((speed / 1000)) kB/s, within the cap of $((cap / 1000)) kB/s"
+elif ((speed <= cap * 12 / 10)); then # the first second may burst a little above
+	pass "an HTTPS download ran at $((speed / 1000)) kB/s (cap $((cap / 1000)) kB/s)"
 else
 	fail "a download ran at $((speed / 1000)) kB/s, over the cap of $((cap / 1000)) kB/s"
 fi

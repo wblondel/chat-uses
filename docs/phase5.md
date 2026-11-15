@@ -88,6 +88,40 @@ its own stand-ins. It now stops the real containers for the test and starts
 them again afterwards (outside stream hours: the desktop loses its proxy and
 intranet for a minute).
 
+### What was tested before this landed
+
+In the sandbox, both images built and deployed, checked from the Phase 2
+desktop:
+
+- **egress, 11 of 12.**
+  - **Refused, instantly and without any DNS lookup:** `example.com` over
+    HTTP and HTTPS, `1.1.1.1`, brain's feed, the host, CONNECT to port 22,
+    port 8080.
+  - **Allowed:** HTTPS to the Debian archive and `apt-get update`.
+  - **The cap:** an HTTPS download was held to 2.06 MB/s, so it applies to
+    tunnels too.
+  - **No way around it:** without the proxy, nothing got out.
+  - **An allowed name pointing inside:** with a test name allowed but
+    resolving to brain's address, the proxy refused it (HTTP and CONNECT).
+  - **The one miss, a sandbox limit:** plain HTTP to the archive, because the
+    sandbox's own upstream proxy only tunnels HTTPS. On the server Squid goes
+    out directly.
+- **intranet, 5 of 5.**
+  - **Pages:** homepage and Freedoom (28 MB) served.
+  - **Wikipedia:** a test ZIM made with Kiwix's own tools, served at
+    `/wiki/`.
+  - **Reading only:** POST refused, and kiwix-serve unreachable directly.
+- **Through chat, end to end.** Console chat through brain opened Firefox on
+  the desktop: the intranet homepage, then the offline Wikipedia's library.
+- **Bugs found there and fixed:**
+  - **Rule order.** The proxy resolved every requested name before refusing
+    it. That made refusals slow, and it was a way to send data out through
+    DNS (D41). Off-list names are now refused by name alone.
+  - **Two build bugs:** an empty Squid include, and a SIGPIPE under
+    `pipefail`.
+  - **kiwix-serve startup:** it gave up when its ZIM came after it started,
+    and it couldn't list the new volume (mode 0711).
+
 ### Changing what targets can reach
 
 Every allowed domain is a decision for PLAN.md's log: live Wikipedia,

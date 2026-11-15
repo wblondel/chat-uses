@@ -18,15 +18,20 @@ acl chat_allowed dstdomain -n "/etc/squid/chat-uses-allow.txt"
 acl chat_tls port 443
 acl chat_web port 80 443
 acl chat_connect method CONNECT
-# Anything that isn't the public internet, checked against the address the
-# request actually goes to (an allowed name resolving to a private address,
-# an address typed directly). Brain's feed on infranet is one of them (D37).
+# Anything that isn't the public internet, checked against the address an
+# allowed name resolves to, so even a listed name can't lead into infranet
+# (brain's feed, D37) or the host.
 acl chat_private dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/3
 acl chat_private dst ::/128 ::1/128 fc00::/7 fe80::/10 ff00::/8
 
+# Names not on the list are refused before anything else, by name alone:
+# Squid never even looks them up, so a target can't send data out encoded in
+# DNS queries for made-up names. Only allowed names get resolved, and then
+# their address is checked.
 http_access deny !chat_targets
 http_access deny !chat_web
 http_access deny chat_connect !chat_tls
+http_access deny !chat_allowed
 http_access deny chat_private
 http_access allow chat_allowed
 http_access deny all
@@ -41,9 +46,9 @@ delay_class 1 1
 delay_access 1 allow all
 delay_parameters 1 ${EGRESS_BYTES_PER_SECOND}/${EGRESS_BYTES_PER_SECOND}
 
-# Say nothing about the client or the proxy to the sites.
+# Say nothing about the client to the sites. (Via stays: HTTP requires it,
+# and it only names the proxy.)
 forwarded_for delete
-via off
 httpd_suppress_version_string on
 
 # One line per request, kept 14 days (logrotate rotates daily).

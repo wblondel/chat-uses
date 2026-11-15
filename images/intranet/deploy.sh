@@ -63,6 +63,8 @@ if ((!exists)); then
 		sleep 1
 	done
 fi
+# A new volume's root is 0711: kiwix-serve's own user must be able to list it.
+in_intranet chmod 0755 /srv/zim
 
 if [[ -n $ZIM_URL ]]; then
 	name=$(basename "$ZIM_URL")
