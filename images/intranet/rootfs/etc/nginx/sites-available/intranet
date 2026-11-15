@@ -1,0 +1,33 @@
+# chat-uses intranet (PLAN.md 7.2): the "internet" targets get. Static pages
+# and files, and the offline Wikipedia (kiwix-serve, on loopback only).
+# Reading only: anything but GET and HEAD is refused.
+
+server {
+	listen 80 default_server;
+	server_name _;
+	server_tokens off;
+	root /var/www/intranet;
+	index index.html;
+	client_max_body_size 1k;
+	access_log /var/log/nginx/intranet.log;
+
+	if ($request_method !~ ^(GET|HEAD)$) {
+		return 405;
+	}
+
+	location / {
+		try_files $uri $uri/ =404;
+	}
+
+	location /files/ {
+		autoindex on;
+		autoindex_exact_size off;
+	}
+
+	location /wiki/ {
+		proxy_pass http://127.0.0.1:8081;
+		proxy_set_header Host $host;
+		proxy_read_timeout 30s;
+		error_page 502 504 /wiki-missing.html;
+	}
+}

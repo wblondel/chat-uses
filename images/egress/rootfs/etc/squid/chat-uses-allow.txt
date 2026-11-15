@@ -1,0 +1,7 @@
+# Domains targets may reach through the egress proxy (PLAN.md 7.2). Exact
+# names: no wildcards, no subdomains. Adding one is a decision for PLAN.md's
+# log (section 15), with why it can't put unwanted pictures or files on stream.
+#
+# Debian packages, so chat can install software.
+deb.debian.org
+security.debian.org
