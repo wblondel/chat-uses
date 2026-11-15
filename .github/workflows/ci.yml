@@ -44,3 +44,27 @@ jobs:
           echo "compiled ${#files[@]} files"
       - name: Discord setup tests
         run: python3 -W error::ResourceWarning -m unittest discover -s infra/discord -v
+      - name: No invisible or bidi characters in the sources
+        run: python3 .github/no-invisible-chars.py
+
+  control:
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        working-directory: control
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/0.11.32/install.sh | sh
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+      - name: Dependencies (as locked)
+        run: uv sync --locked
+      - name: ruff
+        run: uv run ruff check && uv run ruff format --check
+      - name: pyright
+        run: uv run pyright
+      - name: Tests
+        run: uv run pytest -q
+      - name: Simulated chat (50 users for a minute)
+        run: uv run python -m chatuses.sim --users 50 --seconds 60
