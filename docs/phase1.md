@@ -83,7 +83,7 @@ It runs these steps in order (you can run any subset, e.g. `bootstrap.sh firewal
 
 | Step | Does |
 |---|---|
-| `packages` | Installs container-only Incus (`incus-base`, with `dnsmasq-base` for bridges and AppArmor), nftables, WireGuard tools, btrfs-progs, tcpdump, stress-ng, unattended-upgrades… |
+| `packages` | Adds the Zabbly Incus repository (`INCUS_SOURCE`, key pinned in `infra/host/zabbly.asc`), then installs container-only Incus (`incus-base`, `dnsmasq-base` for bridges, AppArmor), nftables, WireGuard tools, btrfs-progs, tcpdump, stress-ng, unattended-upgrades… |
 | `admin-user` | Creates `ADMIN_USER` (if set), copies root's keys, passwordless sudo, `incus-admin` group |
 | `ssh` | Writes `/etc/ssh/sshd_config.d/10-chat-uses.conf`, validates with `sshd -t`, rolls back on error, reloads |
 | `system` | Timezone, `/etc/sysctl.d/60-chat-uses.conf`, swap warning |
@@ -164,6 +164,27 @@ sudo infra/tests/net-isolation.sh
 - `systemctl restart nftables` is safe: the unit is overridden to only remove
   the chat-uses table on stop, not Incus's.
 
+### Incus comes from Zabbly
+
+By default (`INCUS_SOURCE="zabbly-stable"`) Incus is the latest release from
+[Zabbly's repository](https://github.com/zabbly/incus), built and signed by the
+Incus project lead. Debian 13's own Incus can't restore snapshots in the
+restricted `targets` project, and rewind depends on that (PLAN.md D19, D20).
+
+- **Updates install automatically**: `unattended-upgrades` also takes the Zabbly
+  channel (`/etc/apt/apt.conf.d/53chat-uses-zabbly`). A new Incus release arrives
+  about once a month and can change behaviour, so after one
+  (`grep incus /var/log/unattended-upgrades/unattended-upgrades.log`), re-run
+  `infra/tests/net-isolation.sh`.
+- **The signing key is pinned** in `infra/host/zabbly.asc`. CI checks it against
+  `ZABBLY_FINGERPRINT` in `bootstrap.sh` (published fingerprint
+  `4EFC 5906 96CB 15B8 7C73  A3AD 82CC 8797 C838 DCFD`). The key expires
+  **2030-08-17**. When Zabbly publishes a new one, verify it against their
+  README, replace the file and the fingerprint, and re-run `bootstrap.sh packages`.
+- **Other channels**: `zabbly-lts-7.0` (7.0 LTS; snapshot restore in `targets`
+  still fails with 7.0.2) or `debian` (Debian's 6.0 package). Going from Zabbly
+  back to Debian needs a manual downgrade, which the script explains.
+
 ## Recovery
 
 | Problem | Fix |
@@ -178,12 +199,15 @@ sudo infra/tests/net-isolation.sh
 
 Run in a simulated server: a fresh, minimal **Debian 13.7** root filesystem
 (debootstrap, so even `sudo` and `envsubst` were missing), inside an isolated
-network namespace with a veth as the public interface. Everything came from
-Debian's own repositories: Incus 6.0.4 (`6.0.4-2+deb13u12`), nftables 1.1.3,
-OpenSSH 10.0.
+network namespace with a veth as the public interface. Debian packages
+(nftables 1.1.3, OpenSSH 10.0, …) plus **Incus 7.6 from Zabbly's stable
+channel**, as installed by the `packages` step. An earlier round used Debian's
+own Incus 6.0.4; both pass everything below except snapshot restore.
 
 - **One full `bootstrap.sh` run with no step list**, packages included, then a
   second full run that changes nothing.
+- `unattended-upgrades --dry-run` lists `origin=pkgs.zabbly.com,label=incus-stable`
+  next to Debian's origins.
 - Our firewall table and Incus's tables coexist; containers get their addresses.
 - Isolation test: **24/24 pass**, with a real `sshd` listening on the host. With the
   firewall removed, **15 checks fail** (internet leak on the public interface,
@@ -196,22 +220,24 @@ OpenSSH 10.0.
   passwordless sudo.
 - `wg-add-peer.sh` and `server-check.sh` work with Debian's `mawk`.
 - A template with a typo stops its step before anything is applied.
-- shellcheck clean; CI runs on Ubuntu 26.04.
+- **Snapshot restore in the restricted `targets` project** (btrfs, container
+  running): works in about 1 second on Incus 7.6.
+- **CVE-2026-48751 replay**: a snapshot carrying a `raw.lxc` hook, moved into
+  `targets`, is refused on restore ("Use of low-level config `raw.lxc` … is
+  forbidden").
+- shellcheck clean; CI runs on Ubuntu 26.04 and checks the pinned Zabbly key.
 
 Bugs this run found and fixed: the script required `envsubst` before the step
 that installs it; a mistyped `WAN_IF` made it exit silently; Debian's `incus`
 package pulls in QEMU while `incus-base` skips the `dnsmasq-base` bridges need;
 and a failed template could hand Incus an empty config.
 
-**Known limitation: snapshot restore.** On Debian 13's Incus, `incus snapshot
-restore` is refused in the `targets` project ("Changing `volatile.*` … is
-forbidden"). The project blocks low-level options, and since the fix for
-CVE-2026-48751 a restore is checked against that rule, which also catches
-Incus's own `volatile.*` keys. Taking snapshots works. Two ways to restore were
-tested and work: lifting `restricted.containers.lowlevel` for the moment of the
-restore (about 1 second, container stays running), or copying a snapshot into a
-new container. The choice belongs to Phase 6 (snapshot manager); see
-PLAN.md D19.
+**Why Zabbly: snapshot restore.** With Debian's Incus 6.0.4 (and Debian's
+backported 7.0.2), `incus snapshot restore` is refused in the `targets` project
+("Changing `volatile.*` … is forbidden"). Since the CVE-2026-48751 fix, a restore
+is checked against the project's low-level rule, and that check also caught
+Incus's own `volatile.*` keys. Upstream fixed it in Incus 7.5 (lxc/incus PR #3994);
+Zabbly's stable channel has it. See PLAN.md D19 and D20.
 
 **Not tested there** (this sandbox's kernel or the lack of systemd prevents it),
 so watch these on the real server:

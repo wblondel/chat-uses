@@ -90,7 +90,7 @@ These are the defaults. Change them deliberately and log it in section 15.
 
 | # | Area | Decision | Why |
 |---|---|---|---|
-| D1 | Host OS | **Debian 13 (trixie)**, minimal | Stable, packages Incus (6.0 LTS; the Zabbly repo has newer releases if needed). |
+| D1 | Host OS | **Debian 13 (trixie)**, minimal; Incus from Zabbly's stable repository (D20) | Stable base; Debian's own Incus 6.0 can't restore snapshots in the restricted project. |
 | D2 | Isolation | **Incus** for everything: system containers for targets, broadcast, control plane and egress proxy. QEMU (TCG) runs *inside* an unprivileged container for non-Linux targets. **No Docker on the host** (its firewall rules break Incus bridges). | One tool, unprivileged by default, per-instance CPU pinning, quotas, network ACLs, projects with restrictions. |
 | D3 | Storage | Incus **btrfs** storage pool (loop-backed to start, ~200 GiB) | Instant copy-on-write snapshots and per-container disk quotas. |
 | D4 | Target interface | Every target exposes **VNC** (screen + input), **raw PCM audio over TCP**, and a **power/snapshot API** (Incus API for containers, QMP for QEMU). | The rest of the system never needs to know which OS is running. |
@@ -397,7 +397,7 @@ chat-uses/
 - **Lives:** a run starts with 3. Each rewind (voted or watchdog revive) costs 1. Some achievements grant +1. At 0 lives, the next death is permanent.
 - **Watchdog revive:** when the target is unhealthy (6.7), a **death vote** opens for 60 s: `!revive` (rewind to the last healthy snapshot, −1 life) vs `!rip` (end the run). Default with no votes: revive if lives remain.
 - **Backends:**
-  - Incus container: `incus snapshot restore` works on a running container (about 1 s on btrfs in the Phase 1 simulation). ⚠️ On Debian 13's Incus it is refused in the restricted `targets` project; see D19 for the two tested ways around it, to be chosen in Phase 6.
+  - Incus container: `incus snapshot restore` works on a running container, in the restricted `targets` project, in about 1 s on btrfs (Phase 1 simulation, Incus 7.6 from Zabbly; see D19, D20).
   - QEMU: QMP `snapshot-save` / `snapshot-load` jobs on qcow2 (includes RAM, so open windows come back). The guest pauses briefly; the overlay shows "💾 saving".
 - **Disk:** prune auto snapshots of dead runs after their Graveyard entry is written. Alert at 70 % pool usage.
 
@@ -818,6 +818,8 @@ Runbook: **`docs/phase1.md`**. Code is written and was tested in a simulated hos
 - Monthly golden image rebuild (security updates); new runs use the latest image.
 - Quarterly restore drill from backups.
 - Watch btrfs pool usage and prune snapshots of archived runs.
+- After each Incus release (Zabbly, about monthly, installed automatically), re-run `infra/tests/net-isolation.sh`.
+- Zabbly's signing key expires 2030-08-17: rotate `infra/host/zabbly.asc` and `ZABBLY_FINGERPRINT` before then.
 
 ---
 
@@ -899,4 +901,5 @@ Answer these and move the answers to the decision log:
 | 2026-10-12 | D16 | Incus HTTPS API stays off until Phase 4 (brain) | Nothing needs it yet; no listener means no exposure |
 | 2026-11-15 | D17 | Install `incus-base` + `dnsmasq-base` + `apparmor` instead of `incus` | Debian's `incus` pulls in QEMU/swtpm/virtiofsd for VMs this server can't run; bridges need dnsmasq and AppArmor confines containers, both only "Recommends" (found in the Debian 13 simulation) |
 | 2026-11-15 | D18 | CI runs on Ubuntu 26.04 LTS with `actions/checkout@v7` | Latest LTS runner; v7 runs on Node.js 24 (Node 20 deprecated) |
-| 2026-11-15 | D19 | **Open (Phase 6):** how to restore snapshots in the restricted `targets` project. Recommended: a small root-side helper that checks the snapshot's config has no low-level keys (`raw.*`, `security.privileged`…), lifts `restricted.containers.lowlevel` for the restore and blocks it again. Alternative: copy the snapshot into a new container and swap names (keeps the project untouched, but loses the snapshot history on the old instance) | Debian 13's Incus refuses restores there ("Changing `volatile.*` is forbidden"): since the CVE-2026-48751 fix, restore is checked against the low-level rule, which also catches Incus's own `volatile.*` keys. Both options tested in the simulation; never keep `lowlevel` allowed, since brain's certificate (Phase 4) is scoped to this project |
+| 2026-11-15 | D19 | ~~**Open (Phase 6):** how to restore snapshots in the restricted `targets` project~~ **Resolved by D20.** Original note: Recommended: a small root-side helper that checks the snapshot's config has no low-level keys (`raw.*`, `security.privileged`…), lifts `restricted.containers.lowlevel` for the restore and blocks it again. Alternative: copy the snapshot into a new container and swap names (keeps the project untouched, but loses the snapshot history on the old instance) | Debian 13's Incus refuses restores there ("Changing `volatile.*` is forbidden"): since the CVE-2026-48751 fix, restore is checked against the low-level rule, which also catches Incus's own `volatile.*` keys. Both options tested in the simulation; never keep `lowlevel` allowed, since brain's certificate (Phase 4) is scoped to this project |
+| 2026-11-15 | D20 | Incus from **Zabbly's stable channel** (`INCUS_SOURCE=zabbly-stable`), key pinned in the repo and checked in CI; `unattended-upgrades` takes its updates; re-run the isolation test after each Incus release | Upstream fixed the volatile-key restore refusal in Incus 7.5 (PR #3994). Tested on Incus 7.6: restore works in the restricted project, the CVE-2026-48751 poisoned-snapshot replay is still refused, bootstrap and isolation test pass. Debian's 6.0.4 and backported 7.0.2 still refuse restores. Cost: third-party repo, monthly feature releases |

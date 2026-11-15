@@ -29,10 +29,15 @@ PACKAGES=(
 	nftables wireguard-tools qrencode tcpdump
 	# Container-only Incus: the "incus" package adds QEMU for VMs, which this
 	# server can't run. Bridges need dnsmasq; AppArmor confines containers.
-	# Both are only "Recommends" of incus-base, and we skip recommends.
+	# Debian's incus-base only recommends both, and we skip recommends.
 	incus-base dnsmasq-base apparmor btrfs-progs
 	stress-ng
 )
+
+# Zabbly's signing key, pinned in infra/host/zabbly.asc. Published fingerprint:
+# https://github.com/zabbly/incus#repository-key (CI checks the file matches).
+ZABBLY_FINGERPRINT="4EFC590696CB15B87C73A3AD82CC8797C838DCFD"
+ZABBLY_KEYRING=/etc/apt/keyrings/zabbly.asc
 
 # --- steps -------------------------------------------------------------------
 
@@ -67,6 +72,10 @@ step_preflight() {
 	btrfs | dir | zfs | lvm) ;;
 	*) die "unsupported POOL_DRIVER '$POOL_DRIVER'" ;;
 	esac
+	case $INCUS_SOURCE in
+	zabbly-stable | zabbly-lts-7.0 | debian) ;;
+	*) die "INCUS_SOURCE must be zabbly-stable, zabbly-lts-7.0 or debian" ;;
+	esac
 
 	# CPU pinning must reference CPUs that exist, written as ranges/lists.
 	local ncpu var spec max
@@ -81,9 +90,51 @@ step_preflight() {
 	info "WAN interface: $WAN_IF, public IPv4: ${WG_ENDPOINT:-none found}, CPUs: $ncpu"
 }
 
+# Zabbly channel for INCUS_SOURCE, empty for Debian's own package.
+zabbly_channel() {
+	case $INCUS_SOURCE in
+	zabbly-stable) echo stable ;;
+	zabbly-lts-7.0) echo lts-7.0 ;;
+	esac
+}
+
+configure_incus_source() {
+	local channel sources file
+	channel=$(zabbly_channel)
+	sources=/etc/apt/sources.list.d/zabbly-incus-$channel.sources
+	# One Zabbly channel at a time.
+	for file in /etc/apt/sources.list.d/zabbly-incus-*.sources; do
+		[[ -e $file && $file != "$sources" ]] || continue
+		rm -f "$file"
+		info "removed $file"
+	done
+	if [[ -z $channel ]]; then
+		rm -f "$ZABBLY_KEYRING"
+		if dpkg-query -W -f='${Version}' incus-base 2>/dev/null | grep -q '^1:'; then
+			warn "Zabbly's Incus is still installed; going back to Debian's needs a manual downgrade (apt-get install --allow-downgrades incus-base=<version> incus-client=<version>)"
+		fi
+		info "Incus source: Debian"
+		return
+	fi
+	# Zabbly's packages carry an epoch ("1:"), so they outrank Debian's.
+	install -D -m 0644 "$CHAT_USES_HOST_DIR/zabbly.asc" "$ZABBLY_KEYRING"
+	write_file "$sources" 0644 <<EOF || true
+# Managed by chat-uses bootstrap (INCUS_SOURCE=$INCUS_SOURCE).
+Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/$channel
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: $ZABBLY_KEYRING
+EOF
+	info "Incus source: Zabbly $channel (key $ZABBLY_FINGERPRINT)"
+}
+
 step_packages() {
 	log "Installing packages"
 	export DEBIAN_FRONTEND=noninteractive
+	configure_incus_source
 	apt-get update -qq
 	apt-get install -y -qq --no-install-recommends "${PACKAGES[@]}" >/dev/null
 	info "installed: ${PACKAGES[*]}"
@@ -202,10 +253,25 @@ EOF
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 EOF
+	# Debian's default only takes Debian security updates; also take Incus
+	# from the Zabbly channel in use.
+	local channel zabbly_conf=/etc/apt/apt.conf.d/53chat-uses-zabbly
+	channel=$(zabbly_channel)
+	if [[ -n $channel ]]; then
+		write_file "$zabbly_conf" 0644 <<EOF || true
+// Managed by chat-uses bootstrap (INCUS_SOURCE=$INCUS_SOURCE). New Incus
+// releases install unattended: re-run infra/tests/net-isolation.sh after one.
+Unattended-Upgrade::Origins-Pattern {
+	"origin=pkgs.zabbly.com,label=incus-$channel";
+};
+EOF
+	else
+		rm -f "$zabbly_conf"
+	fi
 	if have_systemd; then
 		systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 	fi
-	info "security updates: daily; reboots: manual (check /var/run/reboot-required)"
+	info "security updates: daily${channel:+, plus Incus from Zabbly $channel}; reboots: manual (check /var/run/reboot-required)"
 }
 
 step_firewall() {
