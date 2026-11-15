@@ -36,6 +36,10 @@ class ChatMessage:
     display_name: str
     text: str
     ts: float  # seconds
+    # What the platform says about the author: owner, moderator, member
+    # (YouTube), regular (Discord), verified. Used by later phases' moderator
+    # commands; recorded with the user.
+    roles: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,7 @@ class Pipeline:
         parsed = parse(msg.text, self.grid)
         if parsed is None:
             return Outcome("chat")
-        self.store.seen_user(msg.user_id, msg.display_name, msg.ts)
+        self.store.seen_user(msg.user_id, msg.display_name, msg.ts, msg.roles)
         outcome = self._judge(msg, parsed)
         self.store.record_command(
             msg.ts, msg.user_id, msg.text, outcome.command, outcome.kind, outcome.reason

@@ -50,3 +50,27 @@ def test_reopening_keeps_data(tmp_path: Path) -> None:
         store.event(1.0, "first", {})
     with Store(path) as store:
         assert [e[2] for e in store.events()] == ["first"]
+
+
+def test_a_database_from_step_3_gets_the_roles_column(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """CREATE TABLE users (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, first_seen REAL NOT NULL,
+                                 last_seen REAL NOT NULL, banned_until REAL);
+           INSERT INTO users VALUES ('yt:a', 'Alice', 1.0, 1.0, NULL);"""
+    )
+    old.close()
+    with Store(path) as store:
+        store.seen_user("yt:a", "Alice", 2.0, frozenset({"moderator", "member"}))
+        assert store.db.execute("SELECT roles, first_seen FROM users").fetchone() == ("member moderator", 1.0)
+
+
+def test_settings(tmp_path: Path) -> None:
+    with Store(tmp_path / "brain.db") as store:
+        assert store.setting("youtube_video") is None
+        store.set_setting("youtube_video", "abc")
+        store.set_setting("youtube_video", "def")
+        assert store.setting("youtube_video") == "def"
+        store.set_setting("youtube_video", None)
+        assert store.setting("youtube_video") is None

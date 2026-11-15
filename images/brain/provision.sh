@@ -45,6 +45,8 @@ if ! id brain >/dev/null 2>&1; then
 	useradd --system --home-dir /var/lib/chat-brain --create-home --shell /usr/sbin/nologin brain
 fi
 install -d -m 0750 -o brain -g brain /var/lib/chat-brain
+# deploy.sh puts the Discord token and the Google API key here (root:brain 0640).
+install -d -m 0750 -o root -g brain /etc/chat-uses/secrets
 
 log "Timezone $CHAT_TIMEZONE"
 ln -sf "/usr/share/zoneinfo/$CHAT_TIMEZONE" /etc/localtime
@@ -55,7 +57,7 @@ cp -a "$STAGE/rootfs/." /
 find /usr/lib/chat-brain -name __pycache__ -prune -exec rm -rf {} +
 "$VENV/bin/python" -m compileall -q /usr/lib/chat-brain/chatuses
 # Smoke test: the code imports with the installed dependencies.
-PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'import chatuses.brain, chatuses.console'
+PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'import chatuses.brain, chatuses.console, chatuses.admin'
 
 log "Services"
 systemctl enable chat-brain.service >/dev/null 2>&1

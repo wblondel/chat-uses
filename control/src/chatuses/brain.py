@@ -1,6 +1,6 @@
 """brain: chat messages in, desktop input and overlay out (PLAN.md 5.7).
 
-    chat (console now; YouTube and Discord in step 4)
+    chat (YouTube, Discord, console)
       -> pipeline (moderation gate, parser, rate limits, text filter, store)
       -> executor -> VNC -> target desktop
       -> overlay feed -> layout page in bcast
@@ -11,7 +11,14 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     TARGET_HOST, VNC_PORT    the desktop chat controls
     BRAIN_BIND, BRAIN_PORT   the overlay feed and health check (0.0.0.0:8080)
     BRAIN_DB                 SQLite store (/var/lib/chat-brain/brain.db)
-    BRAIN_CONSOLE            console chat socket (/run/chat-brain/console.sock)
+    BRAIN_CONSOLE            console socket (/run/chat-brain/console.sock)
+    YOUTUBE_KEY_FILE         Google API key; YouTube chat is off without it
+    DISCORD_TOKEN_FILE       Discord bot token; Discord is off without it
+    DISCORD_GUILD_ID         ... or without the server's ID
+    DISCORD_CHANNEL          the channel commands are read from (control)
+
+Which YouTube video's chat to read is set with chat-brain-admin, and kept in
+the store across restarts.
 """
 
 import asyncio
@@ -23,10 +30,13 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
 from chatuses import console
+from chatuses.adapters.discord_bot import DiscordChat
+from chatuses.adapters.youtube import YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Meta, Move, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.identity import Platform, user_id
@@ -40,6 +50,7 @@ log = logging.getLogger("chatuses.brain")
 
 REFUSAL_GAP = 10.0  # seconds: at most one refusal per user on stream in this time
 BUSY = "the machine isn't taking input right now"
+PLATFORM_NAMES = {"youtube": "YouTube", "discord": "Discord"}
 
 
 @dataclass(frozen=True)
@@ -50,12 +61,19 @@ class Config:
     port: int = 8080
     db: str = "/var/lib/chat-brain/brain.db"
     console: str = "/run/chat-brain/console.sock"
+    youtube_key_file: str = "/etc/chat-uses/secrets/google-api-key"
+    discord_token_file: str = "/etc/chat-uses/secrets/discord-bot-token"
+    discord_guild_id: int | None = None
+    discord_channel: str = "control"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
         target = env.get("TARGET_HOST", "")
         if not target:
             raise SystemExit("TARGET_HOST is not set")
+        guild = env.get("DISCORD_GUILD_ID", "").strip()
+        if guild and not guild.isdigit():
+            raise SystemExit("DISCORD_GUILD_ID must be the server's numeric ID")
         return cls(
             target_host=target,
             vnc_port=int(env.get("VNC_PORT", cls.vnc_port)),
@@ -63,7 +81,21 @@ class Config:
             port=int(env.get("BRAIN_PORT", cls.port)),
             db=env.get("BRAIN_DB", cls.db),
             console=env.get("BRAIN_CONSOLE", cls.console),
+            youtube_key_file=env.get("YOUTUBE_KEY_FILE", cls.youtube_key_file),
+            discord_token_file=env.get("DISCORD_TOKEN_FILE", cls.discord_token_file),
+            discord_guild_id=int(guild) if guild else None,
+            discord_channel=env.get("DISCORD_CHANNEL", "") or cls.discord_channel,
         )
+
+
+def read_secret(path: str) -> str | None:
+    try:
+        return Path(path).read_text().strip() or None
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        log.error("can't read %s: %s", path, err)
+        return None
 
 
 class Brain:
@@ -75,6 +107,8 @@ class Brain:
         self._record = record_in(store)
         self._names: dict[int, str] = {}  # overlay line -> who, while its command runs
         self._last_refusal: dict[str, float] = {}
+        self.youtube: YouTubeChat | None = None
+        self.discord: DiscordChat | None = None
 
     def handle(self, msg: ChatMessage, platform: Platform) -> tuple[str, str | None]:
         """One chat message, start to finish. Returns its outcome and the reason chat sees."""
@@ -126,6 +160,86 @@ class Brain:
             case _:
                 pass
 
+    # --- chat adapters ------------------------------------------------------------
+
+    def _deliver(self, platform: Platform) -> Callable[[ChatMessage], None]:
+        def deliver(msg: ChatMessage) -> None:
+            self.handle(msg, platform)
+
+        return deliver
+
+    def start_adapters(self, config: Config) -> None:
+        """Start the chat adapters whose secrets are there; the others stay off."""
+        if key := read_secret(config.youtube_key_file):
+            self.youtube = YouTubeChat(key, self._deliver("yt"))
+            if video := self.store.setting("youtube_video"):
+                self.youtube.follow(video)
+            log.info(
+                "YouTube chat: %s", f"following {video}" if video else "set a video with chat-brain-admin"
+            )
+        else:
+            log.info("YouTube chat off: no API key in %s", config.youtube_key_file)
+        token = read_secret(config.discord_token_file)
+        if token and config.discord_guild_id:
+            self.discord = DiscordChat(
+                token, config.discord_guild_id, config.discord_channel, self._deliver("dc"), self.status_text
+            )
+            self.discord.start()
+        else:
+            log.info(
+                "Discord off: %s",
+                "no DISCORD_GUILD_ID" if token else f"no bot token in {config.discord_token_file}",
+            )
+
+    async def stop_adapters(self) -> None:
+        if self.youtube:
+            await self.youtube.close()
+        if self.discord:
+            await self.discord.close()
+
+    def adapters(self) -> dict[str, dict[str, Any]]:
+        return {
+            "youtube": self.youtube.status() if self.youtube else {"state": "off", "reason": "no API key"},
+            "discord": self.discord.status()
+            if self.discord
+            else {"state": "off", "reason": "not configured"},
+        }
+
+    def status_text(self) -> str:
+        """For people: Discord's /status and chat-brain-admin status."""
+        machine = "taking commands" if self.executor.online.is_set() else "not taking input"
+        lines = [f"Machine: {machine} ({self.executor.queue.qsize()} waiting)"]
+        for name, status in self.adapters().items():
+            detail = f" ({status['reason']})" if status.get("reason") else ""
+            video = f", video {status['video']}" if status.get("video") else ""
+            quota = (
+                f", {status['quota_used_today']} quota units today" if "quota_used_today" in status else ""
+            )
+            lines.append(f"{PLATFORM_NAMES[name]}: {status['state']}{video}{quota}{detail}")
+        lines.append(f"Overlay pages: {self.overlay.clients}")
+        return "\n".join(lines)
+
+    async def admin(self, words: list[str]) -> tuple[str, str]:
+        """Operator requests from chat-brain-admin (console socket: root only)."""
+        match words:
+            case ["status"]:
+                return "ok", self.status_text()
+            case ["youtube", target]:
+                if self.youtube is None:
+                    return "error", "no YouTube API key: see docs/phase4.md (step 4)"
+                if target == "off":
+                    self.youtube.follow(None)
+                    self.store.set_setting("youtube_video", None)
+                    return "ok", "YouTube chat: off"
+                video = video_id_from(target)
+                if video is None:
+                    return "error", "that's not a YouTube video ID or URL"
+                self.youtube.follow(video)
+                self.store.set_setting("youtube_video", video)
+                return "ok", f"YouTube chat: following {video} (chat-brain-admin status shows how it goes)"
+            case _:
+                return "error", "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off"
+
     async def console_message(self, name: str, text: str) -> tuple[str, str | None]:
         try:
             uid = user_id("console", name)
@@ -136,7 +250,12 @@ class Brain:
     def web_app(self) -> web.Application:
         async def health(_request: web.Request) -> web.Response:
             return web.json_response(
-                {"ok": True, "target": self.executor.online.is_set(), "overlay_pages": self.overlay.clients}
+                {
+                    "ok": True,
+                    "target": self.executor.online.is_set(),
+                    "overlay_pages": self.overlay.clients,
+                    "chat": self.adapters(),
+                }
             )
 
         app = web.Application()
@@ -149,8 +268,9 @@ class Brain:
         await runner.setup()
         await web.TCPSite(runner, config.bind, config.port).start()
         Path(config.console).parent.mkdir(parents=True, exist_ok=True)
-        console_server = await console.serve(Path(config.console), self.console_message)
+        console_server = await console.serve(Path(config.console), self.console_message, self.admin)
         executor = asyncio.create_task(self.executor.run())
+        self.start_adapters(config)
         log.info(
             "up: overlay feed on %s:%d, target %s:%d",
             config.bind,
@@ -163,6 +283,7 @@ class Brain:
         finally:
             log.info("stopping")
             await self.overlay.close_all()  # first: pages say "Controls offline", not "machine down"
+            await self.stop_adapters()
             executor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await executor

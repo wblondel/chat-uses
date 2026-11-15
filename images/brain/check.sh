@@ -2,9 +2,11 @@
 # Check brain end to end (PLAN.md, Phase 4).
 #
 # From the host: the service is up, its health check and overlay feed
-# answer (from the host and from bcast, which shows the feed on stream), and
-# a console chat command reaches the desktop: "!move H5" moves the target's
-# pointer to the middle of the screen, and the feed reports who moved it.
+# answer (from the host and from bcast, which shows the feed on stream), a
+# console chat command reaches the desktop ("!move H5" moves the target's
+# pointer to the middle of the screen, and the feed reports who moved it),
+# and the chat adapters' state: YouTube reading a video's chat, Discord
+# connected. An adapter without its secrets is reported, not failed.
 #
 # Usage:
 #   sudo images/brain/check.sh
@@ -93,6 +95,47 @@ if grep -q '"type": "pointer", "x": 750, "y": 450, "user": "check"' "$events"; t
 else
 	fail "no pointer event on the feed ($(grep -o '"state": "[a-z]*"' "$events" | tail -1))"
 fi
+
+log "Chat adapters"
+# Discord takes a few seconds to log in after brain starts.
+for _ in $(seq 1 20); do
+	status=$(health)
+	[[ $status != *'"state": "connecting"'* ]] && break
+	sleep 1
+done
+verdicts=$(python3 -c '
+import json, sys
+chat = json.loads(sys.argv[1] or "{}").get("chat", {})
+yt, dc = chat.get("youtube", {}), chat.get("discord", {})
+def say(kind, text): print(f"{kind}|{text}")
+state, reason, video = yt.get("state"), yt.get("reason") or "", yt.get("video")
+if state == "streaming":
+    say("PASS", f"YouTube chat: reading the chat of {video}")
+elif state in ("looking", "waiting", "reconnecting"):
+    say("INFO", f"YouTube chat: {state} ({reason or video})")
+elif state == "off" and reason:
+    say("INFO", "YouTube chat off: no API key (/etc/chat-uses/secrets/google-api-key on the host, then deploy.sh)")
+elif state == "off":
+    say("INFO", "YouTube chat: no video set (chat-brain-admin youtube VIDEO_ID_OR_URL)")
+elif state == "ended":
+    say("INFO", f"YouTube chat: {reason}")
+else:
+    say("FAIL", f"YouTube chat {state}: {reason}")
+state, reason, channel = dc.get("state"), dc.get("reason") or "no reason given", dc.get("channel")
+if state == "connected" and not dc.get("reason"):
+    say("PASS", f"Discord: connected, reading #{channel}")
+elif state == "off":
+    say("INFO", "Discord off: needs the bot token and DISCORD_GUILD_ID (docs/phase4.md, step 4)")
+else:
+    say("FAIL", f"Discord {state}: {reason}")
+' "$status")
+while IFS='|' read -r kind text; do
+	case $kind in
+	PASS) pass "$text" ;;
+	FAIL) fail "$text" ;;
+	*) info "$text" ;;
+	esac
+done <<<"$verdicts"
 
 log "Result: $PASS passed, $FAIL failed"
 ((FAIL == 0))

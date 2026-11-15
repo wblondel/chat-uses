@@ -14,7 +14,7 @@ is measured and written down.
 | 1 | Parser, grid, keymap, rate limits, identity, store, chat simulator, CI | done |
 | 2 | VNC injector and anarchy executor; `drive` tool to try them by hand | done |
 | 3 | brain container (image, deploy, check), overlay feed: the command log, grid and pointer names on stream; console chat | done |
-| 4 | YouTube and Discord adapters (needs your API credentials) | next |
+| 4 | YouTube and Discord chat adapters; `chat-brain-admin` | done; to try on the server with your credentials |
 
 ## Step 2: drive the desktop by hand
 
@@ -159,6 +159,95 @@ record them in PLAN.md.
   starts empty again (it lives in brain's memory; every command is also in
   the database).
 
+## Step 4: YouTube and Discord chat
+
+brain reads commands from YouTube live chat and from Discord's `#control`,
+next to console chat. Viewers get no replies in chat: the overlay is the
+answer (PLAN.md D8), with a red dot for YouTube and a blurple one for Discord.
+
+Do steps 1–2 once. Before you start, do docs/phase0.md sections 5 (Google
+Cloud: API key) and 6 (Discord: application, bot with the Message Content
+intent, invited to your server, `setup_server.py` run).
+
+### 1. Put the credentials on the server
+
+```bash
+sudo install -d -m 0700 /etc/chat-uses/secrets
+sudo sh -c 'umask 077; cat >/etc/chat-uses/secrets/google-api-key'      # paste the API key, Enter, Ctrl-D
+sudo sh -c 'umask 077; cat >/etc/chat-uses/secrets/discord-bot-token'   # paste the bot token, Enter, Ctrl-D
+```
+
+Then tell brain which Discord server it serves (Discord: Developer Mode on,
+right-click the server icon → Copy Server ID):
+
+```bash
+sudo tee -a /etc/chat-uses/brain.local.env <<<'DISCORD_GUILD_ID=<SERVER_ID>'
+cat /etc/chat-uses/brain.local.env    # TARGET_HOST=10.30.0.251 and DISCORD_GUILD_ID=...
+```
+
+Commands are read in `#control` only (`DISCORD_CHANNEL` to change it). The
+secrets go into brain only (`root:brain 0640`), never into an image. Never
+paste them in chat, including this one.
+
+### 2. Rebuild and redeploy brain
+
+```bash
+cd /opt/chat-uses && git pull
+sudo images/build.sh brain
+sudo images/brain/deploy.sh --replace
+sudo images/brain/check.sh
+```
+
+The check now ends with the chat adapters. Expect `Discord: connected,
+reading #control`, and for YouTube "no video set" (next step). If Discord
+says the token was refused or the Message Content intent is off, fix it in
+the Developer Portal, then `sudo images/brain/deploy.sh` (it pushes the
+token again and restarts brain).
+
+### 3. Each stream: point brain at it
+
+Start the unlisted stream as in Phase 3, copy its URL (YouTube Studio → the
+stream → share, or the watch page), then:
+
+```bash
+admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
+admin youtube https://youtube.com/live/VIDEO_ID
+admin status
+```
+
+`status` should say `YouTube: streaming, video VIDEO_ID` within a few
+seconds. Before the stream is live it says `waiting` and checks once a minute.
+brain keeps the video across restarts. When a stream ends, its chat ends
+too: set the next stream's video (`admin youtube off` stops reading).
+
+### 4. Play, and measure the latency
+
+In YouTube chat type `!type hello`; in Discord `#control`, `!enter`. Both
+appear in the overlay's log with their dot; `/status` in Discord answers only
+you. Then with a friend, one on each platform, control the desktop together:
+that's Phase 4's "done when".
+
+For the latency, time from sending a chat message (`!rclick H5` is easy to
+see) to the menu showing on the stream, a few times from each platform. Send
+me the numbers and I'll write them down in PLAN.md.
+
+### How the chat adapters behave
+
+- **YouTube** finds the chat with `videos.list` (1 quota unit), then keeps a
+  gRPC stream open (`liveChatMessages.streamList`, 5 units per connection);
+  YouTube pushes messages as they're posted. After a disconnect it resumes
+  where it stopped, so nothing is missed or read twice. brain counts its
+  units and stops at 9,000 of the 10,000 a day (the quota resets at midnight
+  Pacific); `admin status` shows the count.
+- **Commands older than 30 s are dropped**, on both the first connection
+  (YouTube sends recent history) and after an outage: a command executed
+  minutes late would surprise everyone.
+- **Discord** reconnects by itself. A refused token or a missing intent stop
+  it with the reason in `admin status` and in the check.
+- Roles come along with each message: YouTube owner, moderator, member and
+  verified badges; Discord's Owner, Moderator and Regular roles. They're
+  recorded now and used by Phase 5's moderator commands.
+
 ## How the overlay feed works
 
 - One way: brain → page, a websocket at `ws://10.20.0.11:8080/ws/overlay`.
@@ -194,6 +283,24 @@ record them in PLAN.md.
   read and thrown away. The injector never asks for the screen.
 
 ## What was tested before this landed
+
+Step 4:
+
+- 303 unit tests, among them the YouTube adapter against a fake gRPC chat
+  server built from Google's own `.proto`: chat streamed, resumed from the
+  page token after a normal close and after errors, history and backlog
+  older than 30 s dropped, duplicates dropped, Super Chats ignored, every
+  documented error (chat ended, key refused, bad request, rate limit),
+  `videos.list` answers (not live yet, no such video, ended, key refused,
+  quota exceeded, a Google server error retried), the quota guard. The Discord adapter's message rules
+  (server, channel, bots, roles) and its stops on a bad token or a missing
+  intent. brain: adapters off without their secrets, the video kept across
+  restarts, admin requests over the console socket, a database from step 3
+  upgraded.
+- In the sandbox: the brain image built with the new dependencies, deployed,
+  `chat-brain-admin` and the check's chat lines. Google and Discord can't be
+  reached from the sandbox, so the real connections are yours to try (steps
+  1–4 above).
 
 Step 3:
 
