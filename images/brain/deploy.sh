@@ -7,9 +7,11 @@
 #                                           (its database starts empty: nothing in it matters yet)
 #   --image ALIAS                           launch from another image (default chat-uses/brain)
 #
-# From the host it pushes /etc/chat-uses/brain.local.env (setting overrides,
-# see images/brain/rootfs/etc/chat-uses/brain.env.tmpl), or removes brain's
-# copy when the host has none.
+# From the host it pushes these, or removes brain's copy when the host has none:
+#   /etc/chat-uses/brain.local.env             setting overrides (see images/brain/rootfs/etc/chat-uses/brain.env.tmpl)
+#   /etc/chat-uses/secrets/discord-bot-token   the Discord bot token          (root:brain 0640 inside)
+#   /etc/chat-uses/secrets/google-api-key      the YouTube Data API key       (root:brain 0640 inside)
+# The image itself never contains secrets.
 
 set -euo pipefail
 
@@ -57,6 +59,18 @@ else
 	in_brain rm -f /etc/chat-uses/brain.local.env
 	info "no $CHAT_USES_ETC/brain.local.env: image defaults (target $TARGET_IP)"
 fi
+in_brain install -d -m 0750 -o root -g brain /etc/chat-uses/secrets # images before step 4 lack it
+for secret in discord-bot-token google-api-key; do
+	src=$CHAT_USES_ETC/secrets/$secret
+	if [[ -s $src ]]; then
+		incus file push "$src" "$NAME/etc/chat-uses/secrets/$secret" --project infra --mode 0640
+		in_brain chown root:brain "/etc/chat-uses/secrets/$secret"
+		info "pushed $secret"
+	else
+		in_brain rm -f "/etc/chat-uses/secrets/$secret"
+		info "no $src: that chat adapter stays off"
+	fi
+done
 
 log "Restarting brain"
 if in_brain test -d /run/systemd/system; then

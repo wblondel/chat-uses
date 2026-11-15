@@ -48,13 +48,23 @@ from the host):
 PYTHONPATH=src python3 -m chatuses.drive 10.30.0.251 '!key ctrl+alt+t' '!wait 3' '!type echo hi' '!enter'
 ```
 
+The chat adapters are in `adapters/`: `youtube.py` (live chat over gRPC,
+PLAN.md D39) and `discord_bot.py` (PLAN.md D40). `admin.py` is
+`chat-brain-admin`, the operator's side of the console socket (which video's
+chat to read, status).
+
 ## Dependencies
 
-Runtime: aiohttp (and what it pulls in), nothing else (PLAN.md D36). The
-brain image installs exactly what `uv.lock` says, hash-checked, from
-`requirements.txt`. After changing dependencies, regenerate it (CI checks):
+Runtime: aiohttp (PLAN.md D36), discord.py, and grpcio with protobuf for
+YouTube's chat stream. The brain image installs exactly what `uv.lock` says,
+hash-checked, from `requirements.txt`. After changing dependencies,
+regenerate it (CI checks):
 
 ```bash
 uv lock
 uv export --locked --no-dev --no-emit-project --no-header --format requirements.txt -o requirements.txt
 ```
+
+`src/chatuses/adapters/stream_list_pb2.py` (and `.pyi`) are generated from
+Google's `proto/stream_list.proto`: rerun `proto/generate.sh` after changing
+the proto or upgrading protobuf.

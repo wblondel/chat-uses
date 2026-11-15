@@ -8,14 +8,17 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import discord
 import pytest
 from aiohttp import WSMsgType, test_utils
 from fake_vnc import FakeVnc
 
 from chatuses import brain as brain_module
 from chatuses import console, executor
+from chatuses.adapters.youtube import YouTubeChat
 from chatuses.brain import Brain, Config
 from chatuses.executor import connect_to
+from chatuses.pipeline import ChatMessage
 from chatuses.store import Store
 
 
@@ -244,5 +247,170 @@ def test_brain_stops_at_once_even_with_a_page_connected(tmp_path: Path) -> None:
                 assert (msg.type, msg.data) == (WSMsgType.CLOSE, 1001)  # going away: the page shows offline
                 assert time.monotonic() - started < 1
         await server.stop()
+
+    run(test)
+
+
+# --- step 4: chat adapters, admin requests ---------------------------------------------
+
+
+def config_for(tmp_path: Path, **changes: Any) -> Config:
+    fields: dict[str, Any] = {
+        "target_host": "127.0.0.1",
+        "vnc_port": 1,
+        "bind": "127.0.0.1",
+        "port": 0,
+        "db": ":memory:",
+        "console": str(tmp_path / "console.sock"),
+        "youtube_key_file": str(tmp_path / "google-api-key"),
+        "discord_token_file": str(tmp_path / "discord-bot-token"),
+    }
+    fields.update(changes)
+    return Config(**fields)
+
+
+def test_adapters_stay_off_without_their_secrets(tmp_path: Path) -> None:
+    async def test() -> None:
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path, discord_guild_id=111))
+            assert brain.youtube is None and brain.discord is None
+            assert brain.adapters()["youtube"]["state"] == "off"
+            assert await brain.admin(["youtube", VIDEO]) == (
+                "error",
+                "no YouTube API key: see docs/phase4.md (step 4)",
+            )
+
+    run(test)
+
+
+VIDEO = "dQw4w9WgXcQ"
+
+
+def test_the_youtube_video_is_set_by_admin_and_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    followed: list[str | None] = []
+
+    def follow(_self: YouTubeChat, video: str | None) -> None:  # instead of reaching YouTube
+        followed.append(video)
+
+    monkeypatch.setattr(YouTubeChat, "follow", follow)
+    (tmp_path / "google-api-key").write_text("key\n")
+    db = str(tmp_path / "brain.db")
+
+    async def test() -> None:
+        with Store(db) as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path))
+            assert brain.youtube is not None and brain.youtube.api_key == "key"
+            assert followed == []  # nothing set yet
+            ok, text = await brain.admin(["youtube", f"https://youtu.be/{VIDEO}"])
+            assert ok == "ok" and VIDEO in text
+            assert await brain.admin(["youtube", "not a video"]) == (
+                "error",
+                "that's not a YouTube video ID or URL",
+            )
+            await brain.stop_adapters()
+        with Store(db) as store:  # brain restarts: it follows the same chat
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path))
+            assert followed == [VIDEO, VIDEO]
+            assert (await brain.admin(["youtube", "off"]))[0] == "ok"
+            assert followed[-1] is None and store.setting("youtube_video") is None
+            await brain.stop_adapters()
+
+    run(test)
+
+
+def test_discord_starts_with_a_token_and_a_server_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def start(_self: discord.Client, _token: str, *, reconnect: bool = True) -> None:
+        raise discord.LoginFailure("bad token")
+
+    monkeypatch.setattr(discord.Client, "start", start)
+    (tmp_path / "discord-bot-token").write_text("token\n")
+
+    async def test() -> None:
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path))  # no server ID: stays off
+            assert brain.discord is None
+            brain.start_adapters(config_for(tmp_path, discord_guild_id=111, discord_channel="#control"))
+            assert brain.discord is not None
+            async with asyncio.timeout(2):
+                while brain.discord.state != "stopped":
+                    await asyncio.sleep(0.01)
+            status = brain.adapters()["discord"]
+            assert (status["state"], status["channel"]) == ("stopped", "control")
+            assert "Discord: stopped (Discord refused the bot token)" in brain.status_text()
+            await brain.stop_adapters()
+
+    run(test)
+
+
+def test_chat_from_each_platform_is_marked_on_the_overlay() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.handle(ChatMessage("yt:UCa", "Ann", "!grid", time.time(), frozenset({"moderator"})), "yt")
+            brain.handle(ChatMessage("dc:42", "Dan", "!grid", time.time()), "dc")
+            assert [(await feed.next("log"))["platform"] for _ in range(2)] == ["yt", "dc"]
+            name, roles = brain.store.db.execute(
+                "SELECT display_name, roles FROM users WHERE id = 'yt:UCa'"
+            ).fetchone()
+            assert (name, roles) == ("Ann", "moderator")
+
+    run(test)
+
+
+def test_admin_over_the_console_socket(tmp_path: Path) -> None:
+    async def test() -> None:
+        stop = asyncio.Event()
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            config = config_for(tmp_path, port=free_port())
+            task = asyncio.create_task(brain.run(config, stop))
+            sock = Path(config.console)
+            async with asyncio.timeout(2):
+                while not sock.exists():
+                    await asyncio.sleep(0.01)
+            reply = await console.request(sock, {"admin": ["status"]})
+            assert reply["outcome"] == "ok" and "Machine: not taking input" in str(reply["reason"])
+            assert "YouTube: off (no API key)" in str(reply["reason"])
+            assert (await console.request(sock, {"admin": ["fly"]}))["outcome"] == "error"
+            assert (await console.request(sock, {"admin": "status"}))["outcome"] == "error"  # not a list
+            stop.set()
+            await task
+
+    run(test)
+
+
+def test_discord_settings_from_the_environment() -> None:
+    config = Config.from_env({"TARGET_HOST": "x", "DISCORD_GUILD_ID": "123", "DISCORD_CHANNEL": ""})
+    assert (config.discord_guild_id, config.discord_channel) == (123, "control")
+    assert Config.from_env({"TARGET_HOST": "x"}).discord_guild_id is None
+    with pytest.raises(SystemExit, match="numeric"):
+        Config.from_env({"TARGET_HOST": "x", "DISCORD_GUILD_ID": "my server"})
+
+
+def test_status_shows_the_last_error_while_not_streaming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def follow(_self: YouTubeChat, _video: str | None) -> None:  # instead of reaching YouTube
+        pass
+
+    monkeypatch.setattr(YouTubeChat, "follow", follow)
+    (tmp_path / "google-api-key").write_text("key")
+
+    async def test() -> None:
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path))
+            assert brain.youtube is not None
+            brain.youtube.state = "looking"
+            brain.youtube.counters.errors.append("videos.list: ClientConnectorDNSError")
+            assert (
+                "YouTube: looking, 0 quota units today (last error: videos.list: ClientConnectorDNSError)"
+                in brain.status_text()
+            )
+            brain.youtube.state = "streaming"
+            assert "YouTube: streaming, 0 quota units today\n" in brain.status_text()
 
     run(test)

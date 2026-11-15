@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL,
     first_seen REAL NOT NULL,
     last_seen REAL NOT NULL,
-    banned_until REAL
+    banned_until REAL,
+    roles TEXT NOT NULL DEFAULT ''   -- space-separated, as the platform last said
 );
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY,
@@ -35,6 +36,10 @@ CREATE TABLE IF NOT EXISTS events (
     ts REAL NOT NULL,
     type TEXT NOT NULL,
     payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,             -- e.g. youtube_video
+    value TEXT NOT NULL
 );
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
     BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
@@ -57,6 +62,13 @@ class Store:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring a database from an earlier version up to SCHEMA (columns added since)."""
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(users)")}
+        if "roles" not in columns:  # Phase 4 step 4
+            self.db.execute("ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self.db.close()
@@ -67,13 +79,29 @@ class Store:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    def seen_user(self, user_id: str, display_name: str, ts: float) -> None:
+    def seen_user(
+        self, user_id: str, display_name: str, ts: float, roles: frozenset[str] = frozenset()
+    ) -> None:
         self.db.execute(
-            """INSERT INTO users (id, display_name, first_seen, last_seen) VALUES (?, ?, ?, ?)
+            """INSERT INTO users (id, display_name, first_seen, last_seen, roles) VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name,
-                                             last_seen = excluded.last_seen""",
-            (user_id, display_name, ts, ts),
+                                             last_seen = excluded.last_seen, roles = excluded.roles""",
+            (user_id, display_name, ts, ts, " ".join(sorted(roles))),
         )
+
+    def setting(self, key: str) -> str | None:
+        row = self.db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str | None) -> None:
+        if value is None:
+            self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
+        else:
+            self.db.execute(
+                """INSERT INTO settings (key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (key, value),
+            )
 
     def record_command(
         self, ts: float, user_id: str, raw: str, parsed: object | None, outcome: str, reason: str | None

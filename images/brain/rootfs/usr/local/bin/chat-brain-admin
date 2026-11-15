@@ -1,0 +1,6 @@
+#!/bin/sh
+# What brain takes from its operator, e.g.
+#   chat-brain-admin status
+#   chat-brain-admin youtube https://youtube.com/live/VIDEO_ID
+#   chat-brain-admin youtube off
+PYTHONPATH=/usr/lib/chat-brain exec /opt/chat-brain/venv/bin/python -m chatuses.admin "$@"
