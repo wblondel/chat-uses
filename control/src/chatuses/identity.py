@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-Platform = Literal["yt", "dc"]
+Platform = Literal["yt", "dc", "console"]  # console: brain's own console chat (console.py)
 
 ACTIVE_WINDOW = 300.0  # seconds
 SETTLE_TIME = 120.0  # seconds present before a vote counts

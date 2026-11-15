@@ -17,8 +17,15 @@ Then the output side: `vnc.py`, an input-only VNC client that treats the
 server as hostile (PLAN.md 5.4), and `executor.py`, which runs accepted
 commands on it one at a time, refuses new ones when 16 are waiting, drops the
 waiting ones if the target goes away, and reconnects on its own. `drive.py`
-sends commands from the command line, for trying a desktop by hand; on the
-server, see `docs/phase4.md`.
+sends commands from the command line, for trying a desktop by hand.
+
+And the service itself, `brain.py` (`python -m chatuses.brain`): it wires the
+pipeline to the executor and to `overlay.py`, the one-way websocket feed that
+bcast's layout page shows (command log, grid flash, who moved the pointer),
+and listens for console chat (`console.py`, `chat-brain-say` in the image) on
+a Unix socket. `commands.describe` writes each command the way the overlay
+shows it; `names.py` makes display names safe to draw. It runs in the brain
+container (`images/brain/`); on the server, see `docs/phase4.md`.
 
 ## Develop
 
@@ -41,4 +48,13 @@ from the host):
 PYTHONPATH=src python3 -m chatuses.drive 10.30.0.251 '!key ctrl+alt+t' '!wait 3' '!type echo hi' '!enter'
 ```
 
-The runtime uses only Python's standard library so far.
+## Dependencies
+
+Runtime: aiohttp (and what it pulls in), nothing else (PLAN.md D36). The
+brain image installs exactly what `uv.lock` says, hash-checked, from
+`requirements.txt`. After changing dependencies, regenerate it (CI checks):
+
+```bash
+uv lock
+uv export --locked --no-dev --no-emit-project --no-header --format requirements.txt -o requirements.txt
+```

@@ -8,7 +8,8 @@
 # Usage:
 #   sudo images/build.sh <name> [--base IMAGE] [--alias NAME] [--proxy URL] [--keep]
 #
-#   <name>        debian-xfce (the target desktop) or bcast (the broadcaster)
+#   <name>        debian-xfce (the target desktop), bcast (the broadcaster) or
+#                 brain (the control plane)
 #   --base IMAGE  base image (default images:debian/13)
 #   --alias NAME  alias to publish (default chat-uses/<name>). The image also
 #                 gets a dated alias NAME/YYYYmmdd-HHMM, so older builds stay

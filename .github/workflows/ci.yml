@@ -60,6 +60,10 @@ jobs:
           echo "$HOME/.local/bin" >>"$GITHUB_PATH"
       - name: Dependencies (as locked)
         run: uv sync --locked
+      - name: requirements.txt (what the brain image installs) matches uv.lock
+        run: |
+          uv export --locked --no-dev --no-emit-project --no-header --format requirements.txt | diff - requirements.txt ||
+            { echo "::error::regenerate control/requirements.txt (see control/README.md)"; exit 1; }
       - name: ruff
         run: uv run ruff check && uv run ruff format --check
       - name: pyright
