@@ -39,3 +39,5 @@ typeCheckingMode = "strict"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Warnings fail the tests: a socket, transport or database left open is a bug.
+filterwarnings = ["error"]

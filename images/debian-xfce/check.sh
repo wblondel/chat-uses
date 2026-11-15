@@ -100,6 +100,15 @@ if [[ -n $desktop_up ]]; then
 else
 	fail "xfdesktop never started"
 fi
+# Without a UTF-8 locale in the session, what chat types with accents is dropped.
+# shellcheck disable=SC2016 # expanded inside the target
+session_lang=$(in_target sh -c 'tr "\0" "\n" </proc/$(pgrep -u chat -x xfce4-session | head -1)/environ' 2>/dev/null |
+	sed -n 's/^LANG=//p' || true)
+if [[ $session_lang == *.UTF-8 || $session_lang == *.utf8 ]]; then
+	pass "session locale is $session_lang"
+else
+	fail "session locale is ${session_lang:-not set}, not UTF-8: typed accents would be dropped"
+fi
 if in_target test -d /run/systemd/system 2>/dev/null; then
 	for unit in chat-xvnc chat-audio chat-audio-pcm chat-session; do
 		state=$(in_target systemctl is-active "$unit" 2>/dev/null || true)

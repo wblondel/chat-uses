@@ -18,7 +18,7 @@ Image alias **`chat-uses/debian-xfce`** (plus a dated alias per build):
 | Desktop | Debian 13, Xfce, **1600×900** at 120 DPI (shown 1:1 in the 1080p stream, PLAN.md D21), grayscale font smoothing, 32 px cursor, no compositor, no screen lock, branded wallpaper |
 | Display | `chat-xvnc.service`: TigerVNC is the X server (`:0`); VNC on port **5900**, no password, shared sessions |
 | Audio | `chat-audio.service`: PulseAudio with one sink, `stream`. `chat-audio-pcm.service` serves its sound as raw PCM (s16le, 48 kHz, stereo) on port **4712**, one way, in 20 ms chunks |
-| Session | `chat-session.service`: Xfce as user `chat`, restarted if chat logs out or kills it |
+| Session | `chat-session.service`: Xfce as user `chat`, restarted if chat logs out or kills it; UTF-8 locale from `/etc/default/locale`, so accented text typed by chat reaches programs |
 | User | `chat` (uid 1000), passwordless `sudo`: chat is root inside its container |
 | Network | apt, shell and Firefox all point at the egress proxy (`EGRESS_IP:PROXY_PORT`); Firefox's home page is the intranet and every other site is blocked by policy |
 | Apps | Firefox ESR, terminal, Mousepad, Thunar, nano, curl |
@@ -66,6 +66,7 @@ It launches a test target (`phase2-check`, `10.30.0.251`) and checks, from the
 host:
 
 - VNC answers, and the Xfce desktop starts (with timings from launch);
+- the session runs in a UTF-8 locale (otherwise accents typed by chat are dropped);
 - the four services are active;
 - the framebuffer is 1600×900 and actually shows a desktop (saved as a PNG);
 - the audio port streams 192 000 bytes/s, and a 440 Hz tone played inside the

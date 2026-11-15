@@ -89,8 +89,11 @@ class Report:
 def simulate(
     users: int, seconds: float, seed: int = 1, mix: dict[str, float] | None = None, store: Store | None = None
 ) -> Report:
+    if store is None:
+        with Store(":memory:") as own:
+            return simulate(users, seconds, seed, mix, own)
     rng = random.Random(seed)
-    pipeline = Pipeline(store or Store(":memory:"))
+    pipeline = Pipeline(store)
     mix = mix or DEFAULT_MIX
     kinds = rng.choices(list(mix), weights=list(mix.values()), k=users)
     queue: list[tuple[float, int]] = [(rng.uniform(0, BEHAVIOURS[k][1]), i) for i, k in enumerate(kinds)]
