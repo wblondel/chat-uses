@@ -40,7 +40,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 |---|---|---|---|
 | 0 | Groundwork (accounts, server check) | S | ◐ server checked (section 15); account steps in `docs/phase0.md` |
 | 1 | Host foundation (Debian, Incus, networks) | M | ✅ done on the server (section 15, P1) |
-| 2 | Golden target image: Debian 13 + Xfce | M | ◐ code ready, build on the server (`docs/phase2.md`) |
+| 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
 | 3 | Broadcast pipeline | M | ◐ code ready, run on the server (`docs/phase3.md`) |
 | 4 | Control plane MVP | L | ☐ |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
@@ -664,7 +664,7 @@ Runbook: **`docs/phase1.md`**. Done on the server on 2026-11-15 (section 15, P1)
 
 ### Phase 2 — Golden target image: Debian 13 + Xfce · M
 
-Runbook: **`docs/phase2.md`**. Code is written and was tested in the Debian 13 simulation; it still has to run on the real server.
+Runbook: **`docs/phase2.md`**. Done on the server on 2026-11-15 (section 15, P2).
 
 - [x] `images/debian-xfce/build.sh`: a short-lived builder container on `infranet` runs `provision.sh` and is published as `chat-uses/debian-xfce` (plus a dated alias per build, for rollback). The image has:
   - Xfce on TigerVNC (`Xtigervnc :0`, 1600×900, DPI 120, shared sessions, port 5900);
@@ -675,7 +675,7 @@ Runbook: **`docs/phase2.md`**. Code is written and was tested in the Debian 13 s
   - systemd units `chat-xvnc`, `chat-audio`, `chat-session`, all auto-restarting.
 - [x] `images/debian-xfce/check.sh` + `images/tools/vncshot.py`, `pcmprobe.py`: launch a test target and check VNC size, a real desktop on screen (saved as PNG), the audio stream and an audible test tone, the services, and snapshot/restore timings.
 - [x] ~~Decide whether `incus snapshot restore` needs a stop/start on a running container~~: it doesn't. Restore in the restricted project works on Incus 7.6 (D20).
-- [ ] Build and check on the server; record boot, snapshot and restore times in section 15.
+- [x] Build and check on the server; record boot, snapshot and restore times in section 15.
 
 **Done when:** from a test container on `chatnet` you can see the desktop via VNC and hear audio from port 4712; boot < 30 s and restore < 15 s (or the measured numbers are accepted in the decision log).
 
@@ -929,3 +929,4 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D29 | MediaMTX pinned (v1.21.3) and checked against its SHA-256 at build; API, metrics, pprof, playback, WebRTC, SRT and Media-over-QUIC off; RTMP and RTSP on loopback only; HLS on 8888 for the WireGuard preview. `images/build.sh <name>` builds any image; `host.env` gains `TARGET_IP` and `BRAIN_PORT` | Not packaged in Debian; smallest surface (MoQ is on by default). One build script for every image |
 | 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |
 | 2026-11-15 | P1 | Phase 1 on the server: `bootstrap.sh` built the host from a fresh Debian 13.7 install (Incus from Zabbly), admin user with key-only SSH and root SSH login turned off, WireGuard tunnel to the laptop; `net-isolation.sh` passes every check, again after a reboot | Phase 1 done. The first runs from a terminal failed the allowed paths: the test's own fake services died under `incus exec`'s pseudo-terminal (test fixed, firewall was right) |
+| 2026-11-15 | P2 | Phase 2 on the server: `images/debian-xfce/check.sh` 12/12. VNC 6.4 s and desktop 8.3 s after launch; the four services active under systemd; 1600×900 framebuffer; PCM at 192 016 B/s, test tone −11.7 dBFS; snapshot of the running desktop in 0.1 s, restored while running in 1.5 s with the change undone | Phase 2 done: boot < 30 s and restore < 15 s met with a wide margin |
