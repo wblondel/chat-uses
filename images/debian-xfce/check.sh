@@ -101,7 +101,7 @@ else
 	fail "xfdesktop never started"
 fi
 if in_target test -d /run/systemd/system 2>/dev/null; then
-	for unit in chat-xvnc chat-audio chat-session; do
+	for unit in chat-xvnc chat-audio chat-audio-pcm chat-session; do
 		state=$(in_target systemctl is-active "$unit" 2>/dev/null || true)
 		if [[ $state == active ]]; then pass "$unit.service active"; else fail "$unit.service is ${state:-unknown}"; fi
 	done

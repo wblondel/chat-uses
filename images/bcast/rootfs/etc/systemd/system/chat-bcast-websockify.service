@@ -1,0 +1,15 @@
+[Unit]
+Description=chat-uses broadcast: layout page and VNC relay on 127.0.0.1:6080
+PartOf=chat-bcast.target
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+Environment=HOME=/var/lib/chat-bcast DISPLAY=:99 PULSE_SERVER=unix:/run/chat-bcast-audio/native
+ExecStart=/usr/lib/chat-bcast/websockify
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=chat-bcast.target

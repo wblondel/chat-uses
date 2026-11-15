@@ -1,0 +1,88 @@
+#!/usr/bin/python3
+"""Pull the target's sound into the stream, never more than ~0.1 s late.
+
+The target serves raw PCM (s16le, 48 kHz, stereo) on TCP AUDIO_PORT; pacat
+plays it into the sink "target", which feeds "mix" (chat-bcast-scene mutes
+it). Reading never waits for pacat: whenever pacat is behind
+(a stall here, or a burst after a network hiccup), the excess is dropped.
+Queueing it instead would leave the sound late against the picture for the
+rest of the stream.
+
+A stall or disconnect ends the script; systemd restarts it, which also
+follows the target through reboots. The limiter (chat can't blast the
+stream) is in the encoder, on the whole mix.
+"""
+
+import fcntl
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+FRAME = 4  # bytes per sample frame: 2 channels x 16 bit
+CHUNK = 4096  # bytes per pipe write (1024 frames, 21 ms); <= PIPE_BUF, so atomic
+PIPE_BYTES = 16384  # pacat's queue, ~85 ms: anything beyond it is dropped
+TIMEOUT = 5  # seconds without data = the target is gone
+SCENE = "/var/lib/chat-bcast/control/scene.json"
+
+
+def apply_scene_mute():
+    """Mute the target unless the scene is "live", as chat-bcast-scene does.
+
+    PulseAudio forgets the mute when it restarts, and this script restarts
+    with it: the scene file stays the one source of truth.
+    """
+    try:
+        with open(SCENE) as f:
+            scene = json.load(f).get("scene", "live")
+    except (OSError, ValueError, AttributeError):
+        scene = "live"
+    subprocess.run(["pactl", "set-sink-mute", "target", "0" if scene == "live" else "1"], check=False)
+
+
+def main():
+    host, port = os.environ["TARGET_HOST"], int(os.environ["AUDIO_PORT"])
+    apply_scene_mute()
+    try:
+        sock = socket.create_connection((host, port), timeout=TIMEOUT)
+    except OSError as err:
+        sys.exit(f"cannot reach {host}:{port}: {err}")
+    player = subprocess.Popen(
+        ["pacat", "--playback", "--raw", "--format=s16le", "--rate=48000", "--channels=2",
+         "--latency-msec=40", "--device=target", "--client-name=chat-bcast-audio-in",
+         "--stream-name=target"],
+        stdin=subprocess.PIPE)
+    out = player.stdin.fileno()
+    fcntl.fcntl(out, fcntl.F_SETPIPE_SZ, PIPE_BYTES)
+    os.set_blocking(out, False)
+
+    pending = b""  # tail of the last read that wasn't a whole frame
+    dropped = 0  # bytes dropped since pacat last kept up
+    while True:
+        try:
+            data = sock.recv(65536)
+        except TimeoutError:
+            sys.exit(f"no sound data from {host}:{port} for {TIMEOUT} s")
+        if not data:
+            sys.exit(f"{host}:{port} closed the connection")
+        data = pending + data
+        whole = len(data) - len(data) % FRAME
+        pending = data[whole:]
+        for i in range(0, whole, CHUNK):
+            try:
+                os.write(out, data[i:min(i + CHUNK, whole)])
+            except BlockingIOError:
+                dropped += min(CHUNK, whole - i)
+                continue
+            except BrokenPipeError:
+                sys.exit("pacat exited")
+            if dropped:
+                print(f"{time.strftime('%H:%M:%S')} behind: dropped {dropped // 192} ms to catch up",
+                      file=sys.stderr, flush=True)
+                dropped = 0
+
+
+if __name__ == "__main__":
+    main()

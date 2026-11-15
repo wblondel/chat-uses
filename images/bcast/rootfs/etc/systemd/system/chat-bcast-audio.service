@@ -1,0 +1,16 @@
+[Unit]
+Description=chat-uses broadcast: PulseAudio mixer, sink "mix"
+PartOf=chat-bcast.target
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+Environment=HOME=/var/lib/chat-bcast DISPLAY=:99 PULSE_SERVER=unix:/run/chat-bcast-audio/native
+RuntimeDirectory=chat-bcast-audio
+ExecStart=/usr/bin/pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit -n -F /etc/chat-uses/bcast-audio.pa --log-target=stderr
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=chat-bcast.target

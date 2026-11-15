@@ -20,7 +20,14 @@ jobs:
           shellcheck --version | sed -n 2p
           python3 --version
       - name: shellcheck
-        run: shellcheck -x infra/host/*.sh infra/tests/*.sh images/*/*.sh
+        run: |
+          scripts=(infra/host/*.sh infra/tests/*.sh images/*.sh images/*/*.sh)
+          # Scripts inside the images have no extension: pick them by shebang.
+          while IFS= read -r -d '' f; do
+            head -n 1 "$f" | grep -qE '^#!(/usr/bin/env |/bin/|/usr/bin/)(ba)?sh$' && scripts+=("$f")
+          done < <(find images/*/rootfs -type f -print0)
+          shellcheck -x "${scripts[@]}"
+          echo "checked ${#scripts[@]} scripts"
       - name: Pinned Zabbly key matches the fingerprint in bootstrap.sh
         run: |
           want=$(sed -n 's/^ZABBLY_FINGERPRINT="\([0-9A-F]*\)"$/\1/p' infra/host/bootstrap.sh)
@@ -28,6 +35,12 @@ jobs:
           echo "expected ${want:-<missing>}, key file has ${got:-<none>}"
           test -n "$want" && test "$want" = "$got"
       - name: Python tools compile
-        run: python3 -m py_compile images/tools/*.py
+        run: |
+          files=(images/tools/*.py)
+          while IFS= read -r -d '' f; do
+            head -n 1 "$f" | grep -qE '^#!.*python3$' && files+=("$f")
+          done < <(find images/*/rootfs -type f -print0)
+          python3 -m py_compile "${files[@]}"
+          echo "compiled ${#files[@]} files"
       - name: Discord setup tests
         run: python3 -W error::ResourceWarning -m unittest discover -s infra/discord -v

@@ -1,0 +1,15 @@
+[Unit]
+Description=chat-uses broadcast: virtual 1920x1080 display :99
+PartOf=chat-bcast.target
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+Environment=HOME=/var/lib/chat-bcast DISPLAY=:99 PULSE_SERVER=unix:/run/chat-bcast-audio/native
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=chat-bcast.target

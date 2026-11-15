@@ -24,8 +24,8 @@ PACKAGES=(
 	xfce4 xfce4-terminal mousepad dbus-x11 at-spi2-core
 	# Display server: TigerVNC is the X server
 	tigervnc-standalone-server xfonts-base x11-xserver-utils
-	# Audio
-	pulseaudio pulseaudio-utils
+	# Audio (socat serves it to bcast)
+	pulseaudio pulseaudio-utils socat
 	# Apps and fonts
 	firefox-esr fonts-dejavu-core fonts-noto-color-emoji librsvg2-common
 	# Basics chat will want
@@ -72,7 +72,7 @@ cp /etc/xdg/xfce4/panel/default.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xf
 rsvg-convert -w 1600 -h 900 -o /usr/share/chat-uses/wallpaper.png /usr/share/chat-uses/wallpaper.svg
 
 log "Services"
-systemctl enable chat-xvnc.service chat-audio.service chat-session.service >/dev/null 2>&1
+systemctl enable chat-xvnc.service chat-audio.service chat-audio-pcm.service chat-session.service >/dev/null 2>&1
 
 log "Cleaning up"
 apt-get purge -y -q "${BUILD_ONLY[@]}" >/dev/null

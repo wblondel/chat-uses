@@ -1,7 +1,6 @@
 # chat-uses audio (chat-audio.service). Everything the desktop plays goes to
-# the null sink "stream"; its monitor is served as raw PCM (s16le, 48 kHz,
-# stereo) on TCP 4712 for bcast to pull. Record only: nothing can play in.
+# the null sink "stream"; chat-audio-pcm.service serves its monitor as raw PCM
+# (s16le, 48 kHz, stereo) on TCP 4712 for bcast to pull.
 load-module module-null-sink sink_name=stream rate=48000 channels=2 sink_properties=device.description=Stream
 set-default-sink stream
 load-module module-native-protocol-unix socket=/run/chat-audio/native auth-anonymous=1
-load-module module-simple-protocol-tcp source=stream.monitor record=true playback=false port=4712 listen=0.0.0.0 rate=48000 channels=2 format=s16le

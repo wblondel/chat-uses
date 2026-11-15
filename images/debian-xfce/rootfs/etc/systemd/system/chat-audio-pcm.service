@@ -1,0 +1,18 @@
+[Unit]
+Description=chat-uses audio out: sink "stream" as raw PCM on port 4712, for bcast
+Wants=chat-audio.service
+After=chat-audio.service
+
+[Service]
+User=chat
+Environment=HOME=/home/chat PULSE_SERVER=unix:/run/chat-audio/native
+# One parec per connection (bcast holds one), one-way (-U): nothing can be
+# sent into the target. --latency-msec=20 makes PulseAudio hand over the sound
+# every 20 ms; module-simple-protocol-tcp asks for 300 ms, which made it
+# arrive in 300 ms bursts and late against the picture.
+ExecStart=/usr/bin/socat -U TCP-LISTEN:4712,reuseaddr,fork,max-children=4 EXEC:"/usr/bin/parec --raw --format=s16le --rate=48000 --channels=2 --latency-msec=20 --device=stream.monitor"
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
