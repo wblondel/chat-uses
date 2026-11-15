@@ -64,7 +64,8 @@ Useful ones:
 | `VIDEO_BITRATE` | `7000k` | YouTube 1080p30: 4–10 Mbps |
 | `X264_PRESET` | `veryfast` | `faster`/`fast` look better and cost more CPU |
 | `AUDIO_LIMIT` | `0.8` | Limiter ceiling on the whole mix |
-| `AUDIO_DELAY` | `0ms` | Shifts the sound against the picture; `check.sh` tells you how much |
+| `AUDIO_BUFFER_MS` | `120` | Sound held before it plays, so a busy desktop's bursty sound doesn't cut (PLAN.md D31). Change `AUDIO_DELAY` by as much |
+| `AUDIO_DELAY` | `-100ms` | Shifts the sound against the picture; the default compensates the buffer. `check.sh` tells you how much to change it |
 | `FORWARD_URL` | empty | Send the stream here instead of YouTube (dry run) |
 | `CHROMIUM_FLAGS` | empty | e.g. `--no-sandbox` if Chromium's sandbox can't start |
 
@@ -197,8 +198,11 @@ To stop sending to YouTube, delete the key file on the host and run
 ## Operating it
 
 - **Logs:** `sudo incus exec bcast --project infra -- journalctl -u 'chat-bcast-*' -f`.
-  The encoder logs its progress every 30 s; the sound relay logs each time it
-  had to drop sound to catch up.
+  The encoder logs its progress every 30 s. The sound relay logs every
+  `cut:` (the desktop's sound came later than the buffer covers, played as
+  silence) and every `behind:` (bcast itself fell behind and dropped sound to
+  catch up). A few a day is fine; many `cut:` lines mean the desktop is
+  starved, and a bigger `AUDIO_BUFFER_MS` would cover it.
 - **Restart everything:** `sudo incus exec bcast --project infra -- systemctl restart chat-bcast.target`.
   Stop a single service the same way; it stays stopped until you start it again.
 - **Stream down:** check `chat-bcast-forwarder` (YouTube side), then the
@@ -246,13 +250,19 @@ fresh bcast. Results:
 - after a short hiccup (found on the server: a few 2–8 ms clicks when a
   sound started), the relay now catches up in one go to a low backlog
   instead of staying nearly full, so later sounds play without drops;
+- busy desktop (found on the server: small cuts with the desktop at its CPU
+  cap), reproduced by pausing the desktop's recorder while a tone plays:
+  with the old 40 ms buffer, 7 gaps in 10 s for 60 ms pauses and 18 for
+  100 ms pauses; with the relay's 120 ms jitter buffer, none up to 100 ms
+  pauses, and longer ones lose only what's beyond the buffer (each logged).
+  Sync with the default compensation: −23 to +1 ms;
 - encoder frozen: the watchdog restarted it after 12 s;
 - BRB scene: full-frame cover with custom text, the target's tone gone from
   the stream (−inf dB), still muted after a PulseAudio restart, and back at
   −10 dB on `live`;
 - forwarder dry run: H.264 + AAC out of the forwarder, sound included.
 
-Bugs found and fixed on the way (PLAN.md D23–D29):
+Bugs found and fixed on the way (PLAN.md D23–D31):
 
 - **The forwarder silently dropped all sound.** Over RTSP, MediaMTX's AAC
   packets carry no keyframe flag, and ffmpeg's stream copy waits for one.
