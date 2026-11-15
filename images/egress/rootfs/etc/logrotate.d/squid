@@ -1,0 +1,13 @@
+# chat-uses: one file per day, 14 days kept (PLAN.md 7.2).
+/var/log/squid/*.log {
+	daily
+	rotate 14
+	compress
+	delaycompress
+	missingok
+	nocreate
+	sharedscripts
+	postrotate
+		test ! -x /usr/sbin/squid || /usr/sbin/squid -k rotate
+	endscript
+}

@@ -15,6 +15,7 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 | 2 — Target image | [docs/phase2.md](docs/phase2.md) | `images/build.sh debian-xfce`, `images/debian-xfce/check.sh` |
 | 3 — Broadcast pipeline | [docs/phase3.md](docs/phase3.md) | `images/build.sh bcast`, `images/bcast/deploy.sh`, `images/bcast/check.sh` |
 | 4 — Control plane | [docs/phase4.md](docs/phase4.md) | `control/` (`uv run pytest`), `images/build.sh brain`, `images/brain/deploy.sh`, `images/brain/check.sh`, `chat-brain-say`, `chat-brain-admin` |
+| 5 — Safety layer | [docs/phase5.md](docs/phase5.md) | `images/build.sh egress`, `images/build.sh intranet`, their `deploy.sh` and `check.sh` |
 
 ## Layout
 
@@ -24,8 +25,8 @@ infra/incus/     networks, projects and profiles as YAML
 infra/tests/     isolation tests
 infra/discord/   Discord server setup (stdlib Python) and its tests
 images/          images built by images/build.sh: the target (debian-xfce), the
-                 broadcaster (bcast) and the control plane (brain); probes for VNC,
-                 audio and the overlay feed
+                 broadcaster (bcast), the control plane (brain), the egress proxy
+                 and the intranet; probes for VNC, audio and the overlay feed
 overlay/         the stream layout page (served by bcast)
 control/         the control plane ("brain", Python): chat commands in, desktop input out
 docs/            runbooks

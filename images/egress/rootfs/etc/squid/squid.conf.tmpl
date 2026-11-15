@@ -1,0 +1,58 @@
+# chat-uses egress proxy (PLAN.md 7.2, D41): the only way from a target to the
+# internet. Rendered at image build from host.env; edit the template in
+# images/egress/rootfs/etc/squid/, not this file.
+#
+# A target may fetch from the domains in chat-uses-allow.txt (HTTP, or HTTPS
+# through CONNECT to port 443), nothing else. Each domain added there is a
+# decision for PLAN.md's log: Wikipedia, Commons or GitHub would put
+# arbitrary pictures and files on stream.
+
+http_port ${PROXY_PORT}
+visible_hostname egress
+
+# Our own ACL names: Squid predefines some (CONNECT, to_localhost) and
+# refuses to redefine them.
+acl chat_targets src ${CHATNET_SUBNET}
+# -n: match names as written, never by reverse lookup of an IP address.
+acl chat_allowed dstdomain -n "/etc/squid/chat-uses-allow.txt"
+acl chat_tls port 443
+acl chat_web port 80 443
+acl chat_connect method CONNECT
+# Anything that isn't the public internet, checked against the address the
+# request actually goes to (an allowed name resolving to a private address,
+# an address typed directly). Brain's feed on infranet is one of them (D37).
+acl chat_private dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/3
+acl chat_private dst ::/128 ::1/128 fc00::/7 fe80::/10 ff00::/8
+
+http_access deny !chat_targets
+http_access deny !chat_web
+http_access deny chat_connect !chat_tls
+http_access deny chat_private
+http_access allow chat_allowed
+http_access deny all
+
+# Nothing is cached: chat can't poison a cache it doesn't have.
+cache deny all
+cache_mem 8 MB
+
+# Bandwidth all targets share (EGRESS_BYTES_PER_SECOND, PLAN.md 7.2).
+delay_pools 1
+delay_class 1 1
+delay_access 1 allow all
+delay_parameters 1 ${EGRESS_BYTES_PER_SECOND}/${EGRESS_BYTES_PER_SECOND}
+
+# Say nothing about the client or the proxy to the sites.
+forwarded_for delete
+via off
+httpd_suppress_version_string on
+
+# One line per request, kept 14 days (logrotate rotates daily).
+access_log daemon:/var/log/squid/access.log squid
+logfile_rotate 0
+cache_log /var/log/squid/cache.log
+
+coredump_dir /var/spool/squid
+shutdown_lifetime 3 seconds
+
+# Local additions (none by default).
+include /etc/squid/conf.d/*.conf

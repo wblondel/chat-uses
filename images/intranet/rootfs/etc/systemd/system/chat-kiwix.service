@@ -1,0 +1,13 @@
+[Unit]
+Description=chat-uses intranet: offline Wikipedia (kiwix-serve on 127.0.0.1:8081, behind nginx at /wiki/)
+After=network.target
+
+[Service]
+User=kiwix
+ExecStart=/usr/lib/chat-intranet/kiwix
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

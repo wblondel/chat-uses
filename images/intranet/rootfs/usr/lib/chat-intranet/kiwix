@@ -1,0 +1,12 @@
+#!/bin/bash
+# Serve every ZIM in /srv/zim at /wiki/ on loopback (nginx faces the
+# targets). With none yet (images/intranet/deploy.sh --zim adds one), wait.
+set -eu
+shopt -s nullglob
+zims=(/srv/zim/*.zim)
+if ((${#zims[@]} == 0)); then
+	echo "no ZIM in /srv/zim yet: images/intranet/deploy.sh --zim URL adds one"
+	exec sleep infinity
+fi
+# --blockexternal: links out of the ZIM lead nowhere (there's no internet anyway).
+exec kiwix-serve --address 127.0.0.1 --port 8081 --urlRootLocation /wiki --blockexternal "${zims[@]}"

@@ -4,7 +4,9 @@
 # Launches throwaway containers, probes what a chat-controlled target can
 # reach, and deletes them again. Every "blocked" check aims at a port that is
 # really listening, so a pass means the firewall dropped it, not that nothing
-# was there. Because chatnet has no NAT, a leaked packet to the internet would
+# was there. If the real egress and intranet containers (Phase 5) hold the
+# addresses the test needs, they're stopped for the test and started again
+# after it. Because chatnet has no NAT, a leaked packet to the internet would
 # never get a reply, so the internet checks also watch the public interface
 # for any packet coming from a target address.
 #
@@ -59,16 +61,35 @@ FAIL=0
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; PASS=$((PASS + 1)); }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=$((FAIL + 1)); }
 
+PAUSED=() # real infra containers stopped for the test
+
 cleanup() {
-	((KEEP)) && { info "kept: $TARGET (targets), $EGRESS, $INTRANET (infra)"; return; }
+	if ((KEEP)); then
+		info "kept: $TARGET (targets), $EGRESS, $INTRANET (infra)"
+		((${#PAUSED[@]})) && warn "still stopped: ${PAUSED[*]} (start them when done: incus start NAME --project infra)"
+		return
+	fi
 	incus delete --force "$TARGET" --project targets >/dev/null 2>&1 || true
 	incus delete --force "$EGRESS" --project infra >/dev/null 2>&1 || true
 	incus delete --force "$INTRANET" --project infra >/dev/null 2>&1 || true
+	for name in "${PAUSED[@]}"; do
+		if incus start "$name" --project infra >/dev/null 2>&1; then info "started $name again"; else warn "could not start $name"; fi
+	done
 }
 trap cleanup EXIT
 
 ip_in_use() {
 	incus list --all-projects --format csv -c 4 | grep -qE "(^|[^0-9.])${1//./\\.} \("
+}
+
+# The real egress or intranet at its own address: stop it for the test.
+pause_real() {
+	local name=$1 ip=$2
+	[[ $(incus list "$name" --project infra --format csv -c s 2>/dev/null) == RUNNING ]] || return 0
+	incus list "$name" --project infra --format csv -c 4 | grep -qF "$ip (" || return 0
+	info "stopping $name for the test (it holds $ip; started again afterwards)"
+	incus stop "$name" --project infra --timeout 30 >/dev/null 2>&1 || incus stop "$name" --project infra --force
+	PAUSED+=("$name")
 }
 
 wait_for_ip() {
@@ -159,6 +180,8 @@ launch() {
 # --- setup ---------------------------------------------------------------------
 
 log "Preparing test containers (image $IMAGE)"
+pause_real egress "$EGRESS_IP"
+pause_real intranet "$INTRANET_IP"
 for ip in "$EGRESS_IP" "$INTRANET_IP" "$TEST_TARGET_IP"; do
 	! ip_in_use "$ip" || die "$ip is already used by an instance; this test needs it free (stop it or change the config)"
 done
