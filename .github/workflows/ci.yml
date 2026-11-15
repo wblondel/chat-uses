@@ -9,9 +9,16 @@ permissions:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install shellcheck if the image lacks it
+        run: command -v shellcheck || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+      - name: Versions
+        run: |
+          grep PRETTY_NAME /etc/os-release
+          shellcheck --version | sed -n 2p
+          python3 --version
       - name: shellcheck
         run: shellcheck -x infra/host/*.sh infra/tests/*.sh
       - name: Discord setup tests

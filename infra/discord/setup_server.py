@@ -166,7 +166,8 @@ class Discord:
                     raw = resp.read()
                     return json.loads(raw) if raw else None
             except urllib.error.HTTPError as err:
-                payload = err.read().decode(errors="replace")
+                with err:  # the error wraps an open response; close it
+                    payload = err.read().decode(errors="replace")
                 if err.code == 429:
                     try:
                         wait = float(json.loads(payload).get("retry_after", 1))
