@@ -4,9 +4,12 @@ version = "0.1.0"
 description = "chat-uses control plane (brain): chat commands in, desktop input out"
 readme = "README.md"
 requires-python = ">=3.13"
-# Runtime: standard library only so far. The web server (overlay websocket,
-# admin API) and the YouTube/Discord clients arrive with their own steps.
-dependencies = []
+# Runtime: aiohttp for the overlay feed (and later the admin API; discord.py
+# builds on it too, PLAN.md D36). The brain image installs requirements.txt,
+# exported from uv.lock with hashes (see README.md).
+dependencies = [
+    "aiohttp>=3.14",
+]
 
 [dependency-groups]
 dev = [

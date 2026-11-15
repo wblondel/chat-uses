@@ -37,6 +37,7 @@ class Job:
     user_id: str
     command: InputCommand
     accepted_at: float = field(default_factory=time.monotonic)
+    ref: int = 0  # the caller's, e.g. the overlay line showing this command
 
 
 # Called once per job with its result and the seconds from acceptance to the
@@ -45,6 +46,10 @@ Report = Callable[[Job, JobResult, float], None]
 
 
 def ignore(_job: Job, _result: JobResult, _seconds: float) -> None:
+    pass
+
+
+def no_status(_online: bool) -> None:
     pass
 
 
@@ -73,13 +78,19 @@ class Executor:
         grid: Grid | None = None,
         max_pending: int = 16,
         report: Report = ignore,
+        on_status: Callable[[bool], None] = no_status,
     ) -> None:
         self._connect = connect
         self.grid = grid or Grid()
         self.report = report
+        self.on_status = on_status  # called with True when the target's input is up, False when it goes
         self.queue: asyncio.Queue[Job] = asyncio.Queue(max_pending)
         self.online = asyncio.Event()
         self.vnc: VncInput | None = None
+
+    def can_take(self) -> bool:
+        """Would submit() accept a job right now? (Nothing changes before the next await.)"""
+        return self.online.is_set() and not self.queue.full()
 
     def submit(self, job: Job) -> bool:
         """Queue a command; False if the target is offline or the queue is full."""
@@ -97,6 +108,7 @@ class Executor:
             vnc = await self._reconnect()
             self.vnc = vnc
             self.online.set()
+            self._status(True)
             try:
                 await self._serve(vnc)
             finally:
@@ -137,9 +149,17 @@ class Executor:
 
     def _offline(self) -> None:
         """Drop what was waiting: replaying it on a restarted target would be wrong."""
-        self.online.clear()
+        if self.online.is_set():
+            self.online.clear()
+            self._status(False)
         while not self.queue.empty():
             self._finish(self.queue.get_nowait(), "offline")
+
+    def _status(self, online: bool) -> None:
+        try:
+            self.on_status(online)
+        except Exception:
+            log.exception("reporting the executor's status failed")
 
     def _finish(self, job: Job, result: JobResult) -> None:
         try:

@@ -42,7 +42,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 1 | Host foundation (Debian, Incus, networks) | M | ✅ done on the server (section 15, P1) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
 | 3 | Broadcast pipeline | M | ◐ pipeline and 1 h YouTube stream done on the server (section 15, P3); 6 h with the target at its CPU cap left |
-| 4 | Control plane MVP | L | ◐ core and desktop control done (`control/`: parser, grid, rate limits, store, simulator, VNC injector, executor; runbook `docs/phase4.md`); brain container and overlay link next, then chat adapters |
+| 4 | Control plane MVP | L | ◐ brain runs in its container: parser, rate limits, store, VNC injector and executor, overlay feed (log, grid, pointer names), console chat (runbook `docs/phase4.md`); YouTube and Discord adapters next |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
 | 6 | Governance and time travel | L | ☐ |
 | 7 | Closed beta → soft launch | M | ☐ |
@@ -94,7 +94,7 @@ These are the defaults. Change them deliberately and log it in section 15.
 | D2 | Isolation | **Incus** for everything: system containers for targets, broadcast, control plane and egress proxy. QEMU (TCG) runs *inside* an unprivileged container for non-Linux targets. **No Docker on the host** (its firewall rules break Incus bridges). | One tool, unprivileged by default, per-instance CPU pinning, quotas, network ACLs, projects with restrictions. |
 | D3 | Storage | Incus **btrfs** storage pool (loop-backed to start, ~200 GiB) | Instant copy-on-write snapshots and per-container disk quotas. |
 | D4 | Target interface | Every target exposes **VNC** (screen + input), **raw PCM audio over TCP**, and a **power/snapshot API** (Incus API for containers, QMP for QEMU). | The rest of the system never needs to know which OS is running. |
-| D5 | Control plane | **Python 3.13, asyncio, one process ("brain")** + SQLite. Libraries: `discord.py`, `grpcio` (YouTube chat stream), a VNC client (`asyncvnc` or `vncdotool` — evaluate; a minimal RFB client is a fallback), `qemu.qmp`, `httpx` (Incus REST), `pytesseract`, FastAPI/uvicorn, `pydantic`. | Best library coverage for this mix; one process is easiest to debug. Split into services only if needed. |
+| D5 | Control plane | **Python 3.13, asyncio, one process ("brain")** + SQLite. Libraries: `discord.py`, `grpcio` (YouTube chat stream), a VNC client (`asyncvnc` or `vncdotool` — evaluate; a minimal RFB client is a fallback), `qemu.qmp`, `httpx` (Incus REST), `pytesseract`, ~~FastAPI/uvicorn, `pydantic`~~ aiohttp (D36). | Best library coverage for this mix; one process is easiest to debug. Split into services only if needed. |
 | D6 | Overlay | **One web page** (Vite + TypeScript) containing noVNC (view-only) and the HUD, fed by a websocket from brain. | The whole stream layout is HTML; easy to iterate and theme. |
 | D7 | Broadcast | **Xvfb + Chromium kiosk + ffmpeg (x264) → MediaMTX → forwarder to YouTube (RTMPS)**. 1080p30, ~6–8 Mbps CBR (D21). | Lighter than headless OBS; MediaMTX decouples encoding from the YouTube connection and also feeds clips/previews. |
 | D8 | YouTube chat | **Official `liveChatMessages.streamList`** (gRPC server-push). Fallback: `chat-downloader`. Feedback goes on the overlay, **not** as chat replies. | Low latency, official, no polling. Chat replies cost quota and spam chat. |
@@ -116,7 +116,7 @@ These are the defaults. Change them deliberately and log it in section 15.
   (streamList)  │    adapters → moderation → parser       QMP 4444 (QEMU targets only) ─────► (project:      │
  Discord ───────┼─►  → rate limits → filter → referee     Incus API (restricted cert) ──────►  targets)     │
                 │    → executor → audit log                                                      │  │        │
-                │    FastAPI: overlay websocket,                                                 │  │        │
+                │    aiohttp: overlay websocket,                                                 │  │        │
                 │    admin API                                 PCM audio 4712 ◄──────────────────┘  │        │
                 │         │ ws                                                                      │        │
                 │         ▼                                    proxy 3128 ◄─────────────────────────┘        │
@@ -167,6 +167,7 @@ Traffic between them is **routed through the host**, so every packet crosses the
 | bcast | internet | 443/tcp | YouTube RTMPS ingest |
 | brain | internet | 443/tcp | Discord gateway, YouTube API |
 | admin laptop (WireGuard) | brain | 8080/tcp | Admin dashboard, previews |
+| bcast | brain | 8080/tcp | Overlay feed for the layout page (D37). Same bridge, so not filtered by the host: everything on `infranet` can reach it |
 | internet | host | 443/tcp | Public static site (Caddy) |
 | internet | host | 22/tcp, 51820/udp | SSH (keys only), WireGuard |
 
@@ -249,7 +250,7 @@ control/src/chatuses/
   game/          runs.py, lives.py, achievements.py, points.py
   watchdog.py
   snapshots.py
-  api.py         FastAPI: /layout, /ws/overlay, admin endpoints, /metrics
+  api.py         aiohttp (D36): /ws/overlay (overlay.py), /healthz, admin endpoints, /metrics
   store.py       SQLite (WAL) access
   sim/           chat simulator (fake users) for load and vote tests
 ```
@@ -706,7 +707,7 @@ Runbook: **`docs/phase4.md`** (grows with each step).
 - [x] Rate limits (per user and global).
 - [x] Keymap (VNC keysyms) and grid with sub-cells.
 - [x] Anarchy executor and VNC injector (D34), tested in the sandbox on the Phase 2 desktop from brain's address; the desktop session now gets its UTF-8 locale (D35).
-- [ ] Overlay HUD: command log with filtered names and platform icons, grid labels and flash, cursor, connection status.
+- [x] Overlay HUD: command log with cleaned names and platform marks, grid labels and flash, the name at the pointer, connection status (D37); brain's container, deploy and check, and console chat (`chat-brain-say`) to drive it before the adapters exist. Which names may show at all is Phase 5's filter.
 - [x] Chat simulator (`sim/`): N fake users (regulars, spammers, trolls, chatters) through the real pipeline.
 - [ ] Develop against a local Incus setup (Linux laptop) or on the server outside stream hours.
 
@@ -714,7 +715,7 @@ Runbook: **`docs/phase4.md`** (grows with each step).
 
 ### Phase 5 — Safety layer · L — **gate: no public stream before this is done**
 
-- [ ] `egress` container: Squid allowlist + bandwidth cap; target configured to use it.
+- [ ] `egress` container: Squid allowlist + bandwidth cap; target configured to use it. It must refuse private and link-local destinations: it sits on `infranet` next to brain, whose port 8080 is open to that network (D37).
 - [ ] `intranet` container: kiwix-serve with a no-pictures Wikipedia ZIM, safe static homepage, Freedoom files.
 - [ ] Text filter with rolling buffer; filtered overlay text and display names; strikes and auto-timeouts.
 - [ ] Screen OCR content hold (shadow mode by default).
@@ -938,6 +939,9 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D33 | CI fails on invisible bidi, zero-width and control characters in any tracked text file (`.github/no-invisible-chars.py`); tests write them as escapes | Trojan Source: such characters make code read differently than it runs. Found while writing the parser's hostile-input tests: the escapes had been decoded into real characters, and ruff flagged lookalike letters but not the bidi override |
 | 2026-11-15 | D34 | The executor runs one command at a time with at most 16 waiting (more are refused); when the target goes away, the waiting ones are dropped, not replayed, and it reconnects on its own (1 s, backing off to 15 s); a cut-short command releases every key and button it pressed; grid coordinates are scaled to the VNC server's screen size | A backlog means commands land long after chat sent them, and replaying them on a rebooted or rewound desktop does things nobody aimed at. A key left held down (ctrl, a mouse button) would corrupt every later command |
 | 2026-11-15 | D35 | `chat-session.service` reads `/etc/default/locale`, and the desktop check fails unless the session's locale is UTF-8 | Found in the sandbox's end-to-end test: accented letters typed through VNC reached X (TigerVNC adds missing keysyms) but bash, in the C locale, dropped them. Under systemd the locale may come through PID 1, but nothing in the image guaranteed it |
+| 2026-11-15 | D36 | brain's web stack is aiohttp (overlay feed now, admin API later), not FastAPI/uvicorn/pydantic. Runtime dependencies are locked by uv and installed in the image from a hash-pinned export (`control/requirements.txt`), wheels only; CI fails if the export and `uv.lock` disagree | discord.py (step 4) is built on aiohttp: one HTTP stack instead of two, and fewer packages to trust. With hashes, a package replaced on PyPI after locking can't get into the image, and nothing is compiled at build time |
+| 2026-11-15 | D37 | The overlay feed is one-way (brain → page) at `/ws/overlay` on brain's port 8080, without a password: everything in it is already on stream. At most 16 pages, each with a bounded queue (a page that stops reading is let go). Log text is built from the parsed command, never copied from chat; names lose control and format characters and are cut at 24; refusals (including "the machine isn't taking input" while the target is down or 16 commands wait) show brain's fixed wording, at most once per viewer per 10 s. Console chat is a Unix socket inside brain, never on the network. Admin endpoints (Phase 5) will need authentication | Port 8080 is reachable from all of `infranet`, and the egress proxy that targets use sits there too: anything brain serves on it must be harmless to show, or authenticated, and Phase 5's proxy must refuse private addresses. A slow page must not slow brain down; a spammer must not push everyone else off the log |
+| 2026-11-15 | D38 | bcast's kiosk browser starts with an empty HTTP cache; brain closes overlay pages before anything else when it stops | Found in the sandbox: websockify sends no cache headers, so Chromium kept running an old `layout.js` for a while after the files changed (heuristic freshness: 10 % of the file's age). And with a page connected, aiohttp waited about 32 s for the open websocket before stopping, which would stall every brain restart |
 | 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |
 | 2026-11-15 | P1 | Phase 1 on the server: `bootstrap.sh` built the host from a fresh Debian 13.7 install (Incus from Zabbly), admin user with key-only SSH and root SSH login turned off, WireGuard tunnel to the laptop; `net-isolation.sh` passes every check, again after a reboot | Phase 1 done. The first runs from a terminal failed the allowed paths: the test's own fake services died under `incus exec`'s pseudo-terminal (test fixed, firewall was right) |
 | 2026-11-15 | P2 | Phase 2 on the server: `images/debian-xfce/check.sh` 12/12. VNC 6.4 s and desktop 8.3 s after launch; the four services active under systemd; 1600×900 framebuffer; PCM at 192 016 B/s, test tone −11.7 dBFS; snapshot of the running desktop in 0.1 s, restored while running in 1.5 s with the change undone | Phase 2 done: boot < 30 s and restore < 15 s met with a wide margin |

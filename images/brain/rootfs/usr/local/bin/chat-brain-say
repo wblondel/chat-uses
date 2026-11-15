@@ -1,0 +1,5 @@
+#!/bin/sh
+# Send chat messages to brain as a console user, e.g.
+#   chat-brain-say --as alice '!key ctrl+alt+t' '!type hello' '!enter'
+# Each goes through everything a chat message goes through (rate limits too).
+PYTHONPATH=/usr/lib/chat-brain exec /opt/chat-brain/venv/bin/python -m chatuses.console "$@"

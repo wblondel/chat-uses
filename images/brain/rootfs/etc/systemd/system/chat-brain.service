@@ -1,0 +1,20 @@
+[Unit]
+Description=chat-uses brain: chat commands in, desktop input and overlay feed out
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=brain
+EnvironmentFile=/etc/chat-uses/brain.env
+EnvironmentFile=-/etc/chat-uses/brain.local.env
+Environment=PYTHONPATH=/usr/lib/chat-brain PYTHONUNBUFFERED=1
+ExecStart=/opt/chat-brain/venv/bin/python -m chatuses.brain
+# Holds the console chat socket.
+RuntimeDirectory=chat-brain
+RuntimeDirectoryMode=0750
+NoNewPrivileges=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

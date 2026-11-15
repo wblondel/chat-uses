@@ -14,7 +14,7 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 | 1 — Host foundation | [docs/phase1.md](docs/phase1.md) | `infra/host/bootstrap.sh`, `infra/host/wg-add-peer.sh`, `infra/tests/net-isolation.sh` |
 | 2 — Target image | [docs/phase2.md](docs/phase2.md) | `images/build.sh debian-xfce`, `images/debian-xfce/check.sh` |
 | 3 — Broadcast pipeline | [docs/phase3.md](docs/phase3.md) | `images/build.sh bcast`, `images/bcast/deploy.sh`, `images/bcast/check.sh` |
-| 4 — Control plane | [docs/phase4.md](docs/phase4.md) | `control/` (`uv run pytest`), `python3 -m chatuses.drive` |
+| 4 — Control plane | [docs/phase4.md](docs/phase4.md) | `control/` (`uv run pytest`), `images/build.sh brain`, `images/brain/deploy.sh`, `images/brain/check.sh`, `chat-brain-say` |
 
 ## Layout
 
@@ -23,8 +23,9 @@ infra/host/      host bootstrap, firewall template, config (host.env.example)
 infra/incus/     networks, projects and profiles as YAML
 infra/tests/     isolation tests
 infra/discord/   Discord server setup (stdlib Python) and its tests
-images/          images built by images/build.sh: the target (debian-xfce) and the
-                 broadcaster (bcast); probes for VNC and audio
+images/          images built by images/build.sh: the target (debian-xfce), the
+                 broadcaster (bcast) and the control plane (brain); probes for VNC,
+                 audio and the overlay feed
 overlay/         the stream layout page (served by bcast)
 control/         the control plane ("brain", Python): chat commands in, desktop input out
 docs/            runbooks

@@ -41,12 +41,45 @@ html, body {
 }
 #screen canvas { image-rendering: pixelated; }
 
+/* Grid flash and pointer name, over the desktop (z above noVNC's canvas). */
+#grid {
+  position: absolute; left: 0; top: 0; width: 1600px; height: 900px; z-index: 2;
+  display: grid; grid-template-columns: repeat(16, 100px); grid-template-rows: repeat(9, 100px);
+  pointer-events: none;
+}
+/* After a click: faint lines, so a busy chat doesn't stripe the desktop for
+   good. On !grid: stronger lines and every cell's name. 2 px so they survive
+   a phone's downscaling. */
+#grid span {
+  box-sizing: border-box;
+  border-right: 2px solid rgba(79, 209, 197, 0.3); border-bottom: 2px solid rgba(79, 209, 197, 0.3);
+  font: bold 16px var(--font); color: transparent; padding: 3px 5px;
+}
+#grid.labels span {
+  border-color: rgba(79, 209, 197, 0.65);
+  color: rgba(238, 242, 251, 0.9); text-shadow: 0 0 3px #000, 0 0 3px #000;
+}
+#grid span.hit { background: rgba(79, 209, 197, 0.18); outline: 2px solid var(--accent); outline-offset: -2px; }
+#pointer { position: absolute; z-index: 3; pointer-events: none; }
+#pointer .dot {
+  position: absolute; left: -9px; top: -9px; width: 18px; height: 18px;
+  border: 3px solid var(--accent); border-radius: 50%; box-sizing: border-box;
+}
+/* Above the pointer: menus and tooltips open below it. */
+#pointer-who {
+  position: absolute; left: 12px; top: -44px; white-space: nowrap;
+  font: bold 20px var(--font); color: var(--bg); background: var(--accent);
+  padding: 2px 8px; border-radius: 5px;
+}
+#pointer.left #pointer-who { left: auto; right: 12px; }
+#pointer.below #pointer-who { top: 14px; }
+
 .cover {
   position: absolute;
   display: flex; align-items: center; justify-content: center;
   background: rgba(10, 14, 26, 0.92);
 }
-#screen-lost { left: 0; top: 0; width: 1600px; height: 900px; }
+#screen-lost { left: 0; top: 0; width: 1600px; height: 900px; z-index: 4; }
 .cover-title { font-size: 44px; font-weight: bold; color: var(--muted); }
 
 /* --- grid labels (outside the desktop) ---------------------------------- */
@@ -129,8 +162,22 @@ html, body {
   display: flex; flex-direction: column; justify-content: space-between;
   border-top: 1px solid var(--line);
 }
-#log { font-family: var(--mono); font-size: 24px; line-height: 1.35; }
-.log-line .who { color: var(--accent); font-weight: bold; }
+#log {
+  font-family: var(--mono); font-size: 22px; line-height: 32px;
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, 32px);
+  grid-auto-flow: column; column-gap: 28px;
+}
+.log-line { display: flex; align-items: center; gap: 10px; min-width: 0; white-space: nowrap; }
+.log-line .who { color: var(--accent); font-weight: bold; max-width: 230px; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.log-line .what { overflow: hidden; text-overflow: ellipsis; }
+.log-line .why { color: #ffb547; overflow: hidden; text-overflow: ellipsis; }
+.log-line .mark { flex: none; color: var(--muted); font-size: 18px; }
+.log-line.done .mark { color: var(--accent); font-size: 24px; }
+.log-line.dropped .what, .log-line.busy .what { color: var(--muted); text-decoration: line-through; }
+.log-line.later .what { color: var(--muted); }
+.plat { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.plat.yt { background: #ff3b3b; }
+.plat.dc { background: #5865f2; }
 #ticker { font-size: 20px; color: var(--muted); }
 #ticker b { color: var(--text); }
 

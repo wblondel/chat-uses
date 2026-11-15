@@ -12,6 +12,10 @@
 <div id="stage">
   <!-- Desktop, 1600x900 at 1:1. noVNC draws its canvas in here. -->
   <div id="screen"></div>
+  <!-- Over the desktop for 3 s after a click (or !grid): grid lines and the
+       name of who moved the pointer. -->
+  <div id="grid" hidden aria-hidden="true"></div>
+  <div id="pointer" hidden><div class="dot"></div><div id="pointer-who"></div></div>
   <div id="screen-lost" class="cover" hidden>
     <div class="cover-title">Reconnecting to the machine…</div>
   </div>

@@ -5,8 +5,9 @@
 // - Polls control/scene.json (written by `chat-bcast-scene` in bcast) for
 //   full-frame scenes, so "starting soon" and "be right back" work without
 //   brain.
-// - Connects to brain's websocket for live HUD data (Phase 4) and shows
-//   "Controls offline" while it can't.
+// - Connects to brain's websocket for the command log, the grid flash and
+//   the name at the pointer (Phase 4), and shows "Controls offline" while
+//   it can't.
 
 import RFB from "./novnc/core/rfb.js";
 
@@ -80,31 +81,157 @@ async function pollScene() {
   setTimeout(pollScene, 1000);
 }
 
-function setControls(online) {
+// --- brain's feed (control/src/chatuses/overlay.py) -------------------------
+//
+// Everything in it can come from chat (names, typed text), so it is only
+// ever put on the page with textContent, never as HTML.
+
+const LOG_SLOTS = 6; // two columns of three
+const FLASH_MS = 3000;
+const STATE_MARK = { queued: "…", done: "✓", dropped: "dropped", busy: "busy", later: "soon", refused: "" };
+const lines = new Map(); // id -> {line, el}
+let brainUp = false;
+let targetUp = false;
+
+function setControls() {
   const badge = $("controls");
-  badge.textContent = online ? "Controls online" : "Controls offline";
-  badge.className = `badge ${online ? "online" : "offline"}`;
+  const [text, cls] = !brainUp
+    ? ["Controls offline", "offline"]
+    : targetUp
+      ? ["Controls online", "online"]
+      : ["Machine not taking input", "offline"];
+  badge.textContent = text;
+  badge.className = `badge ${cls}`;
 }
 
-// Phase 4 defines the messages; until then the badge is all this does.
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+
+function renderLine(line) {
+  const row = el("div", `log-line ${line.state}`);
+  row.append(el("span", `plat ${line.platform}`), el("span", "who", line.user));
+  if (line.text) row.append(el("span", "what", line.text));
+  if (line.reason) row.append(el("span", "why", line.reason));
+  row.append(el("span", "mark", STATE_MARK[line.state] ?? ""));
+  return row;
+}
+
+function addLine(line) {
+  const log = $("log");
+  if (!lines.size) log.replaceChildren();
+  const entry = { line, el: renderLine(line) };
+  lines.set(line.id, entry);
+  log.prepend(entry.el); // newest first
+  while (lines.size > LOG_SLOTS) {
+    const [oldest] = lines.keys();
+    lines.get(oldest).el.remove();
+    lines.delete(oldest);
+  }
+}
+
+function setLineState(id, state) {
+  const entry = lines.get(id);
+  if (!entry) return;
+  entry.line.state = state;
+  const fresh = renderLine(entry.line);
+  entry.el.replaceWith(fresh);
+  entry.el = fresh;
+}
+
+let gridTimer;
+function flashGrid(cell) {
+  const grid = $("grid");
+  grid.querySelector(".hit")?.classList.remove("hit");
+  if (cell) {
+    const [col, row] = cell;
+    grid.children[row * GRID_COLS + col]?.classList.add("hit");
+  }
+  grid.classList.toggle("labels", !cell); // !grid shows every cell's name
+  grid.hidden = false;
+  clearTimeout(gridTimer);
+  gridTimer = setTimeout(() => { grid.hidden = true; }, FLASH_MS);
+}
+
+let pointerTimer;
+function showPointer(x, y, user) {
+  const p = $("pointer");
+  p.style.left = `${x}px`;
+  p.style.top = `${y}px`;
+  p.classList.toggle("left", x > 1300); // keep the label on screen
+  p.classList.toggle("below", y < 60);
+  $("pointer-who").textContent = user;
+  p.hidden = false;
+  clearTimeout(pointerTimer);
+  pointerTimer = setTimeout(() => { p.hidden = true; }, FLASH_MS);
+  flashGrid([Math.floor(x / 100), Math.floor(y / 100)]);
+}
+
+function onMessage(msg) {
+  switch (msg.type) {
+    case "hello":
+      lines.clear();
+      $("log").replaceChildren(el("div", "log-line muted", "Waiting for chat…"));
+      for (const line of msg.log) addLine(line);
+      targetUp = msg.target;
+      setControls();
+      break;
+    case "log":
+      addLine(msg);
+      break;
+    case "log-state":
+      setLineState(msg.id, msg.state);
+      break;
+    case "pointer":
+      showPointer(msg.x, msg.y, msg.user);
+      break;
+    case "grid":
+      flashGrid(null);
+      break;
+    case "status":
+      targetUp = msg.target;
+      setControls();
+      break;
+  }
+}
+
 function connectBrain(url) {
   if (!url) {
-    setControls(false);
+    setControls();
     return;
   }
   let ws;
   try {
     ws = new WebSocket(url);
   } catch {
-    setControls(false);
     setTimeout(() => connectBrain(url), 5000);
     return;
   }
-  ws.addEventListener("open", () => setControls(true));
-  ws.addEventListener("close", () => {
-    setControls(false);
-    setTimeout(() => connectBrain(url), 5000);
+  ws.addEventListener("open", () => { brainUp = true; setControls(); });
+  ws.addEventListener("message", (event) => {
+    try {
+      onMessage(JSON.parse(event.data));
+    } catch (err) {
+      console.error("bad message from brain", err);
+    }
   });
+  ws.addEventListener("close", () => {
+    brainUp = false;
+    setControls();
+    setTimeout(() => connectBrain(url), 3000);
+  });
+}
+
+function drawGrid() {
+  const grid = $("grid");
+  for (let r = 1; r <= GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      grid.append(el("span", "", `${String.fromCharCode(65 + c)}${r}`));
+    }
+  }
 }
 
 function tickClock() {
@@ -113,6 +240,7 @@ function tickClock() {
 
 async function main() {
   drawGridLabels();
+  drawGrid();
   tickClock();
   setInterval(tickClock, 1000);
   connectScreen();

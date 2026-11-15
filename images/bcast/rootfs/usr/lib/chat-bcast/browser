@@ -5,6 +5,10 @@ profile=/var/lib/chat-bcast/chromium
 # This unit is the profile's only user: a lock left by a crash or a forced
 # restart must not keep Chromium from starting (its PID may be in use again).
 rm -f "$profile/SingletonLock" "$profile/SingletonCookie" "$profile/SingletonSocket"
+# Start from the page as it is now: websockify sends no cache headers, so
+# Chromium would otherwise keep using a cached layout.js for a while after
+# the files change.
+rm -rf "$profile/Default/Cache" "$profile/Default/Code Cache"
 # shellcheck disable=SC2086 # CHROMIUM_FLAGS is a list of flags
 exec chromium --kiosk --no-first-run --noerrdialogs --disable-infobars \
 	--hide-crash-restore-bubble --disable-session-crashed-bubble \
