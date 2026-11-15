@@ -1,0 +1,110 @@
+#!/usr/bin/python3
+"""Encode the layout and its sound for YouTube and publish it to MediaMTX.
+
+Captures display :99 and the "mix" sink, encodes 1080p30 (PLAN.md 5.5):
+constant bitrate, a keyframe every 2 s with closed GOPs, 2 B-frames, AAC
+stereo through a limiter (chat can't blast the stream). Publishes "live"
+over RTMP, not RTSP: RTMP carries both tracks on one clock, while MediaMTX
+lines up RTSP tracks by when their first packets arrive, which put the sound
+up to 1.5 s off the picture.
+
+Watchdog: if no new frame is encoded for STALL seconds, ffmpeg is stopped
+and this script exits, for systemd to start it again. ffmpeg doesn't notice
+everything that can go away under it: when PulseAudio restarts, it waits for
+sound forever and the stream stops.
+
+Every REPORT seconds the journal gets one line: frames, dropped and
+duplicated frames since the start, and the speed over the last REPORT
+seconds (ffmpeg's own figure averages over the whole run, which hides a
+slowdown hours in).
+"""
+
+import os
+import select
+import subprocess
+import sys
+import time
+
+STALL = 15  # seconds without a new frame = stuck
+REPORT = 30  # seconds between progress reports in the journal
+
+
+def command(env, start):
+    fps = int(env["FPS"])
+    gop = str(fps * 2)
+    bitrate = env["VIDEO_BITRATE"]
+    return [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning", "-nostats",
+        "-progress", "pipe:1", "-stats_period", "5",
+        # Both inputs stamp their packets with the wall clock. ffmpeg would
+        # shift each input to start at zero on its own, turning the gap
+        # between their first packets (up to 0.7 s at boot) into an A/V
+        # offset for the whole run. Keep the wall clock instead, and start
+        # the output near zero by subtracting this script's start time.
+        "-copyts", "-output_ts_offset", f"-{start:.6f}",
+        "-thread_queue_size", "1024", "-f", "x11grab", "-draw_mouse", "0",
+        "-framerate", str(fps), "-video_size", "1920x1080", "-i", ":99",
+        "-thread_queue_size", "1024", "-itsoffset", env.get("AUDIO_DELAY") or "0",
+        "-f", "pulse", "-i", "mix.monitor",
+        "-map", "0:v", "-map", "1:a",
+        "-c:v", "libx264", "-preset", env["X264_PRESET"], "-pix_fmt", "yuv420p",
+        "-b:v", bitrate, "-minrate", bitrate, "-maxrate", bitrate, "-bufsize", bitrate,
+        "-x264-params", "nal-hrd=cbr", "-bf", "2", "-g", gop, "-keyint_min", gop,
+        "-sc_threshold", "0", "-flags", "+cgop",
+        "-af", f"alimiter=limit={env['AUDIO_LIMIT']}:level=0",
+        "-c:a", "aac", "-b:a", env["AUDIO_BITRATE"], "-ar", "48000", "-ac", "2",
+        "-f", "flv", "-flvflags", "no_duration_filesize", "rtmp://127.0.0.1:1935/live",
+    ]
+
+
+def report(values, media, wall, last_media, last_wall):
+    speed = (media - last_media) / 1e6 / (wall - last_wall)
+    print(f"frames={values.get('frame')} dropped={values.get('drop_frames')} "
+          f"duplicated={values.get('dup_frames')} speed={speed:.3f}x "
+          f"(last {wall - last_wall:.0f} s)", file=sys.stderr, flush=True)
+
+
+def main():
+    ffmpeg = subprocess.Popen(command(os.environ, time.time()), stdout=subprocess.PIPE)
+    out = ffmpeg.stdout.fileno()
+    frame, moved = None, time.monotonic()
+    last_media = last_wall = None  # media time and clock at the last report
+    pending, block = b"", []
+    while True:
+        ready, _, _ = select.select([out], [], [], 5)
+        now = time.monotonic()
+        if ready:
+            data = os.read(out, 65536)
+            if not data:  # ffmpeg exited
+                sys.exit(ffmpeg.wait())
+            *lines, pending = (pending + data).split(b"\n")
+            for line in lines:
+                line = line.decode(errors="replace")
+                block.append(line)
+                if line.startswith("frame=") and line != frame:
+                    frame, moved = line, now
+                elif line.startswith("progress="):  # end of a block
+                    values = dict(item.split("=", 1) for item in block if "=" in item)
+                    block = []
+                    try:
+                        media = int(values.get("out_time_us", ""))
+                    except ValueError:  # "N/A" until the first packet
+                        continue
+                    if last_wall is None:
+                        last_media, last_wall = media, now
+                    elif now - last_wall >= REPORT:
+                        report(values, media, now, last_media, last_wall)
+                        last_media, last_wall = media, now
+        if now - moved > STALL:
+            print(f"stalled: no new frame for {STALL} s; restarting", file=sys.stderr, flush=True)
+            ffmpeg.terminate()
+            try:
+                ffmpeg.wait(5)
+            except subprocess.TimeoutExpired:
+                ffmpeg.kill()
+                ffmpeg.wait()
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

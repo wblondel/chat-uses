@@ -41,7 +41,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 0 | Groundwork (accounts, server check) | S | ◐ tooling ready, manual steps left (`docs/phase0.md`) |
 | 1 | Host foundation (Debian, Incus, networks) | M | ◐ code ready, run on the server (`docs/phase1.md`) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ◐ code ready, build on the server (`docs/phase2.md`) |
-| 3 | Broadcast pipeline | M | ☐ |
+| 3 | Broadcast pipeline | M | ◐ code ready, run on the server (`docs/phase3.md`) |
 | 4 | Control plane MVP | L | ☐ |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
 | 6 | Governance and time travel | L | ☐ |
@@ -117,15 +117,15 @@ These are the defaults. Change them deliberately and log it in section 15.
  Discord ───────┼─►  → rate limits → filter → referee     Incus API (restricted cert) ──────►  targets)     │
                 │    → executor → audit log                                                      │  │        │
                 │    FastAPI: overlay websocket,                                                 │  │        │
-                │    admin API, layout page                    PCM audio 4712 ◄──────────────────┘  │        │
+                │    admin API                                 PCM audio 4712 ◄──────────────────┘  │        │
                 │         │ ws                                                                      │        │
                 │         ▼                                    proxy 3128 ◄─────────────────────────┘        │
                 │  bcast (project: infra)                        │                                           │
-                │   Xvfb :99 ← Chromium kiosk (layout page: noVNC view-only + HUD)                           │
-                │   websockify → target VNC     audio-in (PCM → limiter → PulseAudio "mix")                  │
-                │   ffmpeg x11grab + mix.monitor → x264 → MediaMTX ─┬─► forwarder → YouTube (RTMPS)         │
-                │                                                   ├─► clip ring buffer                    │
-                │                                                   └─► HLS/WebRTC preview (WireGuard only) │
+                │   Xvfb :99 ← Chromium kiosk (layout page from bcast: noVNC view-only + HUD)                │
+                │   websockify → target VNC     audio-in (PCM → PulseAudio "target" → "mix")                 │
+                │   ffmpeg x11grab + mix.monitor → x264 → RTMP → MediaMTX ─┬─► forwarder → YouTube (RTMPS)  │
+                │                                                          ├─► clip ring buffer             │
+                │                                                          └─► HLS preview (WireGuard only) │
                 │  egress: Squid allowlist proxy ──► internet (allowlisted domains only)                     │
                 │  intranet: kiwix-serve, safe static pages, Freedoom, puzzle files                         │
                 └─────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -185,25 +185,28 @@ On top of the firewall, target NICs have `security.port_isolation` (targets can'
 
 ### 5.5 Video and audio pipeline (in `bcast`)
 
+Built in Phase 3 (`images/bcast/`, runbook `docs/phase3.md`); the numbers below are the defaults in `bcast.env`.
+
 1. **Display:** `Xvfb :99 -screen 0 1920x1080x24`.
-2. **Layout:** Chromium in kiosk mode at 1920×1080 on `:99`, loading `http://brain:8080/layout`. The page embeds noVNC (view-only, connected through websockify to the target's VNC) and the HUD.
-3. **Cursor:** noVNC shows the remote cursor as a *local* CSS cursor, which a headless capture won't show (⚠️ verify in Phase 3). Plan: the overlay draws its own large cursor at the position the injector last set, labelled with who moved it. This is better for viewers anyway.
-4. **Audio in:** a service reads raw PCM (s16le, 48 kHz, stereo) from `target:4712`, passes it through a limiter and volume cap (ffmpeg `alimiter`), and plays it into the PulseAudio null sink `mix`. It reconnects forever. Chromium's sound effects (vote passed, death jingle) also go to `mix`.
-5. **Encode** (sketch, tune in Phase 3):
+2. **Layout:** Chromium in kiosk mode at 1920×1080 on `:99`. bcast serves the page itself (`overlay/` in the repo) through websockify's web server, together with noVNC and the websocket relay to the target's VNC, so the stream doesn't depend on brain; brain only feeds it data over a websocket (D23).
+3. **Cursor:** the page asks noVNC not to request the cursor pseudo-encoding, so TigerVNC draws the cursor into the framebuffer and it shows in the capture; it also drops JPEG, H.264 and quality levels, so the desktop arrives lossless (D24). An overlay label naming who moved the cursor can still come in Phase 4.
+4. **Audio in:** the target serves raw PCM (s16le, 48 kHz, stereo) on port 4712 in 20 ms chunks. A small relay (`audio-in`) plays it into the PulseAudio sink `target`, which feeds the null sink `mix`. It never queues: when it falls behind it drops sound, so the sound can't drift late (D26). Scenes mute `target` (D28). Chromium's own sounds (vote passed, death jingle) play into `mix` directly.
+5. **Encode** (`encode`, under a watchdog that restarts it if no frame comes out for 15 s, D27):
    ```
-   ffmpeg -f x11grab -framerate 30 -video_size 1920x1080 -draw_mouse 0 -i :99 \
-          -f pulse -i mix.monitor \
+   ffmpeg -copyts -output_ts_offset -<start time> \
+          -f x11grab -framerate 30 -video_size 1920x1080 -draw_mouse 0 -i :99 \
+          -itsoffset $AUDIO_DELAY -f pulse -i mix.monitor \
           -c:v libx264 -preset veryfast -b:v 7000k -minrate 7000k -maxrate 7000k -bufsize 7000k \
           -x264-params nal-hrd=cbr -bf 2 -g 60 -keyint_min 60 -sc_threshold 0 -flags +cgop -pix_fmt yuv420p \
-          -c:a aac -b:a 128k -ar 48000 -ac 2 \
-          -f rtsp rtsp://127.0.0.1:8554/live
+          -af alimiter=limit=0.8:level=0 -c:a aac -b:a 128k -ar 48000 -ac 2 \
+          -f flv rtmp://127.0.0.1:1935/live
    ```
-   This follows YouTube's live encoder guidance for 1080p30: constant bitrate in the 4–10 Mbps range, a keyframe every 2 seconds (60 frames) with closed GOPs, 2 B-frames, 128 kbps AAC stereo. Avoid `-tune zerolatency` (it disables B-frames). Pick the bitrate and preset in the Phase 3 benchmark; text-heavy screens look better toward the top of the range.
-6. **MediaMTX** receives `live` and serves it locally (RTSP/HLS/WebRTC).
-7. **Forwarder:** `ffmpeg -i rtsp://127.0.0.1:8554/live -c copy -f flv <YouTube RTMPS URL>/<key>` in a restart loop. If YouTube drops, only this process restarts; the encoder keeps running. Copy the ingest URL from YouTube Studio (it's `rtmps://a.rtmps.youtube.com/live2` at time of writing).
-8. **Clip ring buffer:** `ffmpeg -i rtsp://…/live -c copy -f segment -segment_time 10 -segment_wrap 12 …` keeps the last 2 minutes on disk for event clips (Phase 10).
+   This follows YouTube's live encoder guidance for 1080p30: constant bitrate in the 4–10 Mbps range, a keyframe every 2 seconds (60 frames) with closed GOPs, 2 B-frames, 128 kbps AAC stereo. The limiter caps the whole mix, so chat can't blast the stream. `-copyts` keeps both inputs on the wall clock they stamp their packets with; by default ffmpeg starts each input at zero on its own, and their start-up gap becomes an A/V offset for the whole run. Avoid `-tune zerolatency` (it disables B-frames). Pick the bitrate and preset in the Phase 3 test streams; text-heavy screens look better toward the top of the range.
+6. **MediaMTX** (pinned release, checksum-verified) receives `live` over RTMP and serves it on loopback (RTMP, RTSP) and as HLS on port 8888 for the WireGuard preview. RTMP, not RTSP, between the pieces: one clock for both tracks (D25).
+7. **Forwarder:** `ffmpeg -i rtmp://127.0.0.1:1935/live -c copy -f flv <YouTube RTMPS URL>/<key>`, restarted forever. If YouTube drops, only this process restarts; the encoder keeps running. The ingest URL is `rtmps://a.rtmps.youtube.com/live2` at time of writing (`YOUTUBE_INGEST`).
+8. **Clip ring buffer:** `ffmpeg -i rtmp://127.0.0.1:1935/live -c copy -f segment -segment_time 10 -segment_wrap 12 …` keeps the last 2 minutes on disk for event clips (Phase 10).
 
-All of these are systemd units with `Restart=always`. If brain dies, the layout shows a "controls offline" card and the stream continues.
+All of these are systemd units with `Restart=always`, grouped in `chat-bcast.target`. None is bound to another: each exits when something it needs goes away and comes back when it returns (D27). If brain dies, the layout shows "Controls offline" and the stream continues; if the target dies, it shows "Reconnecting to the machine…". `images/bcast/check.sh` checks format, real time, picture, sound and A/V sync.
 
 ### 5.6 Overlay layout (1920×1080)
 
@@ -296,11 +299,14 @@ chat-uses/
     egress/               squid.conf, allowlist.txt
     intranet/             kiwix + static pages
   images/
-    debian-xfce/          build.sh, overlay files (systemd units, Firefox policies, wallpaper)
+    build.sh              builds any image below into chat-uses/<name>
+    debian-xfce/          provision.sh, rootfs/ (systemd units, Firefox policies, wallpaper), check.sh
+    bcast/                broadcaster: provision.sh, rootfs/ (units for Xvfb, Chromium, ffmpeg, MediaMTX,
+                          forwarder), deploy.sh, check.sh
     qemu-host/            container template running QEMU for retro targets
     retro-*/              per-OS image notes and build steps
-  broadcast/              systemd units and configs for Xvfb, Chromium, ffmpeg, MediaMTX, forwarder
-  overlay/                Vite + TypeScript layout page
+    tools/                VNC and audio probes used by the checks
+  overlay/                layout page (HTML, CSS, JS modules; served by bcast)
   control/                Python package (brain) + tests/
   rulesets/               roguelike.yaml, living-pc.yaml, platform-war.yaml, …
   achievements/           achievement definitions (YAML)
@@ -578,6 +584,8 @@ Other rulesets override what they need (e.g. `living-pc.yaml` disables `newrun` 
 - **Effects within 1 s:**
   1. The overlay fully covers the screen ("We'll be right back").
   2. Target audio is muted in the mix.
+
+  Effects 1 and 2 are `chat-bcast-scene brb` in bcast (Phase 3).
   3. The input queue is frozen and flushed; open votes are cancelled.
   4. A private forensic snapshot `panic-<timestamp>` is taken (not restorable by chat).
   5. A post goes to `#mod-alerts`.
@@ -673,11 +681,14 @@ Runbook: **`docs/phase2.md`**. Code is written and was tested in the Debian 13 s
 
 ### Phase 3 — Broadcast pipeline · M
 
-- [ ] `bcast` container: Xvfb, PulseAudio with null sink `mix`, Chromium kiosk, websockify, ffmpeg encoder, MediaMTX, forwarder, audio-in service. All systemd units with `Restart=always`.
-- [ ] Minimal static layout page at 1920×1080: noVNC view-only box at 1600×900, placeholder 320 px sidebar and 180 px bottom strip, a "controls offline" state when the brain websocket is down, Starting soon and BRB scenes.
-- [ ] Check how the remote cursor appears; implement the overlay-drawn cursor if needed (5.5).
-- [ ] Unlisted YouTube test streams: 1 h, then 6 h while the target runs `stress-ng` on its cores. Measure encoder speed, dropped frames, CPU per component, A/V sync and end-to-end latency in ultra-low-latency mode.
-- [ ] Decide final resolution, bitrate and `-tune zerolatency` (record in the decision log).
+Runbook: **`docs/phase3.md`**. Code is written and was tested in the Debian 13 simulation; the YouTube streams need the server.
+
+- [x] `bcast` container: Xvfb, PulseAudio with sinks `mix` and `target`, Chromium kiosk, websockify, ffmpeg encoder (with watchdog), MediaMTX, forwarder, audio-in relay. All systemd units with `Restart=always`. Built by `images/build.sh bcast`, deployed by `images/bcast/deploy.sh`.
+- [x] Minimal static layout page at 1920×1080 (`overlay/`): noVNC view-only box at 1600×900, grid labels, placeholder 320 px sidebar and 180 px bottom strip, a "controls offline" state when the brain websocket is down, a "reconnecting" cover when the target is down, Starting soon and BRB scenes (`chat-bcast-scene`).
+- [x] ~~Check how the remote cursor appears; implement the overlay-drawn cursor if needed~~: the target's VNC server draws it into the picture (D24).
+- [x] A/V sync measured and part of `images/bcast/check.sh` (D26).
+- [ ] Unlisted YouTube test streams: 1 h, then 6 h with the target's CPUs fully loaded. Measure encoder speed, dropped frames, CPU per component, A/V sync and end-to-end latency in ultra-low-latency mode.
+- [ ] Decide final bitrate, preset and `-tune zerolatency` (record in the decision log).
 
 **Done when:** a 6-hour unlisted stream runs with no dropped frames while the target is under full CPU load.
 
@@ -802,6 +813,7 @@ Runbook: **`docs/phase2.md`**. Code is written and was tested in the Debian 13 s
 - [ ] Automated red-team subset green since the last code or config change.
 - [ ] At least one moderator online, or night mode on.
 - [ ] Target healthy; fresh snapshot taken.
+- [ ] `images/bcast/check.sh` passes (picture, sound, A/V sync).
 - [ ] 2-minute unlisted preview: audio levels, overlay, latency, cursor.
 - [ ] YouTube broadcast settings: ultra-low latency, not made for kids, chat on, slow mode, blocked words.
 - [ ] Panic dry run on the preview.
@@ -908,3 +920,10 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D20 | Incus from **Zabbly's stable channel** (`INCUS_SOURCE=zabbly-stable`), key pinned in the repo and checked in CI; `unattended-upgrades` takes its updates; re-run the isolation test after each Incus release | Upstream fixed the volatile-key restore refusal in Incus 7.5 (PR #3994). Tested on Incus 7.6: restore works in the restricted project, the CVE-2026-48751 poisoned-snapshot replay is still refused, bootstrap and isolation test pass. Debian's 6.0.4 and backported 7.0.2 still refuse restores. Cost: third-party repo, monthly feature releases |
 | 2026-11-15 | D21 | **1080p30 stream**, desktop **1600×900 at 1:1** in a framed layout (320 px HUD column, 180 px bottom strip), fonts scaled (DPI 120); CPU split: broadcast 0–3, brain/egress/intranet 4, targets 5–7 | YouTube re-encodes 720p too softly for a text-heavy desktop; 1080p gets better renditions. 1:1 pixels keep text crisp; the frame keeps the HUD off the desktop chat clicks on. The 16×9 click grid stays, with 100 px cells. Cost: about 4 vCPUs for encode and layout instead of 2 |
 | 2026-11-15 | D22 | Target Xfce settings live in `/home/chat/.config/xfce4/xfconf/`, layered over Debian's defaults; never replace package files in `/etc/xdg` | Overwriting Debian's `xfce4-session.xml` removed the failsafe session and the desktop never started (found in the Phase 2 simulation) |
+| 2026-11-15 | D23 | The layout page is served by **bcast** (websockify's web server, page from `overlay/`), not brain; plain HTML/CSS/ES modules with Debian's noVNC and no build step for now (amends D6) | The stream must not depend on brain being up, and one origin serves the page, noVNC and its websocket. No toolchain in the image; move to Vite + TypeScript if the page grows in Phase 4 |
+| 2026-11-15 | D24 | noVNC asks TigerVNC for no cursor pseudo-encoding and no JPEG, H.264 or quality levels: the cursor is drawn into the framebuffer and the desktop arrives lossless | A capture of the page doesn't show noVNC's local CSS cursor; lossy VNC encodings would blur text before x264 even sees it |
+| 2026-11-15 | D25 | Encoder → MediaMTX → forwarder over **RTMP**, not RTSP | Over RTSP, MediaMTX lines up the tracks by when their first packets arrive: sound 1.0–1.6 s off the picture, varying per connection. Its AAC packets also carry no keyframe flag, so the forwarder's `-c copy` dropped all audio. RTMP has one clock for both tracks |
+| 2026-11-15 | D26 | Target sound: per-connection `parec` (20 ms) behind `socat -U` on port 4712, replacing `module-simple-protocol-tcp`. In bcast, a relay that drops sound instead of queueing it; the limiter moved to the encoder (whole mix); `AUDIO_DELAY` knob; `check.sh` measures sync against ITU-R BT.1359 (−90/+185 ms) | Measured: the simple protocol sends 300 ms bursts; ffmpeg's pulse output defaults to a 2 s buffer; and with any blocking chain a stall leaves a backlog for the rest of the stream (ffmpeg's `aresample` pads before it trims). Also, the encoder keeps its inputs' wall-clock timestamps (`-copyts`): ffmpeg otherwise starts each input at zero on its own, which froze their start-up gap into an offset (660 ms after one boot). Result in the simulation: −52 to +36 ms across boots, restarts and the forwarder's output, back in sync after 2 s stalls |
+| 2026-11-15 | D27 | bcast services aren't bound to each other (`Wants`/`After`, no `BindsTo`); each exits when something it needs goes away; the encoder has a watchdog (no new frame for 15 s → restart) | ffmpeg's pulse input hangs forever when PulseAudio restarts. A unit stopped through `BindsTo` doesn't count as failed, so `Restart=` wouldn't bring it back |
+| 2026-11-15 | D28 | Scenes are a file (`chat-bcast-scene` with `live`, `starting` or `brb`, polled by the page each second); `starting`/`brb` also mute sink `target`, re-applied from the file whenever the relay reconnects | A file works without brain. Panic must silence the target, not just cover it; PulseAudio forgets mutes when it restarts |
+| 2026-11-15 | D29 | MediaMTX pinned (v1.21.3) and checked against its SHA-256 at build; API, metrics, pprof, playback, WebRTC, SRT and Media-over-QUIC off; RTMP and RTSP on loopback only; HLS on 8888 for the WireGuard preview. `images/build.sh <name>` builds any image; `host.env` gains `TARGET_IP` and `BRAIN_PORT` | Not packaged in Debian; smallest surface (MoQ is on by default). One build script for every image |

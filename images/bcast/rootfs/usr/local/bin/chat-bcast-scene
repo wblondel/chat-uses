@@ -1,0 +1,25 @@
+#!/bin/bash
+# Switch the stream's full-frame scene.
+#   chat-bcast-scene live                        the layout, no cover
+#   chat-bcast-scene starting [title] [subtitle]  "Starting soon"
+#   chat-bcast-scene brb [title] [subtitle]       "We'll be right back" (also for panic)
+# The layout page picks it up within a second. "starting" and "brb" also mute
+# the target's sound; "live" unmutes it.
+set -eu
+scene=${1:-}
+case $scene in
+live) mute=0 ;;
+starting | brb) mute=1 ;;
+*) echo "usage: chat-bcast-scene live|starting|brb [title] [subtitle]" >&2; exit 1 ;;
+esac
+dir=/var/lib/chat-bcast/control
+tmp=$(mktemp "$dir/.scene.XXXXXX")
+python3 -c 'import json, sys; print(json.dumps({"scene": sys.argv[1], "title": sys.argv[2], "subtitle": sys.argv[3]}))' \
+	"$scene" "${2:-}" "${3:-}" >"$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$dir/scene.json"
+if ! PULSE_SERVER=unix:/run/chat-bcast-audio/native pactl set-sink-mute target "$mute"; then
+	echo "scene: $scene, but the target's sound could not be $( ((mute)) && echo muted || echo unmuted)" >&2
+	exit 1
+fi
+echo "scene: $scene (target sound $( ((mute)) && echo muted || echo on))"

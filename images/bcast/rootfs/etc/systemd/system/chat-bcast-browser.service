@@ -1,0 +1,17 @@
+[Unit]
+Description=chat-uses broadcast: layout page in a kiosk browser on :99
+PartOf=chat-bcast.target
+Wants=chat-bcast-xvfb.service chat-bcast-websockify.service chat-bcast-audio.service
+After=chat-bcast-xvfb.service chat-bcast-websockify.service chat-bcast-audio.service
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+Environment=HOME=/var/lib/chat-bcast DISPLAY=:99 PULSE_SERVER=unix:/run/chat-bcast-audio/native
+ExecStart=/usr/lib/chat-bcast/browser
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=chat-bcast.target

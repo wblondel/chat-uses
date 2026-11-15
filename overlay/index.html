@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>chat-uses layout</title>
+<!-- The whole 1920x1080 stream frame (PLAN.md 5.6). bcast shows this page in
+     a kiosk browser and captures it. No external resources: everything is
+     served locally by websockify, including noVNC under /novnc/. -->
+<link rel="stylesheet" href="layout.css">
+</head>
+<body>
+<div id="stage">
+  <!-- Desktop, 1600x900 at 1:1. noVNC draws its canvas in here. -->
+  <div id="screen"></div>
+  <div id="screen-lost" class="cover" hidden>
+    <div class="cover-title">Reconnecting to the machine…</div>
+  </div>
+
+  <!-- Click-grid labels sit outside the desktop so they never hide it. -->
+  <div id="cols" aria-hidden="true"></div>
+  <div id="rows" aria-hidden="true"></div>
+
+  <aside id="sidebar">
+    <header class="brand">CHAT USES</header>
+    <section class="panel">
+      <div class="label">Run</div>
+      <div class="big" id="run">#—</div>
+      <div class="row"><span class="label">Lives</span><span class="value" id="lives">♥♥♥</span></div>
+      <div class="row"><span class="label">Uptime</span><span class="value" id="uptime">—</span></div>
+    </section>
+    <section class="panel">
+      <div class="label">Mode</div>
+      <div class="meter"><div class="meter-fill" id="meter"></div><div class="meter-marker" id="meter-marker"></div></div>
+      <div class="row meter-legend"><span class="anarchy">Anarchy</span><span class="democracy">Democracy</span></div>
+    </section>
+    <section class="panel" id="vote-panel">
+      <div class="label">Vote</div>
+      <div class="value muted" id="vote">No vote running</div>
+    </section>
+    <section class="panel">
+      <div class="label">Saves</div>
+      <div class="saves" id="saves"><span></span><span></span><span></span></div>
+    </section>
+  </aside>
+
+  <footer id="strip">
+    <div id="log">
+      <div class="log-line muted">Waiting for chat…</div>
+    </div>
+    <div id="ticker">Type in chat: <b>!type</b> text · <b>!click F7</b> · <b>!key ctrl+alt+t</b> · <b>!help</b></div>
+  </footer>
+
+  <div id="corner">
+    <div id="clock">--:--:--</div>
+    <div id="controls" class="badge offline">Controls offline</div>
+  </div>
+
+  <!-- Full-frame scenes: starting soon, be right back (also used by panic). -->
+  <div id="scene" class="scene" hidden>
+    <div class="scene-brand">CHAT USES</div>
+    <div class="scene-title" id="scene-title"></div>
+    <div class="scene-subtitle" id="scene-subtitle"></div>
+  </div>
+</div>
+<script type="module" src="layout.js"></script>
+</body>
+</html>

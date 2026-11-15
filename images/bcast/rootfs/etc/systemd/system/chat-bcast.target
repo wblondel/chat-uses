@@ -1,0 +1,5 @@
+[Unit]
+Description=chat-uses broadcast pipeline (all chat-bcast-* services)
+
+[Install]
+WantedBy=multi-user.target

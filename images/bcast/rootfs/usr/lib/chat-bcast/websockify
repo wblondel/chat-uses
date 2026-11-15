@@ -1,0 +1,6 @@
+#!/bin/bash
+# Serve the layout page and noVNC on 127.0.0.1:6080, and relay the page's
+# websocket to the target's VNC server. Publishes the page's config first.
+set -eu
+printf '{"brainUrl": "%s"}\n' "$BRAIN_URL" >/var/lib/chat-bcast/control/config.json
+exec websockify --web /usr/share/chat-bcast/www 127.0.0.1:6080 "$TARGET_HOST:$VNC_PORT"

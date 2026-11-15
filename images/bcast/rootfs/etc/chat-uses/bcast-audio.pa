@@ -1,0 +1,9 @@
+# chat-uses broadcast mixer (chat-bcast-audio.service). Everything on the
+# stream plays into the null sink "mix", which the encoder records (through
+# its limiter): the layout page's sounds directly, and the target's sound
+# through the sink "target" on top of it, so chat-bcast-scene can mute the
+# target alone (it does for "starting" and "brb").
+load-module module-null-sink sink_name=mix rate=48000 channels=2 sink_properties=device.description=Mix
+load-module module-remap-sink sink_name=target master=mix rate=48000 channels=2 sink_properties=device.description=Target
+set-default-sink mix
+load-module module-native-protocol-unix socket=/run/chat-bcast-audio/native auth-anonymous=1

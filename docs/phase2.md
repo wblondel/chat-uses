@@ -17,7 +17,7 @@ Image alias **`chat-uses/debian-xfce`** (plus a dated alias per build):
 |---|---|
 | Desktop | Debian 13, Xfce, **1600×900** at 120 DPI (shown 1:1 in the 1080p stream, PLAN.md D21), grayscale font smoothing, 32 px cursor, no compositor, no screen lock, branded wallpaper |
 | Display | `chat-xvnc.service`: TigerVNC is the X server (`:0`); VNC on port **5900**, no password, shared sessions |
-| Audio | `chat-audio.service`: PulseAudio with one sink, `stream`; its sound is served as raw PCM (s16le, 48 kHz, stereo) on port **4712**, record only |
+| Audio | `chat-audio.service`: PulseAudio with one sink, `stream`. `chat-audio-pcm.service` serves its sound as raw PCM (s16le, 48 kHz, stereo) on port **4712**, one way, in 20 ms chunks |
 | Session | `chat-session.service`: Xfce as user `chat`, restarted if chat logs out or kills it |
 | User | `chat` (uid 1000), passwordless `sudo`: chat is root inside its container |
 | Network | apt, shell and Firefox all point at the egress proxy (`EGRESS_IP:PROXY_PORT`); Firefox's home page is the intranet and every other site is blocked by policy |
@@ -46,8 +46,10 @@ sudo infra/host/bootstrap.sh packages profiles   # python3 for the checks, "buil
 ### 2. Build the image
 
 ```bash
-sudo images/debian-xfce/build.sh
+sudo images/build.sh debian-xfce
 ```
+
+(`images/debian-xfce/build.sh` still works: it runs the same command.)
 
 It launches a short-lived builder container on `infranet` (it needs the
 internet for packages), runs `provision.sh` inside it, and publishes the
@@ -64,7 +66,7 @@ It launches a test target (`phase2-check`, `10.30.0.251`) and checks, from the
 host:
 
 - VNC answers, and the Xfce desktop starts (with timings from launch);
-- the three services are active;
+- the four services are active;
 - the framebuffer is 1600×900 and actually shows a desktop (saved as a PNG);
 - the audio port streams 192 000 bytes/s, and a 440 Hz tone played inside the
   desktop comes out of it;
@@ -100,14 +102,20 @@ and tick Phase 2.
 ## How the desktop is wired
 
 ```
-chat-audio.service ── PulseAudio ── sink "stream" ── monitor ──► TCP 4712 (raw PCM)
+chat-audio.service ── PulseAudio ── sink "stream"
         ▲ unix socket /run/chat-audio/native (every app's default server)
-chat-xvnc.service ─── Xtigervnc :0 1600x900 ──────────────────► TCP 5900 (VNC)
+chat-audio-pcm.service ─ socat ─ parec stream.monitor (per connection) ──► TCP 4712 (raw PCM)
+chat-xvnc.service ─── Xtigervnc :0 1600x900 ──────────────────────────────► TCP 5900 (VNC)
         ▲ X socket /tmp/.X11-unix/X0
 chat-session.service ─ startxfce4 as chat (waits for the X socket)
 ```
 
-All three run as user `chat` and restart on their own if they die.
+All four run as user `chat` and restart on their own if they die. The audio
+port is one-way (`socat -U`): nothing can be sent into the target through it.
+Each connection gets its own `parec`, which asks PulseAudio for 20 ms chunks.
+Phase 2 first used PulseAudio's `module-simple-protocol-tcp`, but it asks for
+300 ms, so the sound arrived in 300 ms bursts and late against the picture
+(found in Phase 3).
 
 ## What was tested before this landed
 

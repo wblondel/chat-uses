@@ -1,0 +1,15 @@
+[Unit]
+Description=chat-uses broadcast: MediaMTX, stream "live" on RTSP 127.0.0.1:8554
+PartOf=chat-bcast.target
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+Environment=HOME=/var/lib/chat-bcast DISPLAY=:99 PULSE_SERVER=unix:/run/chat-bcast-audio/native
+ExecStart=/usr/local/bin/mediamtx /etc/chat-uses/mediamtx.yml
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=chat-bcast.target
