@@ -1,4 +1,6 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+
+import pytest
 
 from chatuses.commands import Meta, TypeText
 from chatuses.pipeline import ChatMessage, Pipeline, TextFilter, allow_all
@@ -9,10 +11,21 @@ def msg(text: str, ts: float = 0.0, user: str = "yt:a") -> ChatMessage:
     return ChatMessage(user, "Alice", text, ts)
 
 
+_stores: list[Store] = []
+
+
+@pytest.fixture(autouse=True)
+def close_stores() -> Iterator[None]:
+    yield
+    while _stores:
+        _stores.pop().close()
+
+
 def pipeline(
     text_filter: TextFilter = allow_all, is_banned: Callable[[str], bool] = lambda _user: False
 ) -> Pipeline:
-    return Pipeline(Store(":memory:"), text_filter=text_filter, is_banned=is_banned)
+    _stores.append(Store(":memory:"))
+    return Pipeline(_stores[-1], text_filter=text_filter, is_banned=is_banned)
 
 
 def test_chat_is_presence_only() -> None:

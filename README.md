@@ -14,6 +14,7 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 | 1 — Host foundation | [docs/phase1.md](docs/phase1.md) | `infra/host/bootstrap.sh`, `infra/host/wg-add-peer.sh`, `infra/tests/net-isolation.sh` |
 | 2 — Target image | [docs/phase2.md](docs/phase2.md) | `images/build.sh debian-xfce`, `images/debian-xfce/check.sh` |
 | 3 — Broadcast pipeline | [docs/phase3.md](docs/phase3.md) | `images/build.sh bcast`, `images/bcast/deploy.sh`, `images/bcast/check.sh` |
+| 4 — Control plane | [docs/phase4.md](docs/phase4.md) | `control/` (`uv run pytest`), `python3 -m chatuses.drive` |
 
 ## Layout
 

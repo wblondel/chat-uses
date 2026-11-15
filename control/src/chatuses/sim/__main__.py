@@ -14,7 +14,8 @@ def main() -> None:
     parser.add_argument("--db", default=":memory:", help="SQLite file to keep the results in")
     args = parser.parse_args()
 
-    report = simulate(args.users, args.seconds, args.seed, store=Store(args.db))
+    with Store(args.db) as store:
+        report = simulate(args.users, args.seconds, args.seed, store=store)
     print(f"{report.messages} messages from {args.users} users over {report.seconds:.0f} simulated seconds")
     for kind, count in report.outcomes.most_common():
         print(f"  {kind:<13} {count}")

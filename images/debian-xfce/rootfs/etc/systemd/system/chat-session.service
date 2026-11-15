@@ -7,6 +7,9 @@ After=chat-xvnc.service chat-audio.service
 [Service]
 User=chat
 WorkingDirectory=/home/chat
+# The locale (LANG) lives in /etc/default/locale: without it bash runs in
+# the C locale and drops what chat types with accents.
+EnvironmentFile=-/etc/default/locale
 EnvironmentFile=-/etc/environment
 Environment=DISPLAY=:0 HOME=/home/chat XDG_RUNTIME_DIR=/run/chat-session XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE PULSE_SERVER=unix:/run/chat-audio/native
 RuntimeDirectory=chat-session

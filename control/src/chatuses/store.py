@@ -61,6 +61,12 @@ class Store:
     def close(self) -> None:
         self.db.close()
 
+    def __enter__(self) -> "Store":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
     def seen_user(self, user_id: str, display_name: str, ts: float) -> None:
         self.db.execute(
             """INSERT INTO users (id, display_name, first_seen, last_seen) VALUES (?, ?, ?, ?)
