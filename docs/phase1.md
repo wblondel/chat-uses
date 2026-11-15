@@ -68,6 +68,9 @@ Review at least:
 - `CPUS_*`: defaults assume 8 vCPUs (`0-3` broadcast for the 1080p encode, `4-4` brain + egress + intranet, `5-7` targets). The script refuses CPU numbers that don't exist.
 - `ADMIN_USER`: optional. Set it if you want a non-root login with sudo.
 - `SSH_PORT`, `TIMEZONE`.
+- `TARGET_CPU_ALLOWANCE`: hard cap on a target's CPU time, default 1.5 CPUs'
+  worth (PLAN.md D30). Keep it on a VPS, where cores are shared; raise it on a
+  Root Server.
 
 Everything else can stay at its default.
 

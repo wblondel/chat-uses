@@ -41,7 +41,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 0 | Groundwork (accounts, server check) | S | ◐ server checked (section 15); account steps in `docs/phase0.md` |
 | 1 | Host foundation (Debian, Incus, networks) | M | ✅ done on the server (section 15, P1) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
-| 3 | Broadcast pipeline | M | ◐ pipeline and 1 h YouTube stream done on the server (section 15, P3); 6 h under load left |
+| 3 | Broadcast pipeline | M | ◐ pipeline and 1 h YouTube stream done on the server (section 15, P3); 6 h with the target at its CPU cap left |
 | 4 | Control plane MVP | L | ☐ |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
 | 6 | Governance and time travel | L | ☐ |
@@ -141,10 +141,10 @@ CPU numbers are vCPU indexes 0–7. "Pinned" uses Incus `limits.cpu` with a rang
 | `brain` | infra | Control plane, overlay/admin API, OCR | 4 (pinned) | 1.5 GiB | 10 GiB |
 | `egress` | infra | Squid allowlist proxy | 4 (shared) | 256 MiB | 5 GiB |
 | `intranet` | infra | kiwix-serve + static pages | 4 (shared) | 512 MiB | 10–20 GiB |
-| `target-*` | targets | The machine chat controls | 5–7 (pinned) | 8 GiB | 40 GiB quota |
+| `target-*` | targets | The machine chat controls | 5–7 (pinned), at most 1.5 CPUs' worth (D30) | 8 GiB | 40 GiB quota |
 | host | — | sshd, Incus, nftables, WireGuard, backups | unpinned | ~1.5 GiB | — |
 
-Total RAM ≈ 14.5 GiB, leaving some headroom. The 1080p split (D21) gives broadcast 4 vCPUs and targets 3; the Phase 3 benchmark confirms or adjusts it. Platform War (two targets) needs a re-budget, likely smaller desktops (Phase 11).
+Total RAM ≈ 14.5 GiB, leaving some headroom. The 1080p split (D21) gives broadcast 4 vCPUs and targets 3; the Phase 3 benchmark confirms or adjusts it. On a VPS, the target's CPU time is capped (D30) so the whole server stays around 25 % normally and 45 % at worst. Platform War (two targets) needs a re-budget, likely smaller desktops (Phase 11).
 
 ### 5.3 Networks and ports
 
@@ -550,7 +550,8 @@ Other rulesets override what they need (e.g. `living-pc.yaml` disables `newrun` 
 
 | Setting | Value |
 |---|---|
-| `limits.cpu` | `3-7` |
+| `limits.cpu` | `5-7` (pinned, D21) |
+| `limits.cpu.allowance` | `150ms/100ms`: at most 1.5 CPUs' worth, hard cap (`TARGET_CPU_ALLOWANCE`, D30) |
 | `limits.memory` | `8GiB` (restricted projects can't set `limits.memory.swap`, so the host runs without swap) |
 | `limits.processes` | `2048` |
 | root disk `size` | `40GiB` |
@@ -687,10 +688,11 @@ Runbook: **`docs/phase3.md`**. Code is written and was tested in the Debian 13 s
 - [x] Minimal static layout page at 1920×1080 (`overlay/`): noVNC view-only box at 1600×900, grid labels, placeholder 320 px sidebar and 180 px bottom strip, a "controls offline" state when the brain websocket is down, a "reconnecting" cover when the target is down, Starting soon and BRB scenes (`chat-bcast-scene`).
 - [x] ~~Check how the remote cursor appears; implement the overlay-drawn cursor if needed~~: the target's VNC server draws it into the picture (D24).
 - [x] A/V sync measured and part of `images/bcast/check.sh` (D26).
-- [ ] Unlisted YouTube test streams: 1 h, then 6 h with the target's CPUs fully loaded. Measure encoder speed, dropped frames, CPU per component, A/V sync and end-to-end latency in ultra-low-latency mode.
+- [x] Unlisted 1-hour YouTube test stream: encoder speed, dropped frames, CPU per component, A/V sync and end-to-end latency in ultra-low-latency mode (section 15, P3).
+- [ ] Unlisted 6-hour stream with the target busy up to its CPU cap (D30).
 - [ ] Decide final bitrate, preset and `-tune zerolatency` (record in the decision log).
 
-**Done when:** a 6-hour unlisted stream runs with no dropped frames while the target is under full CPU load.
+**Done when:** a 6-hour unlisted stream runs with no dropped frames while the target is busy up to its CPU cap (D30; full load of every core would be the wrong test on a shared VPS).
 
 ### Phase 4 — Control plane MVP · L
 
@@ -861,7 +863,7 @@ Not legal advice; check anything you're unsure about.
 | Delay makes control frustrating | High | Medium | Vote/queue mechanics, instant overlay acknowledgement, ultra-low latency |
 | Too few viewers for votes to work | High (early) | High | Low-population rules, scheduled streams, build the Discord community first |
 | Moderation workload burns you out | Medium | High | Automation first, lockdown and night modes, scheduled streams before 24/7 |
-| CPU steal on a shared VPS | Medium | Medium | Pinning, measure in Phase 0, upgrade to a Root Server if needed |
+| CPU steal or throttling on a shared VPS | Medium | High | Pinning; target CPU cap (D30); steal measured in Phase 0 (3.8 % under load); move to a Root Server before streaming 24/7 |
 | YouTube API changes or quota | Medium | Medium | `chat-downloader` fallback; keep API calls minimal |
 | Discord voice library lacks DAVE | Medium | Low | Stage channel, or a separate Node relay with `@discordjs/voice` |
 | Strike from on-screen content | Medium | High | Phase 5 gate, tiny allowlist, OCR, moderators, panic |
@@ -876,7 +878,7 @@ Answer these and move the answers to the decision log:
 
 1. Audience language(s)?
 2. Channel name and brand?
-3. VPS or Root Server, and what is the measured steal time?
+3. VPS or Root Server, and what is the measured steal time? **Partly answered:** netcup VPS Lite 3 G12s (8 shared vCores), 3.8 % steal under full load (P0). Fine for development and scheduled test streams. Before streaming 24/7: move to a Root Server (dedicated cores), or get netcup's written OK for a constant 25–45 %.
 4. Scheduled streams only, or aim for 24/7 after Phase 10?
 5. Monetization (memberships, Super Chat effects) from day one or later?
 6. ~~720p vs 1080p after the Phase 3 benchmark?~~ 1080p decided (D21); the benchmark only tunes bitrate, preset and the CPU split.
@@ -927,6 +929,7 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D27 | bcast services aren't bound to each other (`Wants`/`After`, no `BindsTo`); each exits when something it needs goes away; the encoder has a watchdog (no new frame for 15 s → restart) | ffmpeg's pulse input hangs forever when PulseAudio restarts. A unit stopped through `BindsTo` doesn't count as failed, so `Restart=` wouldn't bring it back |
 | 2026-11-15 | D28 | Scenes are a file (`chat-bcast-scene` with `live`, `starting` or `brb`, polled by the page each second); `starting`/`brb` also mute sink `target`, re-applied from the file whenever the relay reconnects | A file works without brain. Panic must silence the target, not just cover it; PulseAudio forgets mutes when it restarts |
 | 2026-11-15 | D29 | MediaMTX pinned (v1.21.3) and checked against its SHA-256 at build; API, metrics, pprof, playback, WebRTC, SRT and Media-over-QUIC off; RTMP and RTSP on loopback only; HLS on 8888 for the WireGuard preview. `images/build.sh <name>` builds any image; `host.env` gains `TARGET_IP` and `BRAIN_PORT` | Not packaged in Debian; smallest surface (MoQ is on by default). One build script for every image |
+| 2026-11-15 | D30 | Targets get a hard CPU cap on top of pinning: `limits.cpu.allowance` from `TARGET_CPU_ALLOWANCE`, default `150ms/100ms` (1.5 CPUs' worth on the 3 pinned cores); raise it on a Root Server | The server is a netcup VPS Lite: shared vCores, sold for lightweight workloads, and sustained 100 % use reportedly gets throttled. Chat will keep a target busy for hours; with the cap, the whole server peaks around 45 % (bcast up to 1.8, target 1.5, the rest small) and sits around 25 % normally |
 | 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |
 | 2026-11-15 | P1 | Phase 1 on the server: `bootstrap.sh` built the host from a fresh Debian 13.7 install (Incus from Zabbly), admin user with key-only SSH and root SSH login turned off, WireGuard tunnel to the laptop; `net-isolation.sh` passes every check, again after a reboot | Phase 1 done. The first runs from a terminal failed the allowed paths: the test's own fake services died under `incus exec`'s pseudo-terminal (test fixed, firewall was right) |
 | 2026-11-15 | P2 | Phase 2 on the server: `images/debian-xfce/check.sh` 12/12. VNC 6.4 s and desktop 8.3 s after launch; the four services active under systemd; 1600×900 framebuffer; PCM at 192 016 B/s, test tone −11.7 dBFS; snapshot of the running desktop in 0.1 s, restored while running in 1.5 s with the change undone | Phase 2 done: boot < 30 s and restore < 15 s met with a wide margin |
