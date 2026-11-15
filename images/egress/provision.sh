@@ -36,8 +36,12 @@ install -d -m 0755 /etc/squid/conf.d
 cp -a "$STAGE/rootfs/." /
 # Debian's own snippets would loosen the rules above.
 rm -f /etc/squid/conf.d/debian.conf
-squid -k parse -f /etc/squid/squid.conf 2>&1 | grep -iE "error|warning" | sed 's/^/    /' || true
-squid -k parse -f /etc/squid/squid.conf >/dev/null 2>&1 || { echo "squid.conf doesn't parse" >&2; exit 1; }
+if ! out=$(squid -k parse -f /etc/squid/squid.conf 2>&1); then
+	grep -iE "fatal|error" <<<"$out" | sed 's/^/    /' >&2
+	echo "squid.conf doesn't parse" >&2
+	exit 1
+fi
+grep -iE "warning" <<<"$out" | sed 's/^/    /' || true
 
 log "Services"
 systemctl enable squid.service >/dev/null 2>&1

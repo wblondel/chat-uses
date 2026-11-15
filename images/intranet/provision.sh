@@ -49,7 +49,8 @@ for wad in /usr/share/games/doom/freedoom1.wad /usr/share/games/doom/freedoom2.w
 	ln -sf "$wad" "/var/www/intranet/files/freedoom/$(basename "$wad")"
 done
 nginx -t 2>&1 | sed 's/^/    /'
-kiwix-serve --version 2>&1 | head -2 | sed 's/^/    /'
+# sed reads it all: head would close the pipe early and, with pipefail, end the build.
+kiwix-serve --version 2>&1 | sed -n '1,2s/^/    /p'
 
 log "Services"
 systemctl enable nginx.service chat-kiwix.service >/dev/null 2>&1
