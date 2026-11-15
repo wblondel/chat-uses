@@ -1,7 +1,8 @@
 # chat-uses MediaMTX (chat-bcast-mediamtx.service). The encoder publishes
-# "live" over RTSP; the forwarder reads it and pushes it to YouTube, so a
-# YouTube outage never restarts the encoder. RTSP and RTMP stay on localhost;
-# HLS on :8888 is a preview for the admin tunnel (http://BCAST_IP:8888/live/).
+# "live" over RTMP (one clock for both tracks, PLAN.md D25); the forwarder
+# reads it and pushes it to YouTube, so a YouTube outage never restarts the
+# encoder. RTMP and RTSP stay on localhost; HLS on :8888 is a preview for the
+# admin tunnel (http://BCAST_IP:8888/live/).
 logLevel: warn
 api: no
 metrics: no

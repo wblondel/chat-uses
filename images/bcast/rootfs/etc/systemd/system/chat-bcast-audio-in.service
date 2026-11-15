@@ -1,5 +1,5 @@
 [Unit]
-Description=chat-uses broadcast: target sound into the mixer, through a limiter
+Description=chat-uses broadcast: target sound into sink "target", never more than ~0.1 s late
 PartOf=chat-bcast.target
 Wants=chat-bcast-audio.service
 After=chat-bcast-audio.service
