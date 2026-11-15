@@ -1,19 +1,22 @@
 #!/usr/bin/python3
-"""Pull the target's sound into the stream, never more than ~0.1 s late.
+"""Pull the target's sound into the stream, steady and in time.
 
 The target serves raw PCM (s16le, 48 kHz, stereo) on TCP AUDIO_PORT; pacat
 plays it into the sink "target", which feeds "mix" (chat-bcast-scene mutes
-it). Reading never waits for pacat: whenever pacat is behind
-(a stall here, or a burst after a network hiccup), sound is dropped.
-Queueing it instead would leave the sound late against the picture for the
-rest of the stream.
+it).
 
-What waits in the pipe to pacat only drains in real time, so a backlog stays
-until something drops it. Dropping just what doesn't fit would leave the pipe
-nearly full after any hiccup: the sound later than needed, and every small
-burst afterwards overflowing into a click (found on the server). So the relay
-catches up in one go, down to LOW: when the pipe is full, and when the backlog
-never fell below SETTLE for a whole WINDOW.
+This is a jitter buffer. The target is chat's machine and often busy, so its
+sound arrives in bursts; a player fed straight from the socket runs dry
+between them, which plays as cuts (found on the server with the target at
+its CPU cap). So the relay holds AUDIO_BUFFER_MS of sound and feeds pacat at
+exactly real-time pace by the clock: a burst up to that late plays without a
+cut. The encoder's AUDIO_DELAY shifts the sound back by the same amount.
+
+Sound later than that is replaced by silence where it was due, and dropped
+when it finally arrives; a backlog that builds up anyway (pacat fell behind,
+or a burst beyond the buffer) is dropped too. Queueing either would leave the
+sound late against the picture for the rest of the stream. Every cut and
+every drop is logged.
 
 A stall or disconnect ends the script; systemd restarts it, which also
 follows the target through reboots. The limiter (chat can't blast the
@@ -23,6 +26,7 @@ stream) is in the encoder, on the whole mix.
 import fcntl
 import json
 import os
+import select
 import socket
 import struct
 import subprocess
@@ -31,14 +35,21 @@ import termios
 import time
 
 FRAME = 4  # bytes per sample frame: 2 channels x 16 bit
-CHUNK = 4096  # bytes per pipe write (1024 frames, 21 ms); <= PIPE_BUF, so atomic
-PIPE_BYTES = 16384  # pacat's queue, ~85 ms
+RATE = 192000  # bytes per second
 MS = 192  # bytes per millisecond
-LOW = 15 * MS  # catching up stops at this backlog
-SETTLE = 40 * MS  # a backlog that never falls below this...
-WINDOW = 10  # ...for this many seconds is caught up too
+TICK = 0.01  # seconds between writes to pacat
+CHUNK = 4096  # bytes per pipe write (21 ms); <= PIPE_BUF, so atomic
+PIPE_BYTES = 16384  # the pipe to pacat holds at most ~85 ms
+SURPLUS = 100 * MS  # sound held beyond the buffer that gets dropped
+LOW = 15 * MS  # when pacat is behind, the pipe drains down to this
+SETTLE = 40 * MS  # a pipe backlog that never falls below this...
+WINDOW = 10  # ...for this many seconds is drained too
 TIMEOUT = 5  # seconds without data = the target is gone
 SCENE = "/var/lib/chat-bcast/control/scene.json"
+
+
+def log(message):
+    print(f"{time.strftime('%H:%M:%S')} {message}", file=sys.stderr, flush=True)
 
 
 def apply_scene_mute():
@@ -60,13 +71,19 @@ def backlog(fd):
     return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0"))[0]
 
 
+def frames(n):
+    return n - n % FRAME
+
+
 def main():
     host, port = os.environ["TARGET_HOST"], int(os.environ["AUDIO_PORT"])
+    target = frames(int(os.environ.get("AUDIO_BUFFER_MS") or 120) * MS)
     apply_scene_mute()
     try:
         sock = socket.create_connection((host, port), timeout=TIMEOUT)
     except OSError as err:
         sys.exit(f"cannot reach {host}:{port}: {err}")
+    sock.setblocking(False)
     player = subprocess.Popen(
         ["pacat", "--playback", "--raw", "--format=s16le", "--rate=48000", "--channels=2",
          "--latency-msec=40", "--device=target", "--client-name=chat-bcast-audio-in",
@@ -76,41 +93,83 @@ def main():
     fcntl.fcntl(out, fcntl.F_SETPIPE_SZ, PIPE_BYTES)
     os.set_blocking(out, False)
 
+    held = bytearray()  # sound received, not yet given to pacat
     pending = b""  # tail of the last read that wasn't a whole frame
-    catching_up = None  # why we're dropping sound, or None
-    dropped = 0  # bytes dropped while catching up
-    floor, window_start = PIPE_BYTES, time.monotonic()  # lowest backlog this window
-    while True:
-        try:
-            data = sock.recv(65536)
-        except TimeoutError:
-            sys.exit(f"no sound data from {host}:{port} for {TIMEOUT} s")
-        if not data:
-            sys.exit(f"{host}:{port} closed the connection")
-        data = pending + data
-        whole = len(data) - len(data) % FRAME
-        pending = data[whole:]
+    late = 0  # bytes played as silence; that much late sound gets dropped
+    cut = 0  # bytes of silence in the current cut, for the log
+    draining = None  # why pacat is being let catch up, or None
+    behind = 0  # bytes left out while it does
+    start = written = None  # playback clock, and bytes due by it so far
+    last_data = time.monotonic()
+    floor, window_start = PIPE_BYTES, last_data  # lowest pipe backlog this window
 
+    while True:
+        readable, _, _ = select.select([sock], [], [], TICK)
+        now = time.monotonic()
+        if readable:
+            data = sock.recv(65536)
+            if not data:
+                sys.exit(f"{host}:{port} closed the connection")
+            last_data = now
+            data = pending + data
+            whole = frames(len(data))
+            pending = data[whole:]
+            data = data[:whole]
+            if late:  # its moment has passed: silence was played instead
+                dropped = min(late, len(data))
+                data = data[dropped:]
+                late -= dropped
+            held += data
+        elif now - last_data > TIMEOUT:
+            sys.exit(f"no sound data from {host}:{port} for {TIMEOUT} s")
+
+        if start is None:  # fill the buffer before playing
+            if len(held) >= target:
+                start, written = now, 0
+            continue
+        due = frames(int((now - start) * RATE)) - written
+        if due <= 0:
+            continue
+        written += due
+
+        if len(held) > target + SURPLUS:  # bursts beyond the buffer
+            extra = frames(len(held) - target)
+            del held[:extra]
+            log(f"ahead: dropped {extra // MS} ms of sound to stay in time")
+
+        out_bytes = bytes(held[:due])
+        del held[:due]
+        if len(out_bytes) < due:  # nothing to play: the target is late
+            missing = due - len(out_bytes)
+            out_bytes += bytes(missing)
+            late += missing
+            cut += missing
+        elif cut:
+            log(f"cut: the target's sound was {cut / MS:.1f} ms late")
+            cut = 0
+
+        # pacat behind (a stall here): what waits in the pipe only drains in
+        # real time, so let it drain to LOW in one go instead of leaving it
+        # nearly full, where every later burst would overflow into a click.
         waiting = backlog(out)
         floor = min(floor, waiting)
-        if time.monotonic() - window_start >= WINDOW:
-            if floor > SETTLE and not catching_up:
-                catching_up = f"{floor // MS} ms backlog for {WINDOW} s"
-            floor, window_start = PIPE_BYTES, time.monotonic()
-        if catching_up:
+        if now - window_start >= WINDOW:
+            if floor > SETTLE and not draining:
+                draining = f"{floor // MS} ms backlog for {WINDOW} s"
+            floor, window_start = PIPE_BYTES, now
+        if draining:
             if waiting > LOW:
-                dropped += whole
+                behind += len(out_bytes)
                 continue
-            print(f"{time.strftime('%H:%M:%S')} behind ({catching_up}): dropped {dropped // MS} ms to catch up",
-                  file=sys.stderr, flush=True)
-            catching_up, dropped = None, 0
+            log(f"behind ({draining}): dropped {behind // MS} ms of sound so pacat catches up")
+            draining, behind = None, 0
 
-        for i in range(0, whole, CHUNK):
+        for i in range(0, len(out_bytes), CHUNK):
             try:
-                os.write(out, data[i:min(i + CHUNK, whole)])
-            except BlockingIOError:  # pipe full
-                catching_up = "pipe full"
-                dropped += whole - i
+                os.write(out, out_bytes[i:i + CHUNK])
+            except BlockingIOError:
+                draining = "pipe full"
+                behind += len(out_bytes) - i
                 break
             except BrokenPipeError:
                 sys.exit("pacat exited")
