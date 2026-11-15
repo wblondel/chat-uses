@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
+import aiohttp
 import discord
 from discord import app_commands
 
@@ -27,6 +28,16 @@ from chatuses.identity import user_id
 from chatuses.pipeline import ChatMessage
 
 log = logging.getLogger(__name__)
+
+
+class _NoVoiceWarnings(logging.Filter):
+    """discord.py warns at every start that its voice libraries are missing: no voice until Phase 11."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "voice will NOT be supported" not in record.getMessage()
+
+
+logging.getLogger("discord.client").addFilter(_NoVoiceWarnings())
 
 ROLE_NAMES = {"Owner": "owner", "Moderator": "moderator", "Regular": "regular"}
 RETRY = (5.0, 300.0)  # seconds between restarts after an unexpected failure
@@ -180,9 +191,13 @@ class DiscordChat:
                     "turn on the Message Content intent (Developer Portal → Bot)",
                 )
                 return
-            except Exception as err:  # network trouble discord.py gave up on, or a bug: retry, slowly
-                self.state, self.reason = "reconnecting", f"{type(err).__name__}"
-                log.exception("Discord: connection failed, retrying in %.0f s", wait)
+            except (OSError, aiohttp.ClientError, discord.GatewayNotFound, discord.ConnectionClosed) as err:
+                # Network trouble discord.py gave up on: one line, then retry, slowly.
+                self.state, self.reason = "reconnecting", type(err).__name__
+                log.warning("Discord: can't connect (%s), retrying in %.0f s", type(err).__name__, wait)
+            except Exception as err:  # a bug: the whole story, then retry
+                self.state, self.reason = "reconnecting", type(err).__name__
+                log.exception("Discord: failed, retrying in %.0f s", wait)
             finally:
                 if not client.is_closed():
                     await client.close()

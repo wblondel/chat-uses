@@ -210,7 +210,11 @@ class Brain:
         machine = "taking commands" if self.executor.online.is_set() else "not taking input"
         lines = [f"Machine: {machine} ({self.executor.queue.qsize()} waiting)"]
         for name, status in self.adapters().items():
-            detail = f" ({status['reason']})" if status.get("reason") else ""
+            errors: list[str] = status.get("recent_errors") or []
+            reason = status.get("reason") or (f"last error: {errors[-1]}" if errors else "")
+            if status["state"] == "streaming":
+                reason = ""
+            detail = f" ({reason})" if reason else ""
             video = f", video {status['video']}" if status.get("video") else ""
             quota = (
                 f", {status['quota_used_today']} quota units today" if "quota_used_today" in status else ""

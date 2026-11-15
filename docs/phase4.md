@@ -286,7 +286,7 @@ me the numbers and I'll write them down in PLAN.md.
 
 Step 4:
 
-- 303 unit tests, among them the YouTube adapter against a fake gRPC chat
+- 305 unit tests, among them the YouTube adapter against a fake gRPC chat
   server built from Google's own `.proto`: chat streamed, resumed from the
   page token after a normal close and after errors, history and backlog
   older than 30 s dropped, duplicates dropped, Super Chats ignored, every
@@ -297,10 +297,14 @@ Step 4:
   intent. brain: adapters off without their secrets, the video kept across
   restarts, admin requests over the console socket, a database from step 3
   upgraded.
-- In the sandbox: the brain image built with the new dependencies, deployed,
-  `chat-brain-admin` and the check's chat lines. Google and Discord can't be
-  reached from the sandbox, so the real connections are yours to try (steps
-  1–4 above).
+- In the sandbox: the brain image built with the new dependencies (all 14
+  hash-checked), deployed, and checked 7/7 with both adapters reported off
+  without secrets. With stand-in secrets: deploy pushed them as
+  `root:brain 0640`, `chat-brain-admin` followed a video, refused a bad URL
+  and kept the video across a restart, and status and the check showed why
+  each adapter wasn't connected (the sandbox can't reach Google or Discord:
+  "last error: ...DNSError", retried with backoff). The real connections
+  are yours to try (steps 1–4 above).
 
 Step 3:
 

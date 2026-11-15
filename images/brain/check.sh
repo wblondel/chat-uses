@@ -112,7 +112,8 @@ state, reason, video = yt.get("state"), yt.get("reason") or "", yt.get("video")
 if state == "streaming":
     say("PASS", f"YouTube chat: reading the chat of {video}")
 elif state in ("looking", "waiting", "reconnecting"):
-    say("INFO", f"YouTube chat: {state} ({reason or video})")
+    errors = yt.get("recent_errors") or []
+    say("INFO", f"YouTube chat: {state} ({reason or video})" + (f", last error: {errors[-1]}" if errors else ""))
 elif state == "off" and reason:
     say("INFO", "YouTube chat off: no API key (/etc/chat-uses/secrets/google-api-key on the host, then deploy.sh)")
 elif state == "off":

@@ -388,3 +388,29 @@ def test_discord_settings_from_the_environment() -> None:
     assert Config.from_env({"TARGET_HOST": "x"}).discord_guild_id is None
     with pytest.raises(SystemExit, match="numeric"):
         Config.from_env({"TARGET_HOST": "x", "DISCORD_GUILD_ID": "my server"})
+
+
+def test_status_shows_the_last_error_while_not_streaming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def follow(_self: YouTubeChat, _video: str | None) -> None:  # instead of reaching YouTube
+        pass
+
+    monkeypatch.setattr(YouTubeChat, "follow", follow)
+    (tmp_path / "google-api-key").write_text("key")
+
+    async def test() -> None:
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path))
+            assert brain.youtube is not None
+            brain.youtube.state = "looking"
+            brain.youtube.counters.errors.append("videos.list: ClientConnectorDNSError")
+            assert (
+                "YouTube: looking, 0 quota units today (last error: videos.list: ClientConnectorDNSError)"
+                in brain.status_text()
+            )
+            brain.youtube.state = "streaming"
+            assert "YouTube: streaming, 0 quota units today\n" in brain.status_text()
+
+    run(test)

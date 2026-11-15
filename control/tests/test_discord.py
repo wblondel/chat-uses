@@ -120,8 +120,10 @@ def test_unexpected_failures_are_retried(monkeypatch: pytest.MonkeyPatch) -> Non
 
     async def start(_self: discord.Client, _token: str, *, reconnect: bool = True) -> None:
         attempts.append(1)
-        if len(attempts) < 3:
+        if len(attempts) == 1:
             raise OSError("network down")
+        if len(attempts) == 2:
+            raise RuntimeError("a bug")
         raise discord.LoginFailure("now the token is wrong")
 
     monkeypatch.setattr(discord.Client, "start", start)
@@ -136,3 +138,11 @@ def test_unexpected_failures_are_retried(monkeypatch: pytest.MonkeyPatch) -> Non
         await chat.close()
 
     run(test)
+
+
+def test_voice_library_warnings_are_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    logger = discord_bot.logging.getLogger("discord.client")
+    with caplog.at_level("WARNING", logger="discord.client"):
+        logger.warning("PyNaCl is not installed, voice will NOT be supported")
+        logger.warning("something that matters")
+    assert [r.getMessage() for r in caplog.records] == ["something that matters"]

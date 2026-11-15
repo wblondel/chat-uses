@@ -785,7 +785,7 @@ Runbook: **`docs/phase4.md`** (grows with each step).
 - [ ] Retro images, benchmarking boot time and responsiveness for each: FreeDOS, ReactOS, Haiku, KolibriOS, 9front, AROS. Windows only with real licences.
 - [ ] **DOSBox-X / 86Box target type:** the emulator window inside an Xvnc display in a container (86Box also needs a BIOS ROM set; check its licensing).
 - [ ] **Platform War:** two targets, commands routed by platform, two-pane layout, 1080p benchmark.
-- [ ] **Discord audio relay:** a bot streaming the mix into the Stage channel (Stage channels are exempt from Discord's mandatory voice E2EE, DAVE), or a DAVE-capable voice library. ⚠️ Verify whether `discord.py` supports DAVE by then; `@discordjs/voice` does via `@snazzah/davey`, and `dave.py` provides Python bindings.
+- [ ] **Discord audio relay:** a bot streaming the mix into the Stage channel (Stage channels are exempt from Discord's mandatory voice E2EE, DAVE), or a DAVE-capable voice library. Seen in Phase 4: discord.py 2.7 looks for an optional `davey` package for DAVE (it warns when it's missing). ⚠️ Verify that path works by then; `@discordjs/voice` does via `@snazzah/davey`, and `dave.py` provides Python bindings.
 - [ ] **Discord Activity:** embed the MediaMTX HLS/WebRTC feed and the vote panel inside Discord via the Embedded App SDK. ⚠️ Verify SDK constraints (URL mappings, CSP).
 - [ ] **Twitch adapter** (EventSub chat) if you multistream.
 - [ ] **Android** (redroid): needs the binder kernel module on the host *and* usually a privileged container, which breaks the isolation model. Only do it with extra review.
