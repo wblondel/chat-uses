@@ -80,9 +80,16 @@ wait_for_ip() {
 	die "$project/$name did not get $ip"
 }
 
+# Every command in a container runs without a terminal (-T) or stdin (-n).
+# From an interactive shell, incus exec would otherwise use a pseudo-terminal,
+# and closing it can kill a server setsid has only just forked: on the real
+# server every fake service died that way, so the "blocked" checks proved
+# nothing (through `| cat` it passed).
+cexec() { incus exec -T -n "$@"; }
+
 # can_connect CONTAINER PROJECT HOST PORT: TCP connect from inside a container.
 can_connect() {
-	incus exec "$1" --project "$2" -- timeout 4 bash -c "exec 3<>/dev/tcp/$3/$4" >/dev/null 2>&1
+	cexec "$1" --project "$2" -- timeout 4 bash -c "exec 3<>/dev/tcp/$3/$4" >/dev/null 2>&1
 }
 
 expect_open() {
@@ -92,21 +99,42 @@ expect_blocked() {
 	if can_connect "$1" "$2" "$3" "$4"; then fail "$5"; else pass "$5"; fi
 }
 
-# start_listener CONTAINER PORT...: tiny TCP servers that answer "ok".
+# start_listener CONTAINER PORT...: tiny TCP servers that answer "ok", then
+# wait until each one accepts connections: a check against a port nobody
+# listens on would pass for the wrong reason.
 start_listener() {
-	local name=$1
+	local name=$1 port
 	shift
-	if ! incus exec "$name" --project infra -- sh -c 'command -v python3 >/dev/null'; then
-		incus exec "$name" --project infra -- sh -c \
+	# "|| exit 1": dash's `command -v` returns 127 for a missing command, which
+	# incus exec reports as "Error: Command not found".
+	if cexec "$name" --project infra -- sh -c 'command -v python3 >/dev/null || exit 1'; then
+		start_python_listener "$name" "$@"
+	else
+		cexec "$name" --project infra -- sh -c \
 			'command -v socat >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq socat >/dev/null; }' ||
 			die "could not install socat in $name (does infranet reach the internet?)"
-		local port
 		for port in "$@"; do
-			incus exec "$name" --project infra -- setsid -f socat "TCP-LISTEN:$port,fork,reuseaddr" SYSTEM:'echo ok'
+			cexec "$name" --project infra -- setsid -f socat "TCP-LISTEN:$port,fork,reuseaddr" SYSTEM:'echo ok'
 		done
-		return
 	fi
-	incus exec "$name" --project infra -- setsid -f python3 -c '
+	for port in "$@"; do
+		listening "$name" "$port" || die "$name: nothing listening on port $port, so the checks would prove nothing"
+	done
+}
+
+# listening CONTAINER PORT: wait up to 10 s for the port to accept locally.
+listening() {
+	for _ in $(seq 1 20); do
+		cexec "$1" --project infra -- timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$2" >/dev/null 2>&1 && return 0
+		sleep 0.5
+	done
+	return 1
+}
+
+start_python_listener() {
+	local name=$1
+	shift
+	cexec "$name" --project infra -- setsid -f python3 -c '
 import socket, sys, threading
 def serve(port):
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -143,7 +171,6 @@ target_args=(-d "root,size=2GiB")
 launch "$TARGET" targets target-desktop "$TEST_TARGET_IP" "${target_args[@]}"
 start_listener "$EGRESS" "$PROXY_PORT" "$INTRANET_PORT" "${DECOY_PORTS[@]}"
 start_listener "$INTRANET" "$INTRANET_PORT" "$PROXY_PORT" "${DECOY_PORTS[@]}"
-sleep 1
 info "target $TEST_TARGET_IP, egress $EGRESS_IP, intranet $INTRANET_IP"
 
 probe_host=${INTERNET_PROBE%:*}
@@ -170,7 +197,7 @@ fi
 expect_blocked "$TARGET" targets "$probe_host" 25 "target ↛ $probe_host:25 (SMTP, test 6)"
 expect_blocked "$TARGET" targets 8.8.8.8 53 "target ↛ 8.8.8.8:53 (outside DNS)"
 # UDP gets no handshake to fail, so only the capture can tell.
-incus exec "$TARGET" --project targets -- bash -c "echo x >/dev/udp/$probe_host/53; echo x >/dev/udp/8.8.8.8/53" 2>/dev/null || true
+cexec "$TARGET" --project targets -- bash -c "echo x >/dev/udp/$probe_host/53; echo x >/dev/udp/8.8.8.8/53" 2>/dev/null || true
 sleep 2
 kill "$capture_pid" 2>/dev/null || true
 wait "$capture_pid" 2>/dev/null || true
@@ -183,12 +210,12 @@ else
 fi
 rm -f "$capture"
 # shellcheck disable=SC2016 # awk program, evaluated inside the container
-if incus exec "$TARGET" --project targets -- awk '$1 !~ /^fe80/ && $1 != "00000000000000000000000000000001" {found = 1} END {exit !found}' /proc/net/if_inet6 2>/dev/null; then
+if cexec "$TARGET" --project targets -- awk '$1 !~ /^fe80/ && $1 != "00000000000000000000000000000001" {found = 1} END {exit !found}' /proc/net/if_inet6 2>/dev/null; then
 	fail "target has a global IPv6 address"
 else
 	pass "target has no global IPv6 address"
 fi
-if incus exec "$TARGET" --project targets -- timeout 5 getent hosts deb.debian.org >/dev/null 2>&1; then
+if cexec "$TARGET" --project targets -- timeout 5 getent hosts deb.debian.org >/dev/null 2>&1; then
 	fail "target can resolve names (DNS should be unavailable)"
 else
 	pass "target cannot resolve names"

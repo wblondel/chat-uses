@@ -62,6 +62,14 @@ else
 	say "/dev/kvm" "absent (expected: containers + QEMU software emulation)"
 fi
 feature "vmx/svm CPU flag" yes no grep -qE '\b(vmx|svm)\b' /proc/cpuinfo
+# x264 (Phase 3) runs much faster with AVX2. A generic CPU model ("QEMU
+# Virtual CPU") can hide it, or the host can pass it through anyway.
+simd=$(grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'ssse3|sse4_1|sse4_2|avx|avx2|avx512f' | tr '\n' ' ' || true)
+if grep -qw avx2 <<<"$simd"; then
+	say "SIMD (for x264)" "${simd% }"
+else
+	say "SIMD (for x264)" "${simd:-none} (no AVX2: the 1080p encode will need more CPU)"
+fi
 feature "btrfs" available "MISSING (needed for the storage pool)" \
 	sh -c 'grep -qw btrfs /proc/filesystems || modprobe -n btrfs'
 feature "wireguard" available "MISSING (needed for the admin tunnel)" \

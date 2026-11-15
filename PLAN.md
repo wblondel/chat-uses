@@ -38,8 +38,8 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 
 | Phase | Name | Size | Status |
 |---|---|---|---|
-| 0 | Groundwork (accounts, server check) | S | ◐ tooling ready, manual steps left (`docs/phase0.md`) |
-| 1 | Host foundation (Debian, Incus, networks) | M | ◐ code ready, run on the server (`docs/phase1.md`) |
+| 0 | Groundwork (accounts, server check) | S | ◐ server checked (section 15); account steps in `docs/phase0.md` |
+| 1 | Host foundation (Debian, Incus, networks) | M | ◐ bootstrapped on the server; isolation test and reboot left (`docs/phase1.md`) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ◐ code ready, build on the server (`docs/phase2.md`) |
 | 3 | Broadcast pipeline | M | ◐ code ready, run on the server (`docs/phase3.md`) |
 | 4 | Control plane MVP | L | ☐ |
@@ -927,3 +927,4 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D27 | bcast services aren't bound to each other (`Wants`/`After`, no `BindsTo`); each exits when something it needs goes away; the encoder has a watchdog (no new frame for 15 s → restart) | ffmpeg's pulse input hangs forever when PulseAudio restarts. A unit stopped through `BindsTo` doesn't count as failed, so `Restart=` wouldn't bring it back |
 | 2026-11-15 | D28 | Scenes are a file (`chat-bcast-scene` with `live`, `starting` or `brb`, polled by the page each second); `starting`/`brb` also mute sink `target`, re-applied from the file whenever the relay reconnects | A file works without brain. Panic must silence the target, not just cover it; PulseAudio forgets mutes when it restarts |
 | 2026-11-15 | D29 | MediaMTX pinned (v1.21.3) and checked against its SHA-256 at build; API, metrics, pprof, playback, WebRTC, SRT and Media-over-QUIC off; RTMP and RTSP on loopback only; HLS on 8888 for the WireGuard preview. `images/build.sh <name>` builds any image; `host.env` gains `TARGET_IP` and `BRAIN_PORT` | Not packaged in Debian; smallest surface (MoQ is on by default). One build script for every image |
+| 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |

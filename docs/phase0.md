@@ -45,6 +45,7 @@ Read the result:
 |---|---|---|
 | OS | Debian 13 | Reinstall from the netcup image before Phase 1 |
 | `/dev/kvm` | absent | If present, nested virtualization works after all; tell me, it opens options |
+| SIMD (for x264) | includes `avx2` | Not blocking: the 1080p encode needs more CPU; Phase 3's check measures it. A generic "QEMU Virtual CPU" model can still pass AVX2 through |
 | btrfs, wireguard | available | Both ship with Debian's kernel; a custom kernel would need them |
 | cgroup | v2 | Debian 13 uses v2; v1 means something unusual |
 | Steal, full load (avg) | < 2 % | 2–5 %: OK with CPU pinning. > 5 %: expect stream stutter; consider a Root Server |

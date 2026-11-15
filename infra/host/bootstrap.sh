@@ -150,7 +150,6 @@ step_admin_user() {
 		useradd --create-home --shell /bin/bash "$ADMIN_USER"
 		info "created user $ADMIN_USER"
 	fi
-	usermod -aG sudo "$ADMIN_USER"
 	getent group incus-admin >/dev/null && usermod -aG incus-admin "$ADMIN_USER"
 
 	local home keys
@@ -171,6 +170,12 @@ step_admin_user() {
 		info "passwordless sudo for $ADMIN_USER"
 	fi
 	rm -f "$tmp"
+	# Not in Debian's "sudo" group: its rule asks for a password, which this
+	# user doesn't have, and makes `sudo -v` prompt although commands don't.
+	if id -nG "$ADMIN_USER" | grep -qw sudo; then
+		gpasswd -d "$ADMIN_USER" sudo >/dev/null
+		info "removed $ADMIN_USER from the sudo group (the rule above covers it)"
+	fi
 }
 
 step_ssh() {

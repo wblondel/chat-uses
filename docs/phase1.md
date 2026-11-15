@@ -102,6 +102,18 @@ It runs these steps in order (you can run any subset, e.g. `bootstrap.sh firewal
 From your laptop, in a **new** terminal: `ssh root@SERVER` (or your admin user).
 Only close the old session once this works.
 
+If you set `ADMIN_USER`:
+
+1. `ssh ADMIN_USER@SERVER`, then `sudo -n true && echo OK`: it must print `OK`
+   without asking for anything (the user has no password; `-n` makes sudo fail
+   instead of prompting).
+2. Optional, once that works: set `SSH_PERMIT_ROOT_LOGIN="no"` in `host.env`
+   and run `sudo infra/host/bootstrap.sh ssh`. Keep the session open until a
+   fresh `ssh ADMIN_USER@SERVER` works. The netcup web console still logs in
+   as root with the password.
+3. From then on, prefix the repository commands with `sudo`, including
+   `sudo git -C /opt/chat-uses pull` (root owns the checkout).
+
 ### 4. Connect your laptop to the admin tunnel
 
 Install WireGuard on the laptop. Best: generate the key on the laptop so it never
@@ -216,8 +228,10 @@ own Incus 6.0.4; both pass everything below except snapshot restore.
   `dd` with "Disk quota exceeded" (red-team test 3).
 - `ssh` step: effective config is keys-only (`sshd -T`); refuses without a key; rolls
   back an invalid config.
-- `admin-user`: user created with root's key, `sudo` and `incus-admin` groups,
-  passwordless sudo.
+- `admin-user`: user created with root's key, the `incus-admin` group and its
+  own passwordless sudo rule. It is kept out of Debian's `sudo` group, whose
+  rule asks for a password the user doesn't have (found on the server: `sudo -v`
+  prompted although commands didn't).
 - `wg-add-peer.sh` and `server-check.sh` work with Debian's `mawk`.
 - A template with a typo stops its step before anything is applied.
 - **Snapshot restore in the restricted `targets` project** (btrfs, container
@@ -238,6 +252,14 @@ backported 7.0.2), `incus snapshot restore` is refused in the `targets` project
 is checked against the project's low-level rule, and that check also caught
 Incus's own `volatile.*` keys. Upstream fixed it in Incus 7.5 (lxc/incus PR #3994);
 Zabbly's stable channel has it. See PLAN.md D19 and D20.
+
+**Found on the real server:** run from a terminal, the isolation test failed
+the two allowed paths every time, while `net-isolation.sh | cat` passed. With
+a terminal, `incus exec` runs commands in a pseudo-terminal, and closing it
+killed the test's fake services right after `setsid` forked them, so nothing
+was listening (and the "blocked" checks on those containers proved nothing).
+The test now runs every container command without a terminal (`incus exec -T
+-n`) and waits until each fake service accepts connections before checking.
 
 **Not tested there** (this sandbox's kernel or the lack of systemd prevents it),
 so watch these on the real server:
