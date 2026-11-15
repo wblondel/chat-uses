@@ -1,0 +1,17 @@
+# chat-uses SSH hardening. Rendered by infra/host/bootstrap.sh.
+# sshd uses the first value it reads for each option, and this file is
+# included before the others in sshd_config.d (10- sorts early).
+Port ${SSH_PORT}
+PermitRootLogin ${SSH_PERMIT_ROOT_LOGIN}
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+AuthenticationMethods publickey
+MaxAuthTries 3
+LoginGraceTime 20
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding local
+ClientAliveInterval 300
+ClientAliveCountMax 2

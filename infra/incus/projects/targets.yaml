@@ -1,0 +1,37 @@
+# Rendered with envsubst by infra/host/bootstrap.sh, then applied with
+# `incus project edit`. The whole config is replaced on every run.
+#
+# Everything chat controls lives here. The restrictions also bind any
+# client limited to this project (brain's certificate, Phase 4).
+description: "Machines controlled by chat. Restricted: unprivileged isolated containers on chatnet only, no host devices."
+config:
+  features.images: "false"
+  features.profiles: "true"
+  features.storage.volumes: "true"
+  features.networks: "false"
+
+  restricted: "true"
+  restricted.containers.privilege: "isolated"
+  restricted.containers.nesting: "block"
+  restricted.containers.lowlevel: "block"
+  restricted.containers.interception: "block"
+  restricted.virtual-machines.lowlevel: "block"
+  restricted.devices.nic: "managed"
+  restricted.networks.access: "${CHATNET_NAME}"
+  restricted.devices.disk: "managed"
+  restricted.devices.proxy: "block"
+  restricted.devices.gpu: "block"
+  restricted.devices.usb: "block"
+  restricted.devices.pci: "block"
+  restricted.devices.infiniband: "block"
+  restricted.devices.unix-char: "block"
+  restricted.devices.unix-block: "block"
+  restricted.devices.unix-hotplug: "block"
+  # Rewind is a core mechanic; restricted projects block snapshots by default.
+  restricted.snapshots: "allow"
+  restricted.backups: "block"
+
+  limits.instances: "${TARGETS_MAX_INSTANCES}"
+  limits.virtual-machines: "0"
+  limits.memory: "${TARGETS_MAX_MEMORY}"
+  limits.disk: "${TARGETS_MAX_DISK}"

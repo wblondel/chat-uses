@@ -1,0 +1,106 @@
+#!/usr/sbin/nft -f
+# chat-uses host firewall. Rendered by infra/host/bootstrap.sh from
+# infra/host/nftables.nft.tmpl; edit the template, not the rendered file.
+#
+# Only the "chat_uses_host" table is replaced on reload. There is no
+# "flush ruleset": Incus keeps its own tables (DHCP, NAT) alongside this one.
+# A packet must be accepted by every base chain on a hook, so the drop
+# policies here are authoritative even though Incus's chains accept.
+#
+# Network model:
+#   ${INFRANET_NAME} (${INFRANET_SUBNET}) infrastructure, NAT to the internet
+#   ${CHATNET_NAME} (${CHATNET_SUBNET})  chat-controlled targets, routed through this host
+#   ${WG_IF} (${WG_SUBNET})              admin tunnel
+
+table inet chat_uses_host
+delete table inet chat_uses_host
+
+table inet chat_uses_host {
+	chain input {
+		type filter hook input priority filter; policy drop;
+
+		iif "lo" accept
+		ct state established,related accept
+		ct state invalid drop
+
+		iifname "${CHATNET_NAME}" jump input_chatnet
+		iifname "${INFRANET_NAME}" jump input_infranet
+		iifname "${WG_IF}" jump input_wg
+
+		# Public services
+		tcp dport ${SSH_PORT} ct state new limit rate 30/minute burst 10 packets accept
+		udp dport ${WG_PORT} accept
+		${PUBLIC_HTTPS_RULE}
+
+		# ICMP / ICMPv6 needed for a healthy network stack
+		icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+		icmp type echo-request limit rate 10/second accept
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+		icmpv6 type echo-request limit rate 10/second accept
+
+		limit rate 10/minute log prefix "chat-uses in drop: " level info
+	}
+
+	# Targets may only ask for a DHCP lease from the host. No DNS, no SSH,
+	# no Incus API, nothing else.
+	chain input_chatnet {
+		udp sport 68 udp dport 67 accept
+		limit rate 10/minute log prefix "chat-uses chatnet->host drop: " level info
+		drop
+	}
+
+	chain input_infranet {
+		udp sport 68 udp dport 67 accept
+		ip saddr != ${INFRANET_SUBNET} drop
+		udp dport 53 accept
+		tcp dport 53 accept
+		ip saddr ${BRAIN_IP} tcp dport ${INCUS_API_PORT} accept
+		icmp type echo-request accept
+		drop
+	}
+
+	chain input_wg {
+		ip saddr != ${WG_SUBNET} drop
+		accept
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+
+		ct state established,related accept
+		ct state invalid drop
+
+		iifname "${CHATNET_NAME}" jump forward_from_chatnet
+		iifname "${INFRANET_NAME}" jump forward_from_infranet
+		iifname "${WG_IF}" jump forward_from_wg
+	}
+
+	# The only ways out of chatnet: the egress proxy and the intranet.
+	chain forward_from_chatnet {
+		ip saddr != ${CHATNET_SUBNET} drop
+		oifname "${INFRANET_NAME}" ip daddr ${EGRESS_IP} tcp dport ${PROXY_PORT} accept
+		oifname "${INFRANET_NAME}" ip daddr ${INTRANET_IP} tcp dport ${INTRANET_PORT} accept
+		limit rate 10/minute log prefix "chat-uses chatnet fwd drop: " level info
+		drop
+	}
+
+	chain forward_from_infranet {
+		ip saddr != ${INFRANET_SUBNET} drop
+		# Only seen if br_netfilter is loaded (bridged traffic between infra containers).
+		oifname "${INFRANET_NAME}" accept
+		# Infrastructure reaches the internet (Incus masquerades it).
+		oifname "${WAN_IF}" accept
+		# Infrastructure → targets, per role.
+		oifname "${CHATNET_NAME}" ip saddr ${BRAIN_IP} tcp dport { ${VNC_PORT}, ${QMP_PORT} } accept
+		oifname "${CHATNET_NAME}" ip saddr ${BCAST_IP} tcp dport { ${VNC_PORT}, ${AUDIO_PORT} } accept
+		drop
+	}
+
+	# Admin tunnel: full access to infrastructure, view/listen access to targets.
+	chain forward_from_wg {
+		ip saddr != ${WG_SUBNET} drop
+		oifname "${INFRANET_NAME}" accept
+		oifname "${CHATNET_NAME}" tcp dport { ${VNC_PORT}, ${AUDIO_PORT} } accept
+		drop
+	}
+}
