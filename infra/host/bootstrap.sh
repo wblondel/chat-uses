@@ -27,7 +27,10 @@ PACKAGES=(
 	ca-certificates curl jq gettext-base sudo
 	unattended-upgrades apt-listchanges
 	nftables wireguard-tools qrencode tcpdump
-	incus btrfs-progs
+	# Container-only Incus: the "incus" package adds QEMU for VMs, which this
+	# server can't run. Bridges need dnsmasq; AppArmor confines containers.
+	# Both are only "Recommends" of incus-base, and we skip recommends.
+	incus-base dnsmasq-base apparmor btrfs-progs
 	stress-ng
 )
 
@@ -35,7 +38,6 @@ PACKAGES=(
 
 step_preflight() {
 	[[ $EUID -eq 0 ]] || die "run as root (sudo $0)"
-	command -v envsubst >/dev/null || die "envsubst missing: apt-get install gettext-base"
 
 	if [[ -r /etc/os-release ]]; then
 		# shellcheck disable=SC1091
@@ -141,9 +143,11 @@ step_ssh() {
 		die "sshd is socket-activated (ssh.socket); change the port in ssh.socket instead of SSH_PORT"
 	fi
 
-	local conf=/etc/ssh/sshd_config.d/10-chat-uses.conf backup=""
+	local conf=/etc/ssh/sshd_config.d/10-chat-uses.conf backup="" content
+	# Render first: a failing render must stop here, not feed an empty file on.
+	content=$(render "$CHAT_USES_HOST_DIR/sshd.conf.tmpl")
 	[[ -f $conf ]] && backup=$(mktemp) && cp "$conf" "$backup"
-	if render "$CHAT_USES_HOST_DIR/sshd.conf.tmpl" | write_file "$conf" 0644; then
+	if write_file "$conf" 0644 <<<"$content"; then
 		install -d -m 0755 /run/sshd # sshd -t needs it; normally created by ssh.service
 		if ! sshd -t; then
 			if [[ -n $backup ]]; then cp "$backup" "$conf"; else rm -f "$conf"; fi
@@ -261,7 +265,10 @@ step_incus() {
 	if have_systemd; then
 		systemctl enable --now incus.socket incus.service >/dev/null 2>&1 || true
 	fi
-	incus admin waitready --timeout 120 || die "Incus daemon did not become ready"
+	# stderr hidden: on first use the client suggests "incus admin init",
+	# which this setup deliberately replaces with the steps below.
+	incus admin waitready --timeout 120 2>/dev/null ||
+		die "Incus daemon did not become ready (check: journalctl -u incus)"
 	info "Incus $(incus version | awk -F': ' '/Server version/ {print $2}') ready"
 }
 
@@ -280,13 +287,17 @@ step_storage() {
 	info "created (${args[*]:-no size limit})"
 }
 
+# Templates are rendered into a variable before "incus ... edit": in a pipe,
+# a failing render would still hand Incus an empty config to apply.
+
 apply_network() {
-	local name=$1 gw=$2 prefix=$3 file=$4
+	local name=$1 gw=$2 prefix=$3 file=$4 yaml
+	yaml=$(render "$file")
 	if ! incus network show "$name" >/dev/null 2>&1; then
 		incus network create "$name" --type=bridge "ipv4.address=$gw/$prefix" ipv6.address=none >/dev/null
 		info "created $name"
 	fi
-	render "$file" | incus network edit "$name"
+	incus network edit "$name" <<<"$yaml"
 	info "$name: $gw/$prefix"
 }
 
@@ -298,26 +309,28 @@ step_networks() {
 
 step_projects() {
 	log "Projects"
-	local file name
+	local file name yaml
 	for file in "$CHAT_USES_INCUS_DIR"/projects/*.yaml; do
 		name=$(basename "$file" .yaml)
+		yaml=$(render "$file")
 		incus project show "$name" >/dev/null 2>&1 || incus project create "$name" >/dev/null
-		render "$file" | incus project edit "$name"
+		incus project edit "$name" <<<"$yaml"
 		info "$name"
 	done
 }
 
 step_profiles() {
 	log "Profiles"
-	local dir project file name
+	local dir project file name yaml
 	for dir in "$CHAT_USES_INCUS_DIR"/profiles/*/; do
 		project=$(basename "$dir")
 		incus project show "$project" >/dev/null 2>&1 || die "project '$project' missing (run the projects step)"
 		for file in "$dir"*.yaml; do
 			name=$(basename "$file" .yaml)
+			yaml=$(render "$file")
 			incus profile show "$name" --project "$project" >/dev/null 2>&1 ||
 				incus profile create "$name" --project "$project" >/dev/null
-			render "$file" | incus profile edit "$name" --project "$project"
+			incus profile edit "$name" --project "$project" <<<"$yaml"
 			info "$project/$name"
 		done
 	done

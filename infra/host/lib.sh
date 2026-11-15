@@ -40,7 +40,9 @@ load_config() {
 		WAN_IF=$(ip -o route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
 	fi
 	if [[ -z $WG_ENDPOINT && -n $WAN_IF ]]; then
-		WG_ENDPOINT=$(ip -4 -o addr show dev "$WAN_IF" scope global 2>/dev/null | awk '{split($4, a, "/"); print a[1]; exit}')
+		# "|| true": a missing interface must reach preflight's clear error,
+		# not end the script silently under pipefail.
+		WG_ENDPOINT=$(ip -4 -o addr show dev "$WAN_IF" scope global 2>/dev/null | awk '{split($4, a, "/"); print a[1]; exit}' || true)
 	fi
 	if [[ $PUBLIC_HTTPS == 1 ]]; then
 		PUBLIC_HTTPS_RULE='tcp dport { 80, 443 } accept'
@@ -54,6 +56,8 @@ load_config() {
 # Fails if a placeholder is left over (typo or missing variable).
 render() {
 	local template=$1 format out leftover
+	# Checked here, not up front: the packages step installs it.
+	command -v envsubst >/dev/null || die "envsubst missing: run the packages step (or apt-get install gettext-base)"
 	format=$(config_var_names | sed 's/.*/${&}/' | tr '\n' ' ')
 	out=$(envsubst "$format" <"$template")
 	leftover=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' <<<"$out" | sort -u | tr '\n' ' ' || true)

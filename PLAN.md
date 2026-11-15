@@ -397,7 +397,7 @@ chat-uses/
 - **Lives:** a run starts with 3. Each rewind (voted or watchdog revive) costs 1. Some achievements grant +1. At 0 lives, the next death is permanent.
 - **Watchdog revive:** when the target is unhealthy (6.7), a **death vote** opens for 60 s: `!revive` (rewind to the last healthy snapshot, −1 life) vs `!rip` (end the run). Default with no votes: revive if lives remain.
 - **Backends:**
-  - Incus container: stop → `incus snapshot restore` → start (⚠️ verify whether restore requires a stop on your version). Measure restore time in Phase 2.
+  - Incus container: `incus snapshot restore` works on a running container (about 1 s on btrfs in the Phase 1 simulation). ⚠️ On Debian 13's Incus it is refused in the restricted `targets` project; see D19 for the two tested ways around it, to be chosen in Phase 6.
   - QEMU: QMP `snapshot-save` / `snapshot-load` jobs on qcow2 (includes RAM, so open windows come back). The guest pauses briefly; the overlay shows "💾 saving".
 - **Disk:** prune auto snapshots of dead runs after their Graveyard entry is written. Alert at 70 % pool usage.
 
@@ -664,7 +664,7 @@ Runbook: **`docs/phase1.md`**. Code is written and was tested in a simulated hos
   - branded wallpaper.
 - [ ] Publish it as an Incus image `golden/debian-xfce-v1`; record the version.
 - [ ] Measure time to boot to desktop, snapshot time, and restore time.
-- [ ] Decide whether `incus snapshot restore` needs a stop/start on a running container (⚠️ verify).
+- [x] ~~Decide whether `incus snapshot restore` needs a stop/start on a running container~~: it doesn't (Phase 1 simulation). Restore in the restricted project needs the D19 workaround.
 
 **Done when:** from a test container on `chatnet` you can see the desktop via VNC and hear audio from port 4712; boot < 30 s and restore < 15 s (or the measured numbers are accepted in the decision log).
 
@@ -897,3 +897,6 @@ Answer these and move the answers to the decision log:
 | 2026-10-12 | D14 | No `limits.memory.swap` on targets; the host should run without swap (bootstrap warns) | Restricted Incus projects treat it as a low-level option and refuse it |
 | 2026-10-12 | D15 | Discord moderation uses built-in timeouts; no "Muted" role | Native, no permission-overwrite edge cases |
 | 2026-10-12 | D16 | Incus HTTPS API stays off until Phase 4 (brain) | Nothing needs it yet; no listener means no exposure |
+| 2026-11-15 | D17 | Install `incus-base` + `dnsmasq-base` + `apparmor` instead of `incus` | Debian's `incus` pulls in QEMU/swtpm/virtiofsd for VMs this server can't run; bridges need dnsmasq and AppArmor confines containers, both only "Recommends" (found in the Debian 13 simulation) |
+| 2026-11-15 | D18 | CI runs on Ubuntu 26.04 LTS with `actions/checkout@v7` | Latest LTS runner; v7 runs on Node.js 24 (Node 20 deprecated) |
+| 2026-11-15 | D19 | **Open (Phase 6):** how to restore snapshots in the restricted `targets` project. Recommended: a small root-side helper that checks the snapshot's config has no low-level keys (`raw.*`, `security.privileged`…), lifts `restricted.containers.lowlevel` for the restore and blocks it again. Alternative: copy the snapshot into a new container and swap names (keeps the project untouched, but loses the snapshot history on the old instance) | Debian 13's Incus refuses restores there ("Changing `volatile.*` is forbidden"): since the CVE-2026-48751 fix, restore is checked against the low-level rule, which also catches Incus's own `volatile.*` keys. Both options tested in the simulation; never keep `lowlevel` allowed, since brain's certificate (Phase 4) is scoped to this project |

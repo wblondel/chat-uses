@@ -83,7 +83,7 @@ It runs these steps in order (you can run any subset, e.g. `bootstrap.sh firewal
 
 | Step | Does |
 |---|---|
-| `packages` | Installs Incus, nftables, WireGuard tools, btrfs-progs, tcpdump, stress-ng, unattended-upgrades… |
+| `packages` | Installs container-only Incus (`incus-base`, with `dnsmasq-base` for bridges and AppArmor), nftables, WireGuard tools, btrfs-progs, tcpdump, stress-ng, unattended-upgrades… |
 | `admin-user` | Creates `ADMIN_USER` (if set), copies root's keys, passwordless sudo, `incus-admin` group |
 | `ssh` | Writes `/etc/ssh/sshd_config.d/10-chat-uses.conf`, validates with `sshd -t`, rolls back on error, reloads |
 | `system` | Timezone, `/etc/sysctl.d/60-chat-uses.conf`, swap warning |
@@ -176,30 +176,53 @@ sudo infra/tests/net-isolation.sh
 
 ## What was tested before this landed
 
-Run in a simulated server (an isolated network namespace running Incus 6.0.0 on
-Ubuntu 24.04, with a veth acting as the public interface):
+Run in a simulated server: a fresh, minimal **Debian 13.7** root filesystem
+(debootstrap, so even `sudo` and `envsubst` were missing), inside an isolated
+network namespace with a veth as the public interface. Everything came from
+Debian's own repositories: Incus 6.0.4 (`6.0.4-2+deb13u12`), nftables 1.1.3,
+OpenSSH 10.0.
 
-- `bootstrap.sh` steps `system`, `updates`, `firewall`, `wireguard`, `incus`,
-  `storage`, `networks`, `projects`, `profiles`, `summary`: clean first run, and a
-  second run that changes nothing.
-- Our firewall table and Incus's tables coexist; containers still get addresses.
-- Isolation test: **24/24 pass** with the firewall. Negative control with the
-  firewall removed: **10 checks fail**, including leaked packets seen on the
-  public interface, so the test detects a broken firewall.
-- `ssh` step: refuses without any authorized key; rolls back an invalid config;
-  effective config is keys-only; second run reports no change.
-- `wg-add-peer.sh`: address allocation, both key modes, duplicate refusal, a
-  config that `wg-quick` parses.
-- `server-check.sh` end to end; shellcheck clean on all scripts.
+- **One full `bootstrap.sh` run with no step list**, packages included, then a
+  second full run that changes nothing.
+- Our firewall table and Incus's tables coexist; containers get their addresses.
+- Isolation test: **24/24 pass**, with a real `sshd` listening on the host. With the
+  firewall removed, **15 checks fail** (internet leak on the public interface,
+  host DNS/SSH, every infra decoy port), so the test detects a broken firewall.
+- **btrfs pool** created by the `storage` step (loop file); a 1 GiB root quota stops
+  `dd` with "Disk quota exceeded" (red-team test 3).
+- `ssh` step: effective config is keys-only (`sshd -T`); refuses without a key; rolls
+  back an invalid config.
+- `admin-user`: user created with root's key, `sudo` and `incus-admin` groups,
+  passwordless sudo.
+- `wg-add-peer.sh` and `server-check.sh` work with Debian's `mawk`.
+- A template with a typo stops its step before anything is applied.
+- shellcheck clean; CI runs on Ubuntu 26.04.
 
-**Not tested there** (the sandbox kernel lacks them), so watch these on the real server:
+Bugs this run found and fixed: the script required `envsubst` before the step
+that installs it; a mistyped `WAN_IF` made it exit silently; Debian's `incus`
+package pulls in QEMU while `incus-base` skips the `dnsmasq-base` bridges need;
+and a failed template could hand Incus an empty config.
 
-- btrfs pool (the simulation used a `dir` pool);
-- CPU pinning, memory, process and disk-priority limits, and NIC bandwidth caps
-  (the simulation removed them; Debian 13 with cgroup v2 supports all of them);
-- bringing up the WireGuard interface (no kernel module in the sandbox);
-- the `packages` and `admin-user` steps, DHCP inside containers (the simulation
-  used fixed addresses), and behaviour across a reboot.
+**Known limitation: snapshot restore.** On Debian 13's Incus, `incus snapshot
+restore` is refused in the `targets` project ("Changing `volatile.*` … is
+forbidden"). The project blocks low-level options, and since the fix for
+CVE-2026-48751 a restore is checked against that rule, which also catches
+Incus's own `volatile.*` keys. Taking snapshots works. Two ways to restore were
+tested and work: lifting `restricted.containers.lowlevel` for the moment of the
+restore (about 1 second, container stays running), or copying a snapshot into a
+new container. The choice belongs to Phase 6 (snapshot manager); see
+PLAN.md D19.
+
+**Not tested there** (this sandbox's kernel or the lack of systemd prevents it),
+so watch these on the real server:
+
+- memory, process, CPU-share and disk-priority limits, and NIC bandwidth caps
+  (the simulation removed them; Debian 13 with cgroup v2 supports them). CPU
+  pinning was accepted (containers started with it) but not measured;
+- AppArmor confinement of containers (no AppArmor in the sandbox kernel);
+- bringing up the WireGuard interface (no kernel module);
+- systemd: services enabled and started by the scripts, `sshd` reload, DHCP inside
+  containers (test containers used fixed addresses), and behaviour across a reboot.
 
 The Incus HTTPS API stays off in this phase; Phase 4 turns it on for brain with a
 certificate restricted to the `targets` project.
