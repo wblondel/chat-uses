@@ -41,7 +41,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 0 | Groundwork (accounts, server check) | S | ◐ server checked (section 15); account steps in `docs/phase0.md` |
 | 1 | Host foundation (Debian, Incus, networks) | M | ✅ done on the server (section 15, P1) |
 | 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
-| 3 | Broadcast pipeline | M | ◐ code ready, run on the server (`docs/phase3.md`) |
+| 3 | Broadcast pipeline | M | ◐ pipeline checked on the server (section 15, P3); YouTube test streams left |
 | 4 | Control plane MVP | L | ☐ |
 | 5 | Safety layer — **gate for going public** | L | ☐ |
 | 6 | Governance and time travel | L | ☐ |
@@ -930,3 +930,4 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |
 | 2026-11-15 | P1 | Phase 1 on the server: `bootstrap.sh` built the host from a fresh Debian 13.7 install (Incus from Zabbly), admin user with key-only SSH and root SSH login turned off, WireGuard tunnel to the laptop; `net-isolation.sh` passes every check, again after a reboot | Phase 1 done. The first runs from a terminal failed the allowed paths: the test's own fake services died under `incus exec`'s pseudo-terminal (test fixed, firewall was right) |
 | 2026-11-15 | P2 | Phase 2 on the server: `images/debian-xfce/check.sh` 12/12. VNC 6.4 s and desktop 8.3 s after launch; the four services active under systemd; 1600×900 framebuffer; PCM at 192 016 B/s, test tone −11.7 dBFS; snapshot of the running desktop in 0.1 s, restored while running in 1.5 s with the change undone | Phase 2 done: boot < 30 s and restore < 15 s met with a wide margin |
+| 2026-11-15 | P3 | Phase 3 on the server, before YouTube: `images/bcast/check.sh` 15/15 (all eight services active under systemd, Chromium runs without `--no-sandbox`); A/V sync +44 ms; still desktop 0.98 vCPU; worst case (full-screen random text scrolling): encoder 1.000×, no frames dropped beyond the 56 at start-up, about 1.5–1.8 of bcast's 4 vCPUs, 1 GB of 3 GB RAM; HLS preview works over WireGuard | The 4-vCPU split for bcast (D21) leaves headroom; YouTube streams (1 h, 6 h under load) still to run |
