@@ -61,13 +61,13 @@ a download stays under the cap; without the proxy nothing gets out.
 Open <https://download.kiwix.org/zim/wikipedia/> and pick a **`nopic`** file
 (words only: pictures could put anything on stream), the most recent date:
 
-- `wikipedia_en_simple_all_nopic_YYYY-MM.zim`: Simple English, small. A good
+- `wikipedia_en-simple_all_nopic_YYYY-MM.zim`: Simple English, small. A good
   start.
 - `wikipedia_en_top_nopic_…` or `wikipedia_fr_all_nopic_…`: bigger. The
   listing shows each size; it must fit in 20 GiB (`DISK_INTRANET`).
 
 ```bash
-sudo images/intranet/deploy.sh --zim https://download.kiwix.org/zim/wikipedia/wikipedia_en_simple_all_nopic_YYYY-MM.zim
+sudo images/intranet/deploy.sh --zim https://download.kiwix.org/zim/wikipedia/wikipedia_en-simple_all_nopic_YYYY-MM.zim
 sudo images/intranet/check.sh
 ```
 
