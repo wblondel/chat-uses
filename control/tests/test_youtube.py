@@ -12,7 +12,7 @@ from aiohttp import test_utils, web
 
 from chatuses.adapters import stream_list_pb2 as pb
 from chatuses.adapters import youtube
-from chatuses.adapters.youtube import YouTubeChat, video_id_from
+from chatuses.adapters.youtube import QUOTA_DAY, Quota, YouTubeChat, video_id_from
 from chatuses.pipeline import ChatMessage
 
 KEY = "test-api-key"
@@ -29,6 +29,7 @@ def fast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(youtube, "MIN_CALL_GAP", 0.0)
     monkeypatch.setattr(youtube, "WAIT_FOR_LIVE", 0.05)
     monkeypatch.setattr(youtube, "BACKOFF", (0.01, 0.05))
+    monkeypatch.setattr(youtube, "TOO_SOON_WAIT", 0.05)
 
 
 def iso(ts: float, z: bool = True) -> str:
@@ -66,6 +67,7 @@ def message(
 class Session:
     responses: list[pb.LiveChatMessageListResponse] = field(default_factory=lambda: [])
     abort: grpc.StatusCode | None = None  # None: close normally
+    detail: str = "scripted"  # the abort's message
     hang: bool = False  # keep the stream open after the responses
 
 
@@ -88,7 +90,7 @@ class FakeYouTube:
             for response in session.responses:
                 yield response
             if session.abort is not None:
-                await context.abort(session.abort, "scripted")
+                await context.abort(session.abort, session.detail)
             if session.hang:
                 await asyncio.sleep(3600)
 
@@ -214,6 +216,7 @@ def test_chat_is_streamed_resumed_and_ends() -> None:
         status = chat.status()
         assert (status["messages"], status["stale"], status["calls"]) == (2, 1, 2)
         assert status["quota_used_today"] == 1 + 5 + 5
+        assert status["average_stream_s"] == 0  # both closed at once
         assert "ended" in status["reason"]
         await fake.stop()
 
@@ -254,7 +257,6 @@ STOPPING: list[tuple[tuple[int, dict[str, Any]], str, str]] = [
         "stopped",
         "400",
     ),
-    ((403, {"error": {"errors": [{"reason": "quotaExceeded"}]}}), "stopped", "quotaExceeded"),
 ]
 
 
@@ -365,19 +367,133 @@ def test_offline_stream_ends_the_adapter() -> None:
     run(test)
 
 
-def test_the_quota_guard_stops_before_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_quota_guard_pauses_before_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(youtube, "QUOTA_STOP", 12)  # videos.list 1 + two streamList calls of 5
 
     async def test() -> None:
         fake = await FakeYouTube([Session(), Session(), Session()]).start()  # each closes at once
+        told: list[str] = []
         async with test_utils.TestServer(videos_api([LIVE], [])) as api:
-            chat = adapter(fake, str(api.make_url("")).rstrip("/"), [])
+            url = str(api.make_url("")).rstrip("/")
+            chat = YouTubeChat(KEY, lambda _m: None, api=url, channel=fake.channel, on_quota=told.append)
             chat.follow(VIDEO)
-            await until(lambda: chat.state == "stopped")
-            assert "quota" in chat.reason and len(fake.requests) == 2
+            await until(lambda: chat.state == "waiting")
+            assert "nearly used (11 units)" in chat.reason and "midnight Pacific" in chat.reason
+            assert len(fake.requests) == 2 and len(told) == 1 and "goes on by itself" in told[0]
+            await chat.close()
         await fake.stop()
 
     run(test)
+
+
+def midnight_pacific(day: str) -> float:
+    return datetime.fromisoformat(f"{day}T00:00:00").replace(tzinfo=QUOTA_DAY).timestamp()
+
+
+class Clock:
+    """A clock that runs from a given time."""
+
+    def __init__(self, start: float) -> None:
+        self.base, self.started = start, time.monotonic()
+
+    def __call__(self) -> float:
+        return self.base + time.monotonic() - self.started
+
+
+def test_google_s_quota_refusal_pauses_until_midnight_pacific_then_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(youtube, "QUOTA_RESUME_AFTER", 0.05)
+    exceeded = (403, {"error": {"errors": [{"reason": "quotaExceeded"}], "message": "quota"}})
+
+    async def test() -> None:
+        fake = await FakeYouTube([Session(hang=True)]).start()
+        saved: list[str] = []
+        clock = Clock(midnight_pacific("2026-11-17") - 0.3)  # 23:59:59.7 Pacific
+        quota = Quota(clock, load=lambda: "2026-11-16 120", save=saved.append)
+        told: list[str] = []
+        seen: list[dict[str, str]] = []
+        async with test_utils.TestServer(videos_api([exceeded, LIVE], seen)) as api:
+            url = str(api.make_url("")).rstrip("/")
+            chat = YouTubeChat(
+                KEY,
+                lambda _m: None,
+                api=url,
+                channel=fake.channel,
+                clock=clock,
+                quota=quota,
+                on_quota=told.append,
+            )
+            assert chat.status()["quota_used_today"] == 120  # kept from before the restart
+            chat.follow(VIDEO)
+            await until(lambda: chat.state == "waiting")
+            assert "YouTube says the daily quota is used up (quotaExceeded)" in chat.reason
+            assert "08:00 UTC" in chat.reason  # midnight Pacific in November
+            assert saved[-1] == "2026-11-16 10000" and len(told) == 1
+            await until(lambda: chat.state == "streaming")  # after midnight: a new day, a new quota
+            assert len(seen) == 2 and saved[-1] == "2026-11-17 6" and len(told) == 1
+            await chat.close()
+        await fake.stop()
+
+    run(test)
+
+
+def test_a_restart_on_a_used_up_day_asks_youtube_nothing() -> None:
+    async def test() -> None:
+        seen: list[dict[str, str]] = []
+        clock = Clock(midnight_pacific("2026-11-16") + 3600)
+        quota = Quota(clock, load=lambda: "2026-11-16 10000")
+        async with test_utils.TestServer(videos_api([LIVE], seen)) as api:
+            chat = YouTubeChat(
+                KEY, lambda _m: None, api=str(api.make_url("")).rstrip("/"), clock=clock, quota=quota
+            )
+            chat.follow(VIDEO)
+            await until(lambda: chat.state == "waiting")
+            assert seen == [] and "the daily quota is used up (10000 units)" in chat.reason
+            await chat.close()
+
+    run(test)
+
+
+def test_a_stream_refused_for_quota_pauses_but_one_sent_too_soon_retries() -> None:
+    async def test() -> None:
+        fake = await FakeYouTube(
+            [
+                Session(abort=grpc.StatusCode.RESOURCE_EXHAUSTED, detail="Request sent too soon"),
+                Session(
+                    abort=grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    detail="Quota exceeded for quota metric 'Queries' of service youtube.googleapis.com",
+                ),
+            ]
+        ).start()
+        saved: list[str] = []
+        async with test_utils.TestServer(videos_api([LIVE], [])) as api:
+            url = str(api.make_url("")).rstrip("/")
+            quota = Quota(save=saved.append)
+            chat = YouTubeChat(KEY, lambda _m: None, api=url, channel=fake.channel, quota=quota)
+            chat.follow(VIDEO)
+            await until(lambda: chat.state == "waiting")
+            assert len(fake.requests) == 2  # retried once after "too soon", paused on the quota
+            assert "daily quota is used up (Quota exceeded" in chat.reason
+            assert saved[-1].endswith(" 10000")
+            await chat.close()
+        await fake.stop()
+
+    run(test)
+
+
+def test_quota_days_roll_over_at_midnight_pacific() -> None:
+    clock = Clock(midnight_pacific("2026-11-16") - 1)
+    saved: list[str] = []
+    quota = Quota(clock, load=lambda: "garbage", save=saved.append)
+    assert quota.spent() == 0 and quota.today() == "2026-11-15"
+    quota.spend(5)
+    assert saved == ["2026-11-15 5"]
+    assert quota.resets_at() == midnight_pacific("2026-11-16")
+    clock.base += 2
+    assert quota.spent() == 0 and quota.today() == "2026-11-16"
+    quota.used_up()
+    assert saved[-1] == "2026-11-16 10000"
 
 
 def test_following_another_video_replaces_the_first() -> None:

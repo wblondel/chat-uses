@@ -238,9 +238,20 @@ me the numbers and I'll write them down in PLAN.md.
 - **YouTube** finds the chat with `videos.list` (1 quota unit), then keeps a
   gRPC stream open (`liveChatMessages.streamList`, 5 units per connection);
   YouTube pushes messages as they're posted. After a disconnect it resumes
-  where it stopped, so nothing is missed or read twice. brain counts its
-  units and stops at 9,000 of the 10,000 a day (the quota resets at midnight
-  Pacific); `admin status` shows the count.
+  where it stopped, so nothing is missed or read twice.
+- **The quota** is 10,000 units a day, reset at midnight Pacific (08:00 or
+  09:00 UTC). Every connection costs 5 units however long YouTube keeps it
+  open, so what a day of chat costs depends on how often YouTube closes it:
+  `admin status` shows the units spent today and the calls with how long
+  they lasted (`… quota units today (N calls since brain started, S s
+  each)`). brain keeps the day's count in its store, so a restart doesn't
+  start it again, and pauses at 9,000. When the quota is used up (by that
+  count, or because Google refuses: `quotaExceeded`), YouTube chat waits for
+  the reset and goes on by itself; `#ops` is told once, and `admin status`
+  says until when (D60). Reading a chat all day can cost more than the
+  default quota: stop following it when the stream is off (`admin youtube
+  off`), or ask Google for more (Google Cloud console → APIs → YouTube Data
+  API v3 → Quotas, the YouTube API Services quota extension form).
 - **Commands older than 30 s are dropped**, on both the first connection
   (YouTube sends recent history) and after an outage: a command executed
   minutes late would surprise everyone.

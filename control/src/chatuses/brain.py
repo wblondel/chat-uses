@@ -54,7 +54,7 @@ from aiohttp import web
 from chatuses import console, dashboard
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.discord_panel import PanelState
-from chatuses.adapters.youtube import YouTubeChat, video_id_from
+from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Load, Meta, Move, Rewind, Save, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.identity import Platform, user_id
@@ -694,7 +694,11 @@ class Brain:
     def start_adapters(self, config: Config) -> None:
         """Start the chat adapters whose secrets are there; the others stay off."""
         if key := read_secret(config.youtube_key_file):
-            self.youtube = YouTubeChat(key, self._deliver("yt"))
+            quota = Quota(  # the day's units outlive restarts
+                load=lambda: self.store.setting("youtube_quota"),
+                save=lambda value: self.store.set_setting("youtube_quota", value),
+            )
+            self.youtube = YouTubeChat(key, self._deliver("yt"), quota=quota, on_quota=self.ops)
             if video := self.store.setting("youtube_video"):
                 self.youtube.follow(video)
             log.info(
@@ -776,6 +780,10 @@ class Brain:
             quota = (
                 f", {status['quota_used_today']} quota units today" if "quota_used_today" in status else ""
             )
+            if status.get("calls"):  # what reading chat costs: 5 units a call, however long it lasts
+                quota += (
+                    f" ({status['calls']} calls since brain started, {status['average_stream_s']} s each)"
+                )
             panel = (
                 f", panel {status['panel']}" if status["state"] == "connected" and "panel" in status else ""
             )

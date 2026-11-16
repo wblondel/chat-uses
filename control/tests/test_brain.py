@@ -663,6 +663,7 @@ def test_the_youtube_video_is_set_by_admin_and_kept(tmp_path: Path, monkeypatch:
             assert followed == []  # nothing set yet
             ok, text = await brain.admin(["youtube", f"https://youtu.be/{VIDEO}"])
             assert ok == "ok" and VIDEO in text
+            brain.youtube.quota.spend(5)  # a streamList call
             assert await brain.admin(["youtube", "not a video"]) == (
                 "error",
                 "that's not a YouTube video ID or URL",
@@ -672,6 +673,9 @@ def test_the_youtube_video_is_set_by_admin_and_kept(tmp_path: Path, monkeypatch:
             brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
             brain.start_adapters(config_for(tmp_path))
             assert followed == [VIDEO, VIDEO]
+            assert brain.youtube is not None and brain.youtube.quota.spent() == 5  # the day's count goes on
+            brain.youtube.counters.calls, brain.youtube.counters.stream_seconds = 3, 90.0
+            assert "5 quota units today (3 calls since brain started, 30 s each)" in brain.status_text()
             assert (await brain.admin(["youtube", "off"]))[0] == "ok"
             assert followed[-1] is None and store.setting("youtube_video") is None
             await brain.stop_adapters()
