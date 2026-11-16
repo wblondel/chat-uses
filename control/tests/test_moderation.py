@@ -20,8 +20,8 @@ class Effects:
 
     done: list[str] = field(default_factory=lambda: [])
 
-    def panic_changed(self, on: bool) -> None:
-        self.done.append(f"panic {on}")
+    def panic_changed(self, on: bool, kind: str = "panic") -> None:
+        self.done.append(f"panic {on}" if kind == "panic" else f"{kind} {on}")
 
     def lockdown_changed(self, on: bool) -> None:
         self.done.append(f"lockdown {on}")
@@ -104,11 +104,11 @@ def test_resume_and_a_panic_outlives_a_restart(store: Store) -> None:
     mod, _ = moderation(store)
     mod.panic("a", "why", now=100.0)
     again, effects = moderation(store)  # brain restarted
-    assert again.panicking and again.panic_state == {"since": 100.0, "by": "a", "reason": "why"}
+    assert again.panicking and again.panic_state == {"since": 100.0, "by": "a", "reason": "why", "kind": "panic"}
     answer = again.resume("b", now=400.0)
     assert answer.ok and not again.panicking
     assert effects.done[0] == "panic False" and "after 5 minutes" in effects.done[1]
-    assert store.recent_events(("resume",))[0][3] == {"by": "b", "seconds": 300}
+    assert store.recent_events(("resume",))[0][3] == {"by": "b", "seconds": 300, "kind": "panic"}
     assert not moderation(store)[0].panicking
     assert not again.resume("c").ok  # nothing to end
 

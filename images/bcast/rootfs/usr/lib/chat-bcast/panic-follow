@@ -114,8 +114,12 @@ def messages(sock):
             yield payload.decode("utf-8", "replace")
 
 
+def kind_of(on, kind):
+    return ("hold" if kind == "hold" else "panic") if on is True else ""
+
+
 def panic_in(text):
-    """True/False if this feed message says whether there's a panic, else None."""
+    """What this feed message says covers the stream ("panic", "hold", "" for nothing), or None."""
     try:
         msg = json.loads(text)
     except ValueError:
@@ -123,25 +127,26 @@ def panic_in(text):
     if not isinstance(msg, dict):
         return None
     if msg.get("type") == "hello":
-        return msg.get("panic") is True
+        return kind_of(msg.get("panic"), msg.get("panic_kind"))
     if msg.get("type") == "panic":
-        return msg.get("on") is True
+        return kind_of(msg.get("on"), msg.get("kind"))
     return None
 
 
 def read_state():
     try:
         with open(STATE) as f:
-            return json.load(f).get("panic") is True
+            state = json.load(f)
+        return kind_of(state.get("panic"), state.get("kind"))
     except (OSError, ValueError, AttributeError):
-        return False
+        return ""
 
 
-def write_state(panic):
+def write_state(kind):
     directory = os.path.dirname(STATE)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".panic.")
     with os.fdopen(fd, "w") as f:
-        json.dump({"panic": panic, "since": time.time()}, f)
+        json.dump({"panic": bool(kind), "kind": kind or "panic", "since": time.time()}, f)
         f.write("\n")
     os.chmod(tmp, 0o644)
     os.replace(tmp, STATE)
@@ -174,11 +179,11 @@ def main():
                 panic = said
                 write_state(panic)
                 apply_mute()
-                log("PANIC: stream covered, target muted" if panic else "panic over")
+                log(f"{panic.upper()}: stream covered, target muted" if panic else "panic over")
         except (OSError, Closed) as err:
             error = str(err) or type(err).__name__
             if error != last_error:  # one line per kind of trouble, not one per retry
-                log(f"brain's feed: {error} (panic stays {'on' if panic else 'off'}); retrying")
+                log(f"brain's feed: {error} ({panic or 'no panic'} stays); retrying")
                 last_error = error
         finally:
             if sock is not None:

@@ -62,15 +62,21 @@ function connectScreen() {
 const SCENES = {
   starting: { title: "Starting soon", subtitle: "Get your !commands ready" },
   brb: { title: "We'll be right back", subtitle: "" },
+  hold: { title: "Content check", subtitle: "A moderator is having a look" }, // screen OCR's hold
 };
 
 let scene = { scene: "live" };
-let feedPanic = null; // what brain's feed says (null: no feed right now)
+let feedPanic = null; // what brain's feed says: false, "panic" or "hold" (null: no feed right now)
 let filePanic = false; // control/panic.json, for when there's no feed
+
+function panicKind(on, kind) {
+  return on === true ? (kind === "hold" ? "hold" : "panic") : false;
+}
 
 function applyScene() {
   const panic = feedPanic ?? filePanic;
-  const state = panic ? { scene: "brb" } : scene; // a panic looks like any break
+  // A panic looks like any break; a content hold says what it is.
+  const state = panic ? { scene: panic === "hold" ? "hold" : "brb" } : scene;
   const preset = SCENES[state.scene];
   if (!preset) {
     $("scene").hidden = true;
@@ -93,7 +99,7 @@ async function readControl(name) {
 async function pollScene() {
   const [sceneFile, panicFile] = await Promise.all([readControl("scene.json"), readControl("panic.json")]);
   if (sceneFile) scene = sceneFile;
-  if (panicFile) filePanic = panicFile.panic === true;
+  if (panicFile) filePanic = panicKind(panicFile.panic, panicFile.kind);
   applyScene();
   setTimeout(pollScene, 1000);
 }
@@ -194,7 +200,7 @@ function showPointer(x, y, user) {
 function onMessage(msg) {
   switch (msg.type) {
     case "hello":
-      feedPanic = msg.panic === true;
+      feedPanic = panicKind(msg.panic, msg.panic_kind);
       applyScene();
       lines.clear();
       $("log").replaceChildren(el("div", "log-line muted", "Waiting for chat…"));
@@ -204,7 +210,7 @@ function onMessage(msg) {
       setLockdown(msg.lockdown === true);
       break;
     case "panic":
-      feedPanic = msg.on === true;
+      feedPanic = panicKind(msg.on, msg.kind);
       applyScene();
       break;
     case "lockdown":

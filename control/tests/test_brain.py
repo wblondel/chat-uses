@@ -499,7 +499,7 @@ def test_panic_covers_the_stream_freezes_input_and_resume_lifts_it() -> None:
             brain.discord = quiet_discord()
             answer = brain.moderation.panic("Mia (dc:1) on Discord", "nsfw")
             assert answer.ok
-            assert await feed.next() == {"type": "panic", "on": True}  # the first thing on the feed
+            assert await feed.next() == {"type": "panic", "on": True, "kind": "panic"}  # the first thing
             assert brain.executor.frozen
             assert await brain.console_message("alice", "!enter") == ("paused", PAUSED)
             await brain.console_message("bob", "!click A1")  # paused input stays off the overlay
@@ -513,7 +513,7 @@ def test_panic_covers_the_stream_freezes_input_and_resume_lifts_it() -> None:
             assert "PANIC since" in brain.status_text()
             assert "Machine: input frozen by the panic" in brain.status_text()
             assert brain.moderation.resume("Mia").ok
-            assert await feed.next("panic") == {"type": "panic", "on": False}
+            assert await feed.next("panic") == {"type": "panic", "on": False, "kind": "panic"}
             assert await brain.console_message("alice", "!enter") == ("accepted", None)
             assert (await feed.next("log-state"))["state"] == "done"
         await server.stop()

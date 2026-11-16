@@ -179,7 +179,7 @@ def interaction(user_id: int, guild_id: int = GUILD, owner_id: int = 1) -> Any:
 
 
 class NoEffects:
-    def panic_changed(self, on: bool) -> None: ...
+    def panic_changed(self, on: bool, kind: str = "panic") -> None: ...
     def lockdown_changed(self, on: bool) -> None: ...
     def alert(self, text: str) -> None: ...
     def snapshot(self, name: str) -> None: ...
@@ -231,9 +231,11 @@ def test_alerts_wait_while_discord_is_unreachable() -> None:
 def test_alerts_go_to_mod_alerts_without_mentions() -> None:
     async def test() -> None:
         posted: list[tuple[str, Any]] = []
+        sent_files: list[list[Any]] = []
 
-        async def send(text: str, *, allowed_mentions: Any) -> None:
+        async def send(text: str, *, files: list[Any], allowed_mentions: Any) -> None:
             posted.append((text, allowed_mentions))
+            sent_files.append(files)
 
         chat = DiscordChat(
             "token", GUILD, "control", lambda _m: None, lambda: "", alerts_channel="#mod-alerts"

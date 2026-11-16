@@ -22,6 +22,7 @@ missing intent stop the adapter with the reason in its status.
 
 import asyncio
 import contextlib
+import io
 import logging
 import time
 from collections import deque
@@ -252,17 +253,17 @@ class DiscordChat:
         self.messages = 0
         self._task: asyncio.Task[None] | None = None
         self._client: _Client | None = None
-        self._alerts: deque[str] = deque(maxlen=MAX_PENDING_ALERTS)
+        self._alerts: deque[tuple[str, bytes | None]] = deque(maxlen=MAX_PENDING_ALERTS)
         self._sending: set[asyncio.Task[None]] = set()
 
-    def alert(self, text: str) -> None:
-        """Post in #mod-alerts; kept for later if Discord isn't reachable right now."""
-        self._alerts.append(text[:1900])
+    def alert(self, text: str, image: bytes | None = None) -> None:
+        """Post in #mod-alerts (with a PNG, as a spoiler); kept for later if Discord isn't reachable."""
+        self._alerts.append((text[:1900], image))
         self.flush_alerts()
 
     def pending_alerts(self) -> list[str]:
         """Alerts not posted yet (Discord unreachable, or no alerts channel)."""
-        return list(self._alerts)
+        return [text for text, _image in self._alerts]
 
     def flush_alerts(self) -> None:
         client = self._client
@@ -283,13 +284,14 @@ class DiscordChat:
             )
             return
         while self._alerts:
-            task = asyncio.create_task(self._post(channel, self._alerts.popleft()))
+            task = asyncio.create_task(self._post(channel, *self._alerts.popleft()))
             self._sending.add(task)
             task.add_done_callback(self._sending.discard)
 
-    async def _post(self, channel: discord.TextChannel, text: str) -> None:
+    async def _post(self, channel: discord.TextChannel, text: str, image: bytes | None = None) -> None:
+        files = [discord.File(io.BytesIO(image), filename="screen.png", spoiler=True)] if image else []
         try:
-            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(text, files=files, allowed_mentions=discord.AllowedMentions.none())
         except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
             log.warning("Discord: couldn't post in #%s: %s", self.alerts_channel, err)
 

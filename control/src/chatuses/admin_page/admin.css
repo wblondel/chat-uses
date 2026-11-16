@@ -84,7 +84,10 @@ td.raw { font-family: ui-monospace, monospace; overflow-wrap: anywhere; min-widt
 #audit td:last-child { min-width: 12em; }
 tr.outcome-filtered td, tr.outcome-banned td { color: var(--danger); }
 tr.outcome-invalid td, tr.outcome-rate_limited td, tr.outcome-locked td, tr.outcome-paused td { color: var(--warn); }
-tr.event-panic td { color: var(--danger); font-weight: bold; }
+tr.event-panic td, tr.event-hold td { color: var(--danger); font-weight: bold; }
+tr.event-ocr_hit td { color: var(--warn); }
+.spoiler { filter: blur(5px); transition: filter 0.2s; }
+.spoiler:hover, .spoiler:focus { filter: none; }
 a { color: var(--accent); }
 code { font-family: ui-monospace, monospace; }
 
