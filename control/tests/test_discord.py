@@ -281,3 +281,77 @@ def test_alerts_go_to_mod_alerts_without_mentions() -> None:
         assert chat.pending_alerts() == []
 
     run(test)
+
+
+def press_interaction(user_id: int, guild_id: int = GUILD, channel_id: int = CHANNEL_ID) -> Any:
+    return SimpleNamespace(
+        user=SimpleNamespace(id=user_id, display_name="Mia", bot=False),
+        guild=SimpleNamespace(id=guild_id, owner_id=user_id),
+        channel_id=channel_id,
+        channel=SimpleNamespace(name="control"),
+        response=Recorder(),
+    )
+
+
+def test_a_panel_press_is_the_presser_typing_it_and_only_they_see_the_answer() -> None:
+    async def test() -> None:
+        got: list[ChatMessage] = []
+
+        def press(msg: ChatMessage) -> str:
+            got.append(msg)
+            return "You voted yes."
+
+        chat = DiscordChat(
+            "token", GUILD, "control", lambda _m: None, lambda: "", press=press, panel_state=lambda: None
+        )
+        assert chat.panel is not None and chat.status()["panel"] == "waiting for Discord"
+        here = press_interaction(7)
+        await chat.pressed(here, "yes")
+        assert [(m.user_id, m.text, m.roles) for m in got] == [("dc:7", "!yes", frozenset({"owner"}))]
+        assert here.response.sent == [("You voted yes.", True)] and chat.status()["presses"] == 1
+        elsewhere = press_interaction(7, guild_id=999)  # a copy of the panel in another server?
+        await chat.pressed(elsewhere, "yes")
+        assert elsewhere.response.sent == [(discord_bot.NOT_HERE, True)] and len(got) == 1
+
+    run(test)
+
+
+def test_the_panel_listens_from_the_start_and_counts_messages_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def test() -> None:
+        chat = DiscordChat(
+            "token",
+            GUILD,
+            "control",
+            lambda _m: None,
+            lambda: "",
+            press=lambda _m: "",
+            panel_state=lambda: None,
+        )
+        client = discord_bot._Client(chat)  # pyright: ignore[reportPrivateUsage]
+
+        async def sync(*, guild: Any = None) -> list[Any]:
+            return []
+
+        monkeypatch.setattr(client.tree, "sync", sync)
+        await client.setup_hook()
+        assert any(isinstance(view, discord_bot.PanelView) for view in client.persistent_views)
+        assert chat.panel is not None
+        chat.panel.channel = SimpleNamespace(id=CHANNEL_ID)
+        fake = SimpleNamespace(
+            author=SimpleNamespace(id=42, display_name="Alice", bot=False),
+            guild=SimpleNamespace(id=GUILD, owner_id=1),
+            channel=SimpleNamespace(id=CHANNEL_ID, name="control"),
+            content="hello",
+        )
+        await client.on_message(cast(discord.Message, fake))
+        assert chat.panel.under == 1
+        await client.close()
+
+    run(test)
+
+
+def test_no_panel_without_brain_s_side_of_it() -> None:
+    chat = DiscordChat("token", GUILD, "control", lambda _m: None, lambda: "")
+    assert chat.panel is None and chat.status()["panel"] == "off"

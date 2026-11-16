@@ -8,7 +8,7 @@ each tested before the next:
 2. **Snapshots and power** (below): auto snapshots, named saves, `!rewind`, `!load`,
    `!reboot`, `!reset`, the overlay's timeline.
 3. **Democracy mode** (below): the meter, 12-second ballots, tally bars.
-4. The Discord control panel: Yes / No / Veto / Anarchy / Democracy buttons.
+4. **The Discord control panel** (below): Yes / No / Veto / Anarchy / Democracy buttons.
 5. Simulator scenarios (50 users, split votes, brigades, low population,
    ties) and the end-to-end test.
 
@@ -259,3 +259,74 @@ from settled people) puts it back.
 - The overlay in both modes rendered in Chromium: meter, mode and lock in
   the sidebar (with a vote and the time travel panel, it fits), the tally
   in the strip.
+
+## Step 4: the Discord control panel
+
+`control/src/chatuses/adapters/discord_panel.py`, PLAN.md D9.
+
+The bot keeps one message in `#control`: what's going on, and five buttons,
+**Yes**, **No**, **Veto**, **Anarchy** and **Democracy**.
+
+- **A press is typing.** Pressing *Yes* is the presser sending `!yes` in
+  `#control`: the same Discord identity and roles, bans, lockdown, voting
+  rules (being around 2 minutes before the vote opened) and meter gap. The answer
+  ("You voted yes.", "Votes count from people who were here 2 minutes
+  before it opened.") is private: only the presser sees it, and refusals
+  aren't put on stream, since they already got the answer.
+- **What it shows:** the mode, the meter as a bar with its thresholds and
+  when a switch is allowed again; the vote running, its count, what it
+  needs and when it ends; a panic. Countdowns are Discord timestamps
+  ("in 25 seconds"), which tick in each viewer's app without edits.
+  Buttons that can't do anything now are greyed out: *Yes* and *No* only
+  while a vote is open, *Veto* only during a veto countdown, the mode
+  buttons only if the ruleset has democracy.
+- **One message.** It's edited in place when what it shows changes, at
+  most every 2 seconds (Discord limits edits); nothing is posted per vote.
+  When chat buries it (15 messages under it) it moves to the bottom: posted
+  again, the old one deleted, at most once a minute, so it doesn't jump
+  away from someone about to press. If someone deletes it, it comes back.
+- **Restarts:** at start, panels an earlier run left in the last 100
+  messages are deleted and a fresh one is posted. A clean stop turns it
+  into "Offline" with its buttons greyed out. Every panel has the same
+  button IDs and the bot listens for them from the start, so a press on any
+  of them works.
+- `chat-brain-admin status` says how it's doing: `Discord: connected,
+  panel shown`, or the error (a missing permission, for example).
+
+The bot needs nothing new: it already sends, embeds links and reads the
+history in `#control`, and deleting its own messages takes no permission.
+
+### On the server
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+sudo incus exec brain --project infra -- chat-brain-admin status   # Discord: connected, panel shown
+```
+
+Then in `#control`: the panel is the bot's last message. Someone who's
+been around a few minutes proposes `!reboot`; *Yes* and *No* light up and the count moves within 2 seconds of each press. Push
+*Democracy* a few times from different accounts: the bar moves.
+
+### What was tested
+
+- `tests/test_discord_panel.py`: what the panel says and which buttons are
+  live, for no vote, a vote, a veto countdown, a result, democracy with its
+  lock, a panic, a ruleset without votes or democracy; names shown as
+  written, not as markdown; the buttons and their IDs; old panels deleted at
+  start (only the bot's), one posted, edited only on changes; moved when
+  buried but not within a minute; posted again when deleted; an error
+  reported, and the panel posted without history access; nothing sent
+  while Discord is reconnecting, then the same message edited through the
+  new connection; "Offline" on a clean stop.
+- `tests/test_discord.py`: a press becomes the presser's `!yes` with their
+  roles, answered privately; a press from another server is refused; the
+  buttons are listened for from the start; messages under the panel are
+  counted.
+- `tests/test_brain.py`: presses vote, change a vote, are refused for a
+  newcomer and by the meter's gap, push the meter, and refusals stay off
+  the overlay; the panel's state follows the vote and a panic.
+- The panel's real Discord payload built by discord.py (buttons, emoji,
+  the embed), and a real button-press event dispatched through discord.py
+  to brain and back as a private answer, with the server's roles mapped.
+  It hasn't met the real Discord yet: that's the server check above.
