@@ -48,6 +48,12 @@ if in_brain test -d /run/systemd/system 2>/dev/null; then
 else
 	info "systemd is not running in brain: service check skipped"
 fi
+if [[ $(incus config device get brain data source --project infra 2>/dev/null) == brain-data ]] &&
+	in_brain mountpoint -q /var/lib/chat-brain 2>/dev/null; then
+	pass "the store is on the brain-data volume (a --replace keeps it)"
+else
+	fail "the store is on brain's own disk: a --replace would lose it (run images/brain/deploy.sh)"
+fi
 health() {
 	# Straight to brain, whatever http_proxy says.
 	python3 -c 'import sys, urllib.request as u; print(u.build_opener(u.ProxyHandler({})).open(sys.argv[1], timeout=3).read().decode())' \

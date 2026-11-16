@@ -447,6 +447,15 @@ Drafts to make yours before going public:
   contact address, the data centre). It says what the code does; the table
   at the end shows how each promise is kept. Not legal advice: have it read.
 
+### brain's store
+
+Bans, timeouts, strikes, the video brain follows, the event log and OCR
+screenshots are in `/var/lib/chat-brain`, on its own volume (`brain-data`,
+`DISK_BRAIN_DATA`), so `images/brain/deploy.sh --replace` keeps them (D53).
+Until then they were on brain's own disk, and every `--replace` lost them;
+the first deploy after this change moves them to the volume. Check:
+`images/brain/check.sh` ("the store is on the brain-data volume").
+
 ### The red-team suite
 
 `infra/tests/redteam.sh` runs the 21 attacks of PLAN.md 7.7 that can be

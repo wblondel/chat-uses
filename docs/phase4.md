@@ -217,7 +217,8 @@ admin status
 
 `status` should say `YouTube: streaming, video VIDEO_ID` within a few
 seconds. Before the stream is live it says `waiting` and checks once a minute.
-brain keeps the video across restarts. When a stream ends, its chat ends
+brain keeps the video across restarts and rebuilds (its store is on the
+`brain-data` volume, which `deploy.sh --replace` keeps: D53). When a stream ends, its chat ends
 too: set the next stream's video (`admin youtube off` stops reading).
 
 ### 4. Play, and measure the latency
