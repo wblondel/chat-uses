@@ -14,8 +14,8 @@ Three steps of tooling, then the sessions themselves:
 1. **Session reports** (below): what each session was like, in numbers.
 2. **Screen OCR verdicts** (below): moderators mark each hit real or a false
    alarm, so the beta says when enforcing is safe.
-3. The beta runbook: before, during and after a session; what to tune; the
-   retro note.
+3. **The beta runbook** (below): before, during and after a session; what
+   to tune; the retro note.
 
 ## Step 1: session reports
 
@@ -179,3 +179,86 @@ Deploy brain (`sudo images/build.sh brain && sudo images/brain/deploy.sh
 see one without waiting, run red-team test 8 (`sudo infra/tests/redteam.sh
 --only 8`, `docs/redteam.md`): it decodes a listed word on the desktop's
 screen.
+
+## Step 3: the beta, session by session
+
+### Once, before the beta
+
+- Phase 5's gate is done: a second moderator has practised (panic, resume,
+  ban, lockdown, a content hold), the word lists have been reviewed, the
+  rules and privacy notice are filled in and posted (`#rules`, the YouTube
+  description).
+- Phase 6's stream with friends went well (`docs/phase6.md`, step 5).
+- Everything is deployed from the same commit, and every check passes:
+  `images/brain/check.sh`, `images/bcast/check.sh`,
+  `images/debian-xfce/check.sh --instance chatpc`, the red team
+  (`infra/tests/redteam.sh`).
+- The beta's schedule: 2–3 sessions of 2–3 hours, with the moderators who
+  will be on. Post it in Discord's `#announcements` with the unlisted link
+  shortly before each session (an unlisted video is open to anyone with the
+  link: share it only there).
+- Screen OCR stays in shadow mode (`OCR_MODE=shadow`, the default).
+
+### Before each session (15 minutes)
+
+```bash
+admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
+sudo images/brain/check.sh && sudo images/bcast/check.sh
+admin status                       # YouTube: quota units left? Discord: panel shown?
+admin youtube https://youtu.be/…   # the session's video, once it's live
+sudo infra/host/session.py start "Beta 1"
+```
+
+- A moderator is in `#mod-alerts` and has the dashboard open
+  (`http://10.20.0.11:8080/admin` over WireGuard).
+- Take a named save of the desktop as it starts (`!save start` with a
+  friend's `!yes`, or `admin snapshot`): a known place to rewind to.
+
+### During
+
+- Moderators: answer every screen OCR hit (*Real* / *False alarm*), and use
+  panic without hesitating; resuming costs nothing.
+- Keep a note of what's fun and what isn't, as it happens: the retro is
+  written from it.
+- Laws can change live (`admin law NAME VALUE`, `admin law NAME default`;
+  `admin laws` lists what's changed). Change one thing at a time, and say
+  so in chat.
+
+### After
+
+```bash
+sudo infra/host/session.py end     # the report: #ops gets brain's part, the whole is saved
+admin youtube off                  # stop spending YouTube quota
+admin ocr                          # hits still "not marked"? mark them now
+```
+
+Then the retro note: copy `docs/retros/TEMPLATE.md`, paste the report,
+write what broke and what to change. A weekly one is enough once sessions
+are routine.
+
+### What to tune, by symptom
+
+| What you see | The knob |
+|---|---|
+| Votes never pass, or pass with three people | the tier's quorum (`tiers.ACTION.quorum_fraction`, `quorum_floor`) and threshold, in the ruleset or `admin law` |
+| Votes are over before people notice | `tiers.ACTION.window_s`; the veto countdown `veto_s` |
+| The same vote again and again | `tiers.ACTION.cooldown_min` |
+| Democracy flips back and forth, or never comes | `meter_step`, `meter_democracy_at`, `meter_anarchy_at`, `mode_lock_s`, `meter_drift_s` |
+| Democracy feels slow | `democracy_window_s` |
+| Many commands refused as `rate_limited` | the rate limits (one command every 2 s a person with a burst of 3, 8 a second in all) are code (`control/src/chatuses/ratelimit.py`): a change and a deploy |
+| Innocent words refused (`filtered`) | the word lists (`control/src/chatuses/safety/lists/`, `docs/phase5.md`) |
+| A screen OCR false alarm keeps coming back | the word lists too (OCR reads the screen through the same lists) |
+| A raid | `/lockdown on` (regulars and people known for a day still play), bans |
+| The stream falls behind (encoder below 0.97×) | the session report's CPU lines; `X264_PRESET`, `VIDEO_BITRATE` (`docs/phase3.md`) |
+
+Every law has bounds (`chat-brain-admin laws`, `rulesets/`); a value out of
+bounds is refused.
+
+### Soft launch
+
+When the beta's retros say it's ready (and enforcing is on, or decided
+against): public sessions on a schedule, for example three evenings a week
+for 3–4 hours, with you hosting and a moderator online. Same checklists;
+the link goes public. Phase 7 is done after 5 public sessions in a row
+with no moderation incident that reached viewers; then decide on 24/7 and
+record it in PLAN.md.
