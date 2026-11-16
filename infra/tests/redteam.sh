@@ -530,22 +530,43 @@ t17() {
 	fi
 }
 
+# The forwarder's process while it sends to YouTube: the service's main
+# process once its script has become ffmpeg (exec). Matched by name: the
+# command line holds the stream key, and no longer says "forward".
+forwarder_pid() {
+	local pid
+	pid=$(in_bcast systemctl show -p MainPID --value chat-bcast-forwarder 2>/dev/null || true)
+	[[ -n $pid && $pid != 0 ]] || return 0
+	[[ $(in_bcast ps -o comm= -p "$pid" 2>/dev/null || true) == ffmpeg ]] && echo "$pid"
+	return 0
+}
+
 t18() {
-	local encoder forwarder after_f after_e
+	local encoder forwarder after_f="" after_e start back=""
 	encoder=$(pid_of bcast "x11grab")
-	forwarder=$(pid_of bcast "chat-bcast/forward")
+	forwarder=$(forwarder_pid)
 	if [[ -z $forwarder ]]; then
-		result 18 SKIP "no forwarder running in bcast"
+		result 18 SKIP "the forwarder isn't sending to YouTube (no stream key?): set one, then --only 18"
 		return
 	fi
-	in_bcast pkill -9 -f "chat-bcast/forward" || true
-	sleep 10
-	after_f=$(pid_of bcast "chat-bcast/forward")
+	start=$(date +%s)
+	in_bcast kill -9 "$forwarder" || true
+	# systemd restarts it 5 s later; it waits for "live", then sends again.
+	for _ in $(seq 1 30); do
+		sleep 1
+		after_f=$(forwarder_pid)
+		if [[ -n $after_f && $after_f != "$forwarder" ]]; then
+			back=$(($(date +%s) - start))
+			break
+		fi
+	done
 	after_e=$(pid_of bcast "x11grab")
-	if [[ -n $after_f && $after_f != "$forwarder" && $after_e == "$encoder" ]]; then
-		result 18 PASS "forwarder killed: running again in 10 s; the encoder never stopped (cutting the network is by hand)"
+	if [[ -n $back && -n $encoder && $after_e == "$encoder" ]]; then
+		result 18 PASS "forwarder killed: sending to YouTube again in $back s; the encoder never stopped (cutting the network is by hand)"
 	else
-		result 18 FAIL "forwarder killed: forwarder ${after_f:-not running}, encoder $encoder -> ${after_e:-?}"
+		local sending="not sending again after 30 s"
+		[[ -n $back ]] && sending="sending again in $back s"
+		result 18 FAIL "forwarder killed: $sending, encoder ${encoder:-?} -> ${after_e:-?}"
 	fi
 }
 
