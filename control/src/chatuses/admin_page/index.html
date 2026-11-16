@@ -55,7 +55,7 @@
         </div>
       </form>
       <h3>Banned or timed out</h3>
-      <table id="bans"><thead><tr><th>Who</th><th>Until</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="scroll"><table id="bans"><thead><tr><th>Who</th><th>Until</th><th></th></tr></thead><tbody></tbody></table></div>
     </section>
   </div>
 
@@ -65,19 +65,23 @@
       <input id="audit-user" placeholder="Filter: yt:… / dc:… (click a name below)" maxlength="100">
       <button id="audit-clear" class="quiet">All</button>
     </div>
-    <table id="audit">
-      <thead><tr><th>Time</th><th>Who</th><th>ID</th><th>Sent</th><th>Outcome</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="scroll">
+      <table id="audit">
+        <thead><tr><th>Time</th><th>Who</th><th class="id">ID</th><th>Sent</th><th>Outcome</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
     <button id="audit-more" class="quiet">Older</button>
   </section>
 
   <section class="card">
     <h2>Moderation log</h2>
-    <table id="events">
-      <thead><tr><th>Time</th><th>What</th><th>Details</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="scroll">
+      <table id="events">
+        <thead><tr><th>Time</th><th>What</th><th>Details</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <p id="message" class="toast" hidden></p>

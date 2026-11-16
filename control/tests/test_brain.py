@@ -511,6 +511,7 @@ def test_panic_covers_the_stream_freezes_input_and_resume_lifts_it() -> None:
             assert alerts[0].startswith("🚨 **Panic** by Mia (dc:1) on Discord: nsfw.")
             assert alerts[1].startswith("No forensic snapshot")
             assert "PANIC since" in brain.status_text()
+            assert "Machine: input frozen by the panic" in brain.status_text()
             assert brain.moderation.resume("Mia").ok
             assert await feed.next("panic") == {"type": "panic", "on": False}
             assert await brain.console_message("alice", "!enter") == ("accepted", None)

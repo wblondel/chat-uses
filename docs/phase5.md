@@ -219,7 +219,7 @@ covers the stream and mutes the target (`live` to end it).
   timeout (D15).
 - **Lockdown** (a raid): only moderators, the owner, Discord's Regulars,
   YouTube channel members, and people brain has known for a day can send
-  commands, until it's lifted. The overlay shows "Lockdown: regulars only";
+  commands, until it's lifted. The overlay shows "Regulars only";
   the commands it refuses aren't listed one by one (a raid would fill the
   log).
 
@@ -298,6 +298,60 @@ sudo incus snapshot delete phase2-check panic-20261116-201500 --project targets
   tool on an unlisted stream).
 
 ## What was tested before this landed
+
+Step 3:
+
+- **Unit tests, 1,933 in all:**
+  - moderation: durations, finding people by name, shown name, ID and
+    mention; refusals (moderators, two people with one name, unknown
+    names, bad durations); shortening and lifting bans; strikes forgotten;
+    lockdown for each role and for known and new people; a panic and a
+    lockdown kept across a restart;
+  - the executor stopping a drag half-way with the button let go, dropping
+    the queue, refusing until it thaws, and stopping cleanly when brain
+    stops;
+  - brain: the feed's `panic` message before anything else, paused input
+    kept off the overlay, a page connecting during a panic covered at once,
+    moderators' `!panic`/`!resume` in chat (and nobody else's), every
+    `chat-brain-admin` verb, snapshots taken and failing;
+  - the dashboard's API: every call refused without the right token, the
+    page served without any secret and with its security headers, actions,
+    bad requests, the audit's paging and filters;
+  - Discord: the commands' visibility and role check (someone else, the
+    owner of another server, a moderator), private answers, alerts kept
+    while Discord is unreachable and posted with mentions off;
+  - the Incus client over real TLS: the pinned certificate accepted, an
+    impostor's refused, a client certificate required.
+- **In the sandbox**, brain and bcast built from this branch and deployed:
+  - `bootstrap.sh incus-api` set up the API on `10.20.0.1:8443` and the
+    restricted certificate; run again, it changed nothing. After a restart
+    of Incus, the API came back once the bridge existed (30 s).
+  - **brain's certificate:** sees only project `targets`; asking for an
+    instance in `infra` is refused (403). It snapshotted a running
+    container on btrfs in 0.24 s. The sandbox's targets sit on a `dir`
+    pool, where Incus has to freeze the container and the sandbox can't, so
+    there the drill's snapshot failed, and the failure was reported in the
+    log and the alert as it should.
+  - `images/brain/check.sh`: 14 of 14; `images/bcast/check.sh`: 8 of 8.
+  - **The panic drill:** the screen bcast captures was covered **0.22 s**
+    after the request and the target muted in **0.18 s**; both came back
+    within 0.2 s of resume. On the encoded stream the cover came 0.79 s
+    later still, the encoder's delay on every frame, so what was on screen
+    before the panic went out just as late. Input was refused meanwhile.
+  - **A panic holds:** through `chat-bcast-scene live` (still muted),
+    through brain stopped (bcast kept the cover and the mute) and started
+    again (still in panic, input paused); a `brb` scene stayed muted after
+    a panic ended.
+  - **The dashboard** in Chromium, desktop and phone widths: the audit
+    showed every outcome (accepted, invalid, filtered, banned, locked,
+    paused), bans with their Unban buttons, the moderation log.
+- **Found and fixed while testing:**
+  - **The lockdown badge** didn't fit in the corner: now "Regulars only".
+  - **The dashboard on phones:** the audit's columns slipped under the
+    wrong headings.
+  - **The Incus check** passed for the wrong reason (nothing in `infra` had
+    the target's address); it now asks for brain's own instance there and
+    expects a refusal.
 
 Step 2:
 

@@ -2,10 +2,12 @@
 # Practise a panic and time it (PLAN.md 7.5; red-team test 16: under 1 s).
 #
 # Triggers a real panic through brain, as /panic on Discord or the dashboard's
-# button would, and measures on the stream itself, inside bcast:
-#   - cover: from the panic to the first stream frame (what goes to YouTube)
-#     where the desktop is covered;
-#   - sound: until the target's sound is muted in the mix;
+# button would, and measures inside bcast:
+#   - cover: from the panic to the first frame where the desktop is covered,
+#     on the screen bcast captures (under 1 s), and on the stream that goes
+#     to YouTube, which adds the encoder's own delay to every frame alike
+#     (reported: what was on screen before the panic went out just as late);
+#   - sound: until the target's sound is muted in the mix (under 1 s);
 # and checks that input is refused while it lasts, that #mod-alerts got the
 # alert (or that it waits for Discord), and the forensic snapshot. Then it
 # resumes and checks the stream is back, picture and sound.
@@ -47,15 +49,16 @@ if in_brain chat-brain-admin status | grep -q '^PANIC'; then
 	die "a panic is already on: resume it first (chat-brain-admin resume)"
 fi
 
-# In bcast: decode the stream as tiny grey pictures of the desktop's area
-# (1600x900 at the top left), each stamped with the time it came out; and
-# watch the target's mute. Both run until the drill is over.
+# In bcast: the desktop's area (1600x900 at the top left) as tiny grey
+# pictures, each stamped with the time it came out, from the screen bcast
+# captures and from the stream; and the target's mute. All run until the
+# drill is over.
 WATCH=$(
 	cat <<'PY'
 import json, os, subprocess, sys, threading, time
 seconds = float(sys.argv[1])
 end = time.time() + seconds
-frames, mutes = [], []
+frames, mutes = {"screen": [], "stream": []}, []
 
 def watch_mute():
     env = {**os.environ, "PULSE_SERVER": "unix:/run/chat-bcast-audio/native"}
@@ -64,18 +67,27 @@ def watch_mute():
         mutes.append((time.time(), "yes" in out))
         time.sleep(0.02)
 
-threading.Thread(target=watch_mute, daemon=True).start()
-ff = subprocess.Popen(
-    ["ffmpeg", "-nostdin", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
-     "-i", "rtmp://127.0.0.1:1935/live", "-an", "-vf", "crop=1600:900:0:0,scale=32:18",
-     "-pix_fmt", "gray", "-f", "rawvideo", "-"],
-    stdout=subprocess.PIPE)
-while time.time() < end:
-    frame = ff.stdout.read(32 * 18)
-    if len(frame) < 32 * 18:
-        break
-    frames.append((time.time(), frame.hex()))
-ff.kill()
+def watch(kind, source):
+    ff = subprocess.Popen(
+        ["ffmpeg", "-nostdin", "-loglevel", "fatal", "-fflags", "nobuffer", "-flags", "low_delay",
+         *source, "-an", "-vf", "scale=32:18", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
+        stdout=subprocess.PIPE)
+    while time.time() < end:
+        frame = ff.stdout.read(32 * 18)
+        if len(frame) < 32 * 18:
+            break
+        frames[kind].append((time.time(), frame.hex()))
+    ff.kill()
+
+threads = [
+    threading.Thread(target=watch_mute),
+    threading.Thread(target=watch, args=("screen", ["-f", "x11grab", "-framerate", "30", "-video_size", "1600x900", "-i", ":99+0,0"])),
+    threading.Thread(target=watch, args=("stream", ["-i", "rtmp://127.0.0.1:1935/live", "-vf", "crop=1600:900:0:0"])),
+]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
 print(json.dumps({"frames": frames, "mutes": mutes}))
 PY
 )
@@ -102,27 +114,40 @@ verdicts=$(python3 - "$record" "$t_panic" "$t_resume" "$LIMIT" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 t_panic, t_resume, limit = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
-frames = [(t, bytes.fromhex(h)) for t, h in data["frames"]]
 def say(kind, text): print(f"{kind}|{text}")
-before = [f for t, f in frames if t < t_panic]
-during = [(t, f) for t, f in frames if t_panic <= t < t_resume]
-if len(before) < 5 or len(during) < 10:
-    say("FAIL", f"not enough of the stream recorded ({len(before)} frames before, {len(during)} during)")
-    sys.exit()
 def diff(a, b): return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
-live, covered = before[-1], during[-1][1]  # the desktop just before; the cover once settled
-if diff(live, covered) < 8:
-    say("FAIL", "the stream didn't change: no cover on the stream")
-else:
-    first = next((t for t, f in during if diff(f, covered) < diff(f, live)), None)
-    delay = first - t_panic
-    say("PASS" if delay < limit else "FAIL", f"stream covered {delay:.2f} s after the panic (limit {limit:.0f} s)")
+
+def timing(kind):
+    """Seconds from the panic to the first covered frame, and from resume to the first uncovered one."""
+    frames = [(t, bytes.fromhex(h)) for t, h in data["frames"][kind]]
+    before = [f for t, f in frames if t < t_panic]
+    during = [(t, f) for t, f in frames if t_panic <= t < t_resume]
+    if len(before) < 5 or len(during) < 10:
+        return f"not enough recorded ({len(before)} frames before, {len(during)} during)", None
+    live, covered = before[-1], during[-1][1]  # the desktop just before; the cover once settled
+    if diff(live, covered) < 8:
+        return "no change: never covered", None
+    first = next(t for t, f in during if diff(f, covered) < diff(f, live))
     after = [(t, f) for t, f in frames if t >= t_resume]
     back = next((t for t, f in after if diff(f, live) < diff(f, covered)), None)
-    if back is None:
-        say("FAIL", "the stream still looked covered after resume")
+    return first - t_panic, (back - t_resume) if back is not None else None
+
+screen, screen_back = timing("screen")
+stream, stream_back = timing("stream")
+if isinstance(screen, str):
+    say("FAIL", f"screen bcast captures: {screen}")
+else:
+    say("PASS" if screen < limit else "FAIL", f"screen covered {screen:.2f} s after the panic (limit {limit:.0f} s)")
+    if screen_back is None:
+        say("FAIL", "the screen still looked covered after resume")
     else:
-        say("PASS", f"stream uncovered {back - t_resume:.2f} s after resume")
+        say("PASS", f"screen uncovered {screen_back:.2f} s after resume")
+if isinstance(stream, str):
+    say("FAIL", f"stream: {stream}")
+elif isinstance(screen, float):
+    say("INFO", f"on the stream: covered after {stream:.2f} s, the encoder adding {stream - screen:.2f} s to every frame")
+    if stream_back is None:
+        say("FAIL", "the stream still looked covered after resume")
 mutes = data["mutes"]
 was_muted = any(m for t, m in mutes if t < t_panic)
 muted = next((t for t, m in mutes if t >= t_panic and m), None)

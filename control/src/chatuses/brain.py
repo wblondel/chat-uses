@@ -345,6 +345,8 @@ class Brain:
     def status_text(self) -> str:
         """For people: Discord's /status and chat-brain-admin status."""
         machine = "taking commands" if self.executor.online.is_set() else "not taking input"
+        if self.executor.frozen:
+            machine = "input frozen by the panic"
         lines = [f"Machine: {machine} ({self.executor.queue.qsize()} waiting)"]
         if panic := self.moderation.panic_state:
             lines.append(

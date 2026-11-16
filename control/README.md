@@ -50,13 +50,20 @@ PYTHONPATH=src python3 -m chatuses.drive 10.30.0.251 '!key ctrl+alt+t' '!wait 3'
 
 `safety/` keeps the stream safe (PLAN.md 7): `textfilter.py` refuses slurs,
 hate speech and personal details in typed text, save names and names on the
-overlay (word lists in `safety/lists/`, D43), and `strikes.py` turns repeated
-slurs into timeouts.
+overlay (word lists in `safety/lists/`, D43), `strikes.py` turns repeated
+slurs into timeouts, and `moderation.py` is the moderators' tools: panic,
+bans and timeouts across platforms, lockdown (D44, D45). A panic freezes the
+executor, covers the overlay and takes a forensic snapshot through
+`incus.py` (brain's restricted access to the Incus API).
+
+`dashboard.py` is the admin dashboard (`/admin`, the page in `admin_page/`)
+and its API (`/api/*`), behind a token; Discord's moderators get slash
+commands in `adapters/discord_bot.py`.
 
 The chat adapters are in `adapters/`: `youtube.py` (live chat over gRPC,
 PLAN.md D39) and `discord_bot.py` (PLAN.md D40). `admin.py` is
 `chat-brain-admin`, the operator's side of the console socket (which video's
-chat to read, status).
+chat to read, status, and the moderators' tools).
 
 ## Dependencies
 

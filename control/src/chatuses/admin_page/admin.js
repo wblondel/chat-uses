@@ -141,19 +141,24 @@ async function loadAudit(fresh) {
   $("audit-more").hidden = commands.length < 100;
 }
 
+function lasted(seconds) {
+  return seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
+}
+
 function eventDetails(e) {
   const parts = [];
   if (e.user) parts.push(e.user);
   if (e.until) parts.push(`until ${when(e.until > 253402300000 ? 0 : e.until)}`);
   if (e.on !== undefined) parts.push(e.on ? "on" : "off");
   if (e.by) parts.push(`by ${e.by}`);
-  if (e.reason) parts.push(`: ${e.reason}`);
   if (e.name) parts.push(e.name);
   if (e.instance) parts.push(`of ${e.instance}`);
   if (e.result && e.result !== "ok") parts.push(e.result);
-  if (e.error) parts.push(e.error);
-  if (e.seconds !== undefined) parts.push(`after ${Math.round(e.seconds / 60)} min`);
-  return parts.join(" ");
+  if (e.seconds !== undefined) parts.push(`after ${lasted(e.seconds)}`);
+  let text = parts.join(" ");
+  if (e.reason) text += `: ${e.reason}`;
+  if (e.error) text += `: ${e.error}`;
+  return text;
 }
 
 async function loadEvents() {

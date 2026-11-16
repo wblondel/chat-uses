@@ -78,8 +78,10 @@ pre { margin: 0 0 12px; white-space: pre-wrap; color: var(--muted); font: 13px/1
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: normal; }
+.scroll { overflow-x: auto; }
 td.id { color: var(--muted); font-family: ui-monospace, monospace; }
-td.raw { font-family: ui-monospace, monospace; word-break: break-all; }
+td.raw { font-family: ui-monospace, monospace; overflow-wrap: anywhere; min-width: 9em; }
+#audit td:last-child { min-width: 12em; }
 tr.outcome-filtered td, tr.outcome-banned td { color: var(--danger); }
 tr.outcome-invalid td, tr.outcome-rate_limited td, tr.outcome-locked td, tr.outcome-paused td { color: var(--warn); }
 tr.event-panic td { color: var(--danger); font-weight: bold; }
@@ -105,5 +107,5 @@ code { font-family: ui-monospace, monospace; }
 
 @media (max-width: 600px) {
   body { padding: 8px; }
-  td.id { display: none; }
+  .id { display: none; }
 }

@@ -197,7 +197,7 @@ html, body {
 }
 .badge.offline { background: #3a2a10; color: #ffb547; }
 .badge.online { background: #10392f; color: var(--accent); }
-.badge.lockdown { background: #3a1018; color: #ff8a8a; }
+.badge.lockdown { background: #3a1018; color: #ff8a8a; white-space: nowrap; }
 .badge[hidden] { display: none; }
 
 /* --- full-frame scenes ------------------------------------------------------- */
