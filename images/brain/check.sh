@@ -57,7 +57,7 @@ if [[ -z $built || -z $repo || $built == unknown ]] ||
 	! git -C "$CHAT_USES_REPO" cat-file -e "$built^{commit}" 2>/dev/null; then
 	info "brain's code: built from ${built:-an unknown commit}, the repo at ${repo:-?}"
 elif git -C "$CHAT_USES_REPO" diff --quiet "$built" HEAD -- control/src control/requirements.txt \
-	images/brain/rootfs images/brain/provision.sh 2>/dev/null; then
+	rulesets achievements images/brain/rootfs images/brain/provision.sh 2>/dev/null; then
 	pass "brain runs the repo's code (built from $built)"
 else
 	fail "brain runs older code (built from $built, the repo is at $repo): images/build.sh brain && images/brain/deploy.sh --replace"

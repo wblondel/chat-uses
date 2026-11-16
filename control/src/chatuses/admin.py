@@ -31,6 +31,8 @@ Runs (PLAN.md 6.7, Phase 8):
 
     chat-brain-admin run                        the run going on: number, lives, how long
     chat-brain-admin run end [CAUSE]            end it now (its card, #graveyard), then a new run
+    chat-brain-admin achievements               the run's achievements, unlocked or not
+    chat-brain-admin leaderboard                the 10 with the most points
 
 Screen OCR verdicts (Phase 7): was each hit real? What decides enforcing.
 

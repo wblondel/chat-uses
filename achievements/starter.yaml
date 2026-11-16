@@ -1,0 +1,131 @@
+# Achievements (PLAN.md 6.8): brain checks them every 30 s while a run is
+# alive (control/src/chatuses/game/achievements.py). Each unlocks once per run.
+# Credit goes to everyone who sent a command in the 10 minutes before; a
+# reward's points go to each of them, its lives to the run.
+#
+# Checks (all but ocr_text, uptime_since_rewind and saves run in the target
+# through Incus exec, as root, and only their exit status counts: the target
+# is chat's, so chat can fake some of them, and that's fine):
+#   process: { pattern }            a process whose name matches (pgrep's regex)
+#   file_exists: { path }
+#   package: { name }               installed (dpkg)
+#   http: {}                        something answers on the target's port 80
+#   command: { run }                a shell command of ours (sh -c) exits 0
+#   ocr_text: { pattern }           the screen shows it (screen OCR's last read; regex, any case)
+#   uptime_since_rewind: { hours }  the run went this long without a rewind, load or revive
+#   saves: { count }                chat has this many named saves
+#
+# Files newer than /etc/chat-uses/target.env were made after the image was
+# built: by chat.
+
+- key: hello_world
+  name: Hello World
+  description: Get "hello world" on the screen
+  check: { type: ocr_text, pattern: "hello,? world" }
+  reward: { points: 10 }
+
+- key: wallpaper_artist
+  name: Wallpaper Artist
+  description: Change the desktop's wallpaper
+  check:
+    type: command
+    run: >-
+      f=/home/chat/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml;
+      grep -q 'name="last-image"' "$f" &&
+      ! grep -q 'name="last-image" type="string" value="/usr/share/chat-uses/wallpaper.png"' "$f"
+  reward: { points: 20 }
+
+- key: doom_guy
+  name: Doom Guy
+  description: Get Freedoom running
+  check: { type: process, pattern: "^(chocolate-doom|crispy-doom|prboom-plus|dsda-doom|freedoom.*)$" }
+  reward: { points: 50, lives: 1 }
+
+- key: encyclopedist
+  name: Encyclopedist
+  description: Open the offline Wikipedia
+  check: { type: ocr_text, pattern: "wikipedia" }
+  reward: { points: 20 }
+
+- key: package_manager
+  name: Package Manager
+  description: Install a package
+  check: { type: command, run: "grep -q '^Install:' /var/log/apt/history.log" }
+  reward: { points: 30 }
+
+- key: compiler
+  name: Compiler
+  description: Build a C program
+  check:
+    type: command
+    run: >-
+      find /home /root /tmp -maxdepth 4 -type f -name a.out -newer /etc/chat-uses/target.env
+      -print -quit 2>/dev/null | grep -q .
+  reward: { points: 50 }
+
+- key: pythonista
+  name: Pythonista
+  description: Write a Python script
+  check:
+    type: command
+    run: >-
+      find /home /root /tmp -maxdepth 4 -type f -name '*.py' -newer /etc/chat-uses/target.env
+      -print -quit 2>/dev/null | grep -q .
+  reward: { points: 30 }
+
+- key: web_master
+  name: Web Master
+  description: Serve a web page on port 80
+  check: { type: http }
+  reward: { points: 50 }
+
+- key: terminal_aesthetic
+  name: Terminal Aesthetic
+  description: Run cmatrix
+  check: { type: process, pattern: "^cmatrix$" }
+  reward: { points: 20 }
+
+- key: dark_mode
+  name: Dark Mode
+  description: Switch the desktop to a dark theme
+  check:
+    type: command
+    run: >-
+      grep -qiE 'name="ThemeName" type="string" value="[^"]*dark'
+      /home/chat/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+  reward: { points: 20 }
+
+- key: minimalist
+  name: Minimalist
+  description: Hide every icon on the desktop
+  check:
+    type: command
+    run: >-
+      grep -A4 'name="desktop-icons"'
+      /home/chat/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+      | grep -q 'name="style" type="int" value="0"'
+  reward: { points: 20 }
+
+- key: archivist
+  name: Archivist
+  description: Fill all three save slots
+  check: { type: saves, count: 3 }
+  reward: { points: 30 }
+
+- key: survivor_1h
+  name: Survivor
+  description: One hour without a rewind
+  check: { type: uptime_since_rewind, hours: 1 }
+  reward: { points: 20 }
+
+- key: survivor_6h
+  name: Survivor II
+  description: Six hours without a rewind
+  check: { type: uptime_since_rewind, hours: 6 }
+  reward: { points: 100, lives: 1 }
+
+- key: survivor_24h
+  name: Survivor III
+  description: A day without a rewind
+  check: { type: uptime_since_rewind, hours: 24 }
+  reward: { points: 300, lives: 1 }

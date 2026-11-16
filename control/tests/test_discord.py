@@ -237,6 +237,29 @@ def test_moderator_slash_commands_are_role_gated_and_private() -> None:
     run(test)
 
 
+def test_me_answers_only_the_asker_with_their_own_standing() -> None:
+    async def test() -> None:
+        asked: list[str] = []
+
+        def me(user: str) -> str:
+            asked.append(user)
+            return f"points of {user}"
+
+        chat = DiscordChat("token", GUILD, "control", lambda _m: None, lambda: "", me=me)
+        client = discord_bot._Client(chat)  # pyright: ignore[reportPrivateUsage]
+        command = cast(app_commands.Command[Any, Any, None], client.tree.get_command("me"))
+        assert command.default_permissions is None  # everyone may ask
+        viewer = interaction(7)
+        await command.callback(viewer)  # pyright: ignore[reportCallIssue]
+        assert asked == ["dc:7"] and viewer.response.sent == [("points of dc:7", True)]
+        await client.close()
+        bare = discord_bot._Client(DiscordChat("token", GUILD, "control", lambda _m: None, lambda: ""))  # pyright: ignore[reportPrivateUsage]
+        assert bare.tree.get_command("me") is None
+        await bare.close()
+
+    run(test)
+
+
 def test_alerts_wait_while_discord_is_unreachable() -> None:
     chat = DiscordChat("token", GUILD, "control", lambda _m: None, lambda: "")
     for i in range(discord_bot.MAX_PENDING_ALERTS + 5):

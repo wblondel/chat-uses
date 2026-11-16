@@ -320,6 +320,26 @@ function setRun(v) {
   if (runView) runTimer = setInterval(renderRun, 250);
 }
 
+// --- achievements (control/src/chatuses/game/achievements.py) -------------------------
+
+const TOAST_SECONDS = 8;
+const toasts = []; // shown one after the other
+let toastTimer;
+
+function showToast(a) {
+  if (a) toasts.push(a);
+  if (toastTimer || !toasts.length) return;
+  const next = toasts.shift();
+  $("toast-title").textContent = `🏆 ${next.name}`;
+  $("toast-text").textContent = [next.description, ...(next.rewards || [])].join(" · ");
+  $("toast").hidden = false;
+  toastTimer = setTimeout(() => {
+    $("toast").hidden = true;
+    toastTimer = null;
+    showToast(null);
+  }, TOAST_SECONDS * 1000);
+}
+
 let cardTimer;
 
 function showCard(card) {
@@ -473,6 +493,9 @@ function onMessage(msg) {
       break;
     case "card":
       showCard(msg);
+      break;
+    case "achievement":
+      showToast(msg);
       break;
     case "mode":
       setMode(msg);

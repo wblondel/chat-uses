@@ -129,7 +129,7 @@ def test_the_vote_and_ending_it() -> None:
             state = await (await client.get("/api/state", headers=AUTH)).json()
             assert state["referee"]["ruleset"] == "roguelike" and state["referee"]["vote"] is None
             assert "power_votes" in state["referee"]["features"]
-            assert "achievements" in state["referee"]["not_built_yet"]
+            assert "driver_seat" in state["referee"]["not_built_yet"]
             now = time.time()
             brain.pipeline.presence.saw("console:alice", now - 600)
             await brain.console_message("alice", "!reboot")

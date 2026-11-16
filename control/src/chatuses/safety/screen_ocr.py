@@ -118,6 +118,7 @@ class ScreenWatch:
         self.last_read = 0.0
         self.last_ms = 0
         self.last_error = ""
+        self.last_text = ""  # the screen's text at the last read (achievements' ocr_text)
         self.last_change: float | None = None  # when the screen last changed (the watchdog asks)
 
     def status(self) -> dict[str, Any]:
@@ -176,6 +177,7 @@ class ScreenWatch:
         self.reads += 1
         self.last_read, self.last_ms = now, round((time.monotonic() - start) * 1000)
         lines = [line.strip() for line in text.splitlines() if line.strip()]
+        self.last_text = "\n".join(lines)
         self.cleared &= set(lines)  # cleared lines that left the screen may be reported again
         found = self.find(lines)
         self._reported = {k: t for k, t in self._reported.items() if now - t < REPEAT}
