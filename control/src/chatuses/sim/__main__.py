@@ -1,9 +1,30 @@
-"""Run the chat simulator: python -m chatuses.sim --users 50 --seconds 60"""
+"""Run the chat simulator.
+
+python -m chatuses.sim --users 50 --seconds 60   chat through the pipeline (rate limits, filters)
+python -m chatuses.sim --scenarios               governance: votes, brigades, ties (sim/governance.py)
+"""
 
 import argparse
+import sys
 
 from chatuses.sim import simulate
+from chatuses.sim.governance import run_all
 from chatuses.store import Store
+
+
+def scenarios(seed: int) -> None:
+    results = run_all(seed)
+    for result in results:
+        print(f"{result.name}: {'ok' if result.ok else 'FAILED'}")
+        for check in result.checks:
+            detail = f" ({check.detail})" if check.detail and not check.ok else ""
+            print(f"  {'✓' if check.ok else '✗'} {check.what}{detail}")
+    failed = [r.name for r in results if not r.ok]
+    print(
+        f"{len(results) - len(failed)} of {len(results)} scenarios passed"
+        + (f"; failed: {', '.join(failed)}" if failed else "")
+    )
+    sys.exit(1 if failed else 0)
 
 
 def main() -> None:
@@ -12,7 +33,10 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=60.0, help="simulated time")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--db", default=":memory:", help="SQLite file to keep the results in")
+    parser.add_argument("--scenarios", action="store_true", help="run the governance scenarios instead")
     args = parser.parse_args()
+    if args.scenarios:
+        scenarios(args.seed)
 
     with Store(args.db) as store:
         report = simulate(args.users, args.seconds, args.seed, store=store)

@@ -72,3 +72,5 @@ jobs:
         run: uv run pytest -q
       - name: Simulated chat (50 users for a minute)
         run: uv run python -m chatuses.sim --users 50 --seconds 60
+      - name: Governance scenarios (votes, brigades, ties)
+        run: uv run python -m chatuses.sim --scenarios

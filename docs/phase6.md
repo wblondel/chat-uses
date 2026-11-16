@@ -9,8 +9,8 @@ each tested before the next:
    `!reboot`, `!reset`, the overlay's timeline.
 3. **Democracy mode** (below): the meter, 12-second ballots, tally bars.
 4. **The Discord control panel** (below): Yes / No / Veto / Anarchy / Democracy buttons.
-5. Simulator scenarios (50 users, split votes, brigades, low population,
-   ties) and the end-to-end test.
+5. **Simulator scenarios and the end-to-end test** (below): 50 users, split
+   votes, brigades, low population, ties; then the stream with friends.
 
 ## Step 1: rulesets, laws and power votes
 
@@ -330,3 +330,99 @@ been around a few minutes proposes `!reboot`; *Yes* and *No* light up and the co
   the embed), and a real button-press event dispatched through discord.py
   to brain and back as a private answer, with the server's roles mapped.
   It hasn't met the real Discord yet: that's the server check above.
+
+## Step 5: simulator scenarios and the end-to-end test
+
+### Governance scenarios
+
+`control/src/chatuses/sim/governance.py`: crowds voting through the real
+pipeline, referee and lockdown, on a simulated clock (a few minutes of
+chat in a fraction of a second), routed as brain routes chat. Each one is
+seeded and checks what happened; CI runs them all:
+
+```bash
+cd control && uv run python -m chatuses.sim --scenarios
+```
+
+| Scenario | What it shows |
+|---|---|
+| fifty | 50 people play while a `!rewind` vote runs: the quorum is a quarter of them (13); 36 yes and 10 no pass it (78%, 66% needed); 2 vetoes of the 12 needed don't stop it; it runs once; chat kept playing (hundreds of commands) |
+| split | 30 yes and 20 no fail a `!rewind` (60%); it can't be proposed again for 10 minutes, `!reboot` can; 26 yes and 24 no pass the reboot (52%, half needed) |
+| brigade | 60 accounts that just arrived spam while 20 regulars vote: every raider's ballot, meter push and proposal is refused; they raise the quorum (D54: 15% of 80 active, 12), so 8 yes fail. Two minutes later they could vote: under lockdown they're refused again (the quorum stays 12, they're still active), and the regulars' 12 yes pass |
+| veto | 20 yes pass a `!rewind` to its countdown; 7 vetoes (a third of 20) stop it; someone who arrived after it opened can't veto |
+| low population | 3 people: one alone can't `!save` (floor 2), two can't `!rewind` (floor 3), two reboot (67%) |
+| ties | 15 pushes make it democracy; 5 to 5 goes to the command voted first; a changed ballot counts once (6 to 4); a `!reboot` split 10 to 10 passes, since the threshold is "at least half" |
+
+What they pin down, worth knowing on stream (D58):
+
+- **A raid can't pass anything, but can stall votes.** New accounts count
+  as active, so they raise the quorum (D54) without being able to vote. A
+  big raid makes power votes fail until it goes quiet (5 minutes) or
+  moderators ban it. Lockdown keeps raiders' votes out but not their
+  presence, so it doesn't lower the quorum.
+- **Waiting 2 minutes makes anyone a voter.** Eligibility only stops
+  accounts that arrive as a vote opens. If a raid stays, lockdown is the
+  answer: regulars and people known for a day still vote.
+- **A tie passes a 50% vote** (`!reboot`, `!save`): yes / (yes + no) ≥
+  threshold. A ruleset that wants a strict majority sets the tier's
+  threshold a little above 0.5 (0.51).
+
+`tests/test_sim.py` runs each scenario with two seeds (40 seeds pass, too)
+and checks that they catch a broken rule: with no settling time, the brigade
+scenario fails.
+
+### The end-to-end test (sandbox)
+
+The real `Brain` and its real Incus client, with a restricted certificate,
+against the sandbox's Incus 6.0 and its desktop container. Console users
+voted through `Brain.handle`, as chat does; only the votes' clock was sped
+up:
+
+| Vote | Result |
+|---|---|
+| `!save base` | done in 1.5 s: snapshot `save-base-<time>` on the target |
+| `!load base`, after changing a file | done in 2.4 s, after the veto countdown: the file as it was at the save |
+| `!rewind`, after an auto snapshot and a change | done in 2.4 s: back to the auto snapshot |
+| `!reboot` | the container's init ignores the shutdown signal: after 30 s, "the machine didn't shut down within 30 s: !reset forces it" |
+| `!reset` | done in 0.8 s: init started again, the container running |
+
+Every vote was in the store with its result. The real target (Phase 2's
+desktop, with systemd) shuts down on the signal, so its `!reboot` should
+work: that's part of the stream test below.
+
+### On the server: the stream with friends
+
+PLAN.md's "done when": the scenarios pass (CI), and rewind, reboot and
+reset votes work on an unlisted stream with friends. Phase 6 as a whole
+(steps 1 to 5) is one deploy:
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+sudo images/brain/check.sh
+admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
+admin status        # Ruleset: roguelike; Discord: connected, panel shown
+```
+
+Then, on an unlisted stream, with 3 or more friends who've each been in
+chat (YouTube or Discord) for 2 minutes and spoken in the last 5:
+
+1. `admin snapshot` (an auto snapshot), then someone types something on the
+   desktop.
+2. `!save test`, then enough `!yes` (2): the save slot fills with its
+   thumbnail.
+3. `!rewind` and 3 `!yes`: 30 s of voting, 30 s of veto countdown, then the
+   desktop drops for a second and comes back as it was.
+4. `!reboot` and 2 `!yes`: the desktop restarts (a minute or so). If it
+   says "didn't shut down within 30 s", note it: the target's image needs a
+   look.
+5. `!reset` and 3 `!yes`: a forced restart, a few seconds.
+6. On Discord, the panel's *Yes* and *No* light up during a vote and the
+   count follows within 2 seconds; *Veto* lights up during a countdown.
+7. Push *Democracy* (or `!democracy`) from 15 settled people, or `admin
+   mode democracy`: commands become ballots, the strip shows the tally.
+8. Someone who joined a minute ago tries `!yes`: refused, privately on
+   Discord, on the overlay on YouTube.
+
+Tell me what happened at each step (and anything that looked wrong on
+stream); Phase 6 is done when 3, 4 and 5 work.
