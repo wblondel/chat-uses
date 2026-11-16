@@ -90,15 +90,13 @@ Phase 3 changed how the target serves its sound (20 ms chunks instead of
 
 ```bash
 sudo images/build.sh debian-xfce
-sudo images/debian-xfce/check.sh --keep
+sudo images/debian-xfce/deploy.sh
 ```
 
-The test target is `phase2-check` at `10.30.0.251`. Until brain launches real
-targets (Phase 4), point bcast at it:
-
-```bash
-echo 'TARGET_HOST=10.30.0.251' | sudo tee /etc/chat-uses/bcast.local.env
-```
+bcast shows the target on stream, `chatpc` at `10.30.0.10` (`TARGET_NAME`,
+`TARGET_IP`), which `deploy.sh` launches (D59). The check's own target
+(`phase2-check` at `.251`) is a throwaway that each check replaces: don't put
+it on stream.
 
 ### 3. Build bcast
 
@@ -182,7 +180,7 @@ deploy again afterwards.
    place first (`sudo infra/host/bootstrap.sh profiles` applies it to running
    targets too), then load the target from the host:
    ```bash
-   sudo incus exec -T -n phase2-check --project targets -- sh -c 'for i in 1 2 3; do timeout 6h yes >/dev/null 2>&1 & done'
+   sudo incus exec -T -n chatpc --project targets -- sh -c 'for i in 1 2 3; do timeout 6h yes >/dev/null 2>&1 & done'
    ```
    On a VPS, don't load every core of the server for hours: shared vCores
    under sustained full load risk throttling, which is what the cap is for.

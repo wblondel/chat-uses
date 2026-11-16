@@ -1,8 +1,9 @@
 # Rendered with envsubst by infra/host/bootstrap.sh, then applied with
 # `incus profile edit --project targets`. Replaced on every run.
 #
-# Each target gets a fixed address at creation, e.g.:
-#   incus launch <image> target-1 --project targets -p target-desktop \
+# Each target gets a fixed address at creation, as
+# images/debian-xfce/deploy.sh does for the one on stream:
+#   incus launch <image> chatpc --project targets -p target-desktop \
 #     --device eth0,ipv4.address=10.30.0.10
 description: "Desktop target controlled by chat (pinned CPUs, hard limits, isolated network)"
 config:

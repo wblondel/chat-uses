@@ -393,15 +393,38 @@ work: that's part of the stream test below.
 ### On the server: the stream with friends
 
 PLAN.md's "done when": the scenarios pass (CI), and rewind, reboot and
-reset votes work on an unlisted stream with friends. Phase 6 as a whole
-(steps 1 to 5) is one deploy:
+reset votes work on an unlisted stream with friends.
+
+**First, the target on stream becomes `chatpc`** (D59). Until now the stream
+showed Phase 2's test target, `phase2-check` at `.251`: its hostname said
+so, it had the check's 2 GiB of memory instead of 8, and re-running the
+check would have replaced it, with everything chat did and its snapshots.
+`deploy.sh` launches the real one at `TARGET_IP` (10.30.0.10), named
+`TARGET_NAME` (its hostname, which chat sees), with the target profile's
+limits:
 
 ```bash
 cd /opt/chat-uses && sudo git pull
+sudo images/debian-xfce/deploy.sh      # chatpc at 10.30.0.10; it says if the image is older than the repo
+sudo sed -i '/^TARGET_HOST=/d' /etc/chat-uses/bcast.local.env /etc/chat-uses/brain.local.env
+sudo images/bcast/deploy.sh            # the stream shows chatpc
+sudo images/debian-xfce/check.sh --instance chatpc
+```
+
+If `deploy.sh` says the desktop image is older than the repo, rebuild it
+first (`sudo images/build.sh debian-xfce`) and run `deploy.sh --replace`.
+`check.sh` now refuses to replace its test target while bcast or brain
+point at it.
+
+**Then Phase 6 as a whole** (steps 1 to 5) is one deploy of brain, which
+finds `chatpc` by its address:
+
+```bash
 sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
 sudo images/brain/check.sh
 admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
 admin status        # Ruleset: roguelike; Discord: connected, panel shown
+sudo incus delete -f phase2-check --project targets    # the old test target, once chatpc is on stream
 ```
 
 Then, on an unlisted stream, with 3 or more friends who've each been in
