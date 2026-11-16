@@ -240,12 +240,26 @@ function seenOnScreen(e) {
   return cell;
 }
 
+// Was a screen OCR hit real? Moderators' answers decide when enforcing is safe (Phase 7).
+function verdictButtons(e) {
+  const box = el("span", null, "verdict");
+  for (const [verdict, label] of [["real", "Real"], ["false", "False alarm"]]) {
+    const chosen = e.verdict && e.verdict.verdict === verdict;
+    const button = el("button", label, chosen ? "small chosen" : "small");
+    if (chosen) button.title = `marked by ${e.verdict.by}`;
+    button.addEventListener("click", () => act("/api/ocr-verdict", { hit: e.id, verdict }));
+    box.append(button);
+  }
+  return box;
+}
+
 async function loadEvents() {
   const { events } = await api("/api/events?limit=50");
   $("events").tBodies[0].replaceChildren(...events.map((e) => {
     const tr = el("tr", null, `event-${e.type}`);
     const details = el("td", eventDetails(e));
     if (e.type === "ocr_hit" || e.type === "hold") details.append(" ", seenOnScreen(e));
+    if (e.type === "ocr_hit") details.append(" ", verdictButtons(e));
     tr.append(el("td", when(e.ts)), el("td", e.type), details);
     return tr;
   }));

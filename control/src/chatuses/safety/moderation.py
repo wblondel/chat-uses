@@ -329,6 +329,20 @@ class Moderation:
             self.store.event(now, "rewind-to", {"by": by, "snapshot": which.strip()[:40]})
         return Answer(started, text)
 
+    def verdict(self, by: str, hit_id: int, verdict: str, now: float | None = None) -> Answer:
+        """A screen OCR hit was real, or a false alarm (Phase 7: what decides enforcing).
+
+        The latest verdict counts: another moderator can correct one."""
+        now = time.time() if now is None else now
+        if verdict not in ("real", "false"):
+            return Answer(False, "A verdict is real or false.")
+        hit = self.store.ocr_hit(hit_id)
+        if hit is None:
+            return Answer(False, f"No screen OCR hit #{hit_id}.")
+        self.store.event(now, "ocr_verdict", {"hit": hit_id, "verdict": verdict, "by": by})
+        what = "real" if verdict == "real" else "a false alarm"
+        return Answer(True, f"Screen OCR hit #{hit_id} marked {what}.")
+
     # --- for the dashboard and /status -----------------------------------------------
 
     def state(self, now: float | None = None) -> dict[str, Any]:

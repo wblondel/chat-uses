@@ -14,6 +14,10 @@ The control panel (discord_panel.py): one message in #control with Yes,
 No, Veto, Anarchy and Democracy buttons, kept up to date. A press is the
 presser typing that command in #control; only they see the answer.
 
+Screen OCR alerts in #mod-alerts carry *Real* and *False alarm* buttons:
+a moderator's verdict on each hit is what decides when enforcing is safe
+(Phase 7). The latest press counts, and the post says whose it is.
+
 Moderators (the Moderator or Owner role, or the server's owner) get /panic,
 /resume, /ban, /timeout, /unban and /lockdown. Discord shows them only to
 members who may time people out (the Moderator role can); brain checks the
@@ -28,6 +32,7 @@ import asyncio
 import contextlib
 import io
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
@@ -64,6 +69,50 @@ NOT_A_MODERATOR = "Only moderators can do that."
 
 Deliver = Callable[[ChatMessage], None]
 NOT_HERE = "This panel only works in the stream's server."
+VERDICT_LINE = "Verdict: "
+
+
+class OcrVerdict(
+    discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
+    template=r"chatuses:ocr:(?P<hit>[0-9]{1,12}):(?P<verdict>real|false)",
+):
+    """A screen OCR hit's buttons: the hit's ID is in the button's, so a press works after a restart."""
+
+    def __init__(self, hit: int, verdict: str) -> None:
+        real = verdict == "real"
+        super().__init__(
+            discord.ui.Button(
+                label="Real" if real else "False alarm",
+                style=discord.ButtonStyle.danger if real else discord.ButtonStyle.secondary,
+                custom_id=f"chatuses:ocr:{hit}:{verdict}",
+            )
+        )
+        self.hit, self.verdict = hit, verdict
+
+    @classmethod
+    async def from_custom_id(  # pyright: ignore[reportIncompatibleMethodOverride]
+        cls, interaction: discord.Interaction, item: discord.ui.Item[Any], match: "re.Match[str]", /
+    ) -> "OcrVerdict":
+        return cls(int(match["hit"]), match["verdict"])
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        adapter = getattr(interaction.client, "adapter", None)
+        if isinstance(adapter, DiscordChat):
+            await adapter.verdict_pressed(interaction, self.hit, self.verdict)
+
+
+def verdict_view(hit: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(OcrVerdict(hit, "real"))
+    view.add_item(OcrVerdict(hit, "false"))
+    return view
+
+
+def with_verdict(content: str, verdict: str, by: str) -> str:
+    """The alert's text with its verdict line (replacing an earlier one)."""
+    kept = [line for line in content.split("\n") if not line.startswith(VERDICT_LINE)]
+    what = "✅ real" if verdict == "real" else "❎ false alarm"
+    return "\n".join([*kept, f"{VERDICT_LINE}{what} ({by})"])[:2000]
 
 
 def chat_from(
@@ -205,6 +254,8 @@ class _Client(discord.Client):
     async def setup_hook(self) -> None:
         if self.adapter.panel is not None:  # presses on any panel, from the start
             self.add_view(PanelView(self.adapter.pressed))
+        if self.adapter.moderation is not None:  # verdicts on screen OCR hits, old posts included
+            self.add_dynamic_items(OcrVerdict)
         # Guild commands show up at once (global ones can take an hour).
         await self.tree.sync(guild=self._guild)
 
@@ -293,7 +344,7 @@ class DiscordChat:
         self.messages = 0
         self._task: asyncio.Task[None] | None = None
         self._client: _Client | None = None
-        self._alerts: deque[tuple[str, bytes | None, str]] = deque(maxlen=MAX_PENDING_ALERTS)
+        self._alerts: deque[tuple[str, bytes | None, str, int | None]] = deque(maxlen=MAX_PENDING_ALERTS)
         self._sending: set[asyncio.Task[None]] = set()
 
     def _ready(self) -> bool:
@@ -327,16 +378,49 @@ class DiscordChat:
         except (discord.HTTPException, OSError, aiohttp.ClientError) as err:  # too late (3 s), or offline
             log.warning("Discord: couldn't answer a panel press: %s", err)
 
-    def alert(self, text: str, image: bytes | None = None, channel: str | None = None) -> None:
-        """Post in #mod-alerts, or another channel such as #ops (with a PNG, as a spoiler).
+    def alert(
+        self,
+        text: str,
+        image: bytes | None = None,
+        channel: str | None = None,
+        verdict_for: int | None = None,
+    ) -> None:
+        """Post in #mod-alerts, or another channel such as #ops (with a PNG, as a spoiler);
+        verdict_for: a screen OCR hit's ID, for its Real / False alarm buttons.
 
         Kept for later if Discord isn't reachable."""
-        self._alerts.append((text[:1900], image, (channel or self.alerts_channel).removeprefix("#")))
+        where = (channel or self.alerts_channel).removeprefix("#")
+        self._alerts.append((text[:1900], image, where, verdict_for))
         self.flush_alerts()
 
     def pending_alerts(self) -> list[str]:
         """Alerts not posted yet (Discord unreachable, or no alerts channel)."""
-        return [text for text, _image, _channel in self._alerts]
+        return [text for text, _image, _channel, _hit in self._alerts]
+
+    async def verdict_pressed(self, interaction: discord.Interaction, hit: int, verdict: str) -> None:
+        """Real or False alarm under a screen OCR alert: moderators only."""
+        member, guild = interaction.user, interaction.guild
+        roles = [r.name for r in member.roles] if isinstance(member, discord.Member) else []
+        owns = guild is not None and guild.owner_id == member.id
+        if (
+            self.moderation is None
+            or guild is None
+            or guild.id != self.guild_id
+            or not is_moderator(roles, owns)
+        ):
+            await interaction.response.send_message(NOT_A_MODERATOR, ephemeral=True)
+            return
+        answer = self.moderation.verdict(moderator_label(member.display_name, member.id), hit, verdict)
+        try:
+            if answer.ok and interaction.message is not None:
+                content = with_verdict(interaction.message.content, verdict, member.display_name)
+                await interaction.response.edit_message(
+                    content=content, allowed_mentions=discord.AllowedMentions.none()
+                )
+            else:
+                await interaction.response.send_message(answer.text, ephemeral=True)
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
+            log.warning("Discord: couldn't answer a verdict: %s", err)
 
     def flush_alerts(self) -> None:
         client = self._client
@@ -348,23 +432,26 @@ class DiscordChat:
             if guild
             else {}
         )
-        kept: deque[tuple[str, bytes | None, str]] = deque(maxlen=MAX_PENDING_ALERTS)
+        kept: deque[tuple[str, bytes | None, str, int | None]] = deque(maxlen=MAX_PENDING_ALERTS)
         while self._alerts:
-            text, image, name = self._alerts.popleft()
+            text, image, name, hit = self._alerts.popleft()
             channel = channels.get(name)
             if channel is None:
                 log.warning("Discord: no #%s channel for alerts", name)
-                kept.append((text, image, name))
+                kept.append((text, image, name, hit))
                 continue
-            task = asyncio.create_task(self._post(channel, text, image))
+            task = asyncio.create_task(self._post(channel, text, image, hit))
             self._sending.add(task)
             task.add_done_callback(self._sending.discard)
         self._alerts = kept
 
-    async def _post(self, channel: discord.TextChannel, text: str, image: bytes | None = None) -> None:
+    async def _post(
+        self, channel: discord.TextChannel, text: str, image: bytes | None = None, hit: int | None = None
+    ) -> None:
         files = [discord.File(io.BytesIO(image), filename="screen.png", spoiler=True)] if image else []
+        extra: dict[str, Any] = {"view": verdict_view(hit)} if hit is not None else {}
         try:
-            await channel.send(text, files=files, allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(text, files=files, allowed_mentions=discord.AllowedMentions.none(), **extra)
         except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
             log.warning("Discord: couldn't post in #%s: %s", channel.name, err)
 

@@ -10,6 +10,7 @@ chat's snapshots (snapshots.py); later phases add theirs (runs...).
 
 import json
 import sqlite3
+from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -226,13 +227,53 @@ class Store:
             )
             self._event(ts, "command", {"user": user_id, "outcome": outcome, "command": parsed_json})
 
-    def event(self, ts: float, type_: str, payload: dict[str, Any]) -> None:
-        self._event(ts, type_, payload)
+    def event(self, ts: float, type_: str, payload: dict[str, Any]) -> int:
+        """Log it; its ID."""
+        return self._event(ts, type_, payload)
 
-    def _event(self, ts: float, type_: str, payload: dict[str, Any]) -> None:
-        self.db.execute(
+    def _event(self, ts: float, type_: str, payload: dict[str, Any]) -> int:
+        cursor = self.db.execute(
             "INSERT INTO events (ts, type, payload_json) VALUES (?, ?, ?)", (ts, type_, json.dumps(payload))
         )
+        return int(cursor.lastrowid or 0)
+
+    # --- screen OCR verdicts (Phase 7) ----------------------------------------------------
+
+    def ocr_hit(self, hit_id: int) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT ts, payload_json FROM events WHERE id = ? AND type = 'ocr_hit'", (hit_id,)
+        ).fetchone()
+        return {"id": hit_id, "ts": row[0], **json.loads(row[1])} if row else None
+
+    def ocr_verdicts(self, hit_ids: list[int] | None = None) -> dict[int, dict[str, Any]]:
+        """Each hit's latest verdict ({"verdict": "real" or "false", "by", "ts"}), of these hits or all."""
+        rows = self.db.execute(
+            "SELECT ts, payload_json FROM events WHERE type = 'ocr_verdict' ORDER BY id"
+        ).fetchall()
+        wanted = set(hit_ids) if hit_ids is not None else None
+        verdicts: dict[int, dict[str, Any]] = {}
+        for ts, payload in rows:
+            data = json.loads(payload)
+            hit = int(data.get("hit", 0))
+            if wanted is None or hit in wanted:
+                verdicts[hit] = {"verdict": data.get("verdict"), "by": data.get("by"), "ts": ts}
+        return verdicts
+
+    def ocr_summary(self) -> dict[str, Any]:
+        """Every hit still in the log (90 days), by mode and verdict: what decides enforcing."""
+        hits = [
+            (i, json.loads(p).get("mode", "?"))
+            for i, p in self.db.execute("SELECT id, payload_json FROM events WHERE type = 'ocr_hit'")
+        ]
+        verdicts = self.ocr_verdicts()
+        kinds = Counter(verdicts[i]["verdict"] if i in verdicts else "unmarked" for i, _mode in hits)
+        return {
+            "hits": len(hits),
+            "modes": dict(sorted(Counter(mode for _i, mode in hits).items())),
+            "real": kinds["real"],
+            "false": kinds["false"],
+            "unmarked": kinds["unmarked"],
+        }
 
     def events(self, after_id: int = 0, limit: int = 1000) -> list[tuple[int, float, str, dict[str, Any]]]:
         rows = self.db.execute(
@@ -485,15 +526,18 @@ class Store:
             "SELECT kind, result FROM votes WHERE opened_at >= ? AND opened_at < ?", window
         ).fetchall()
         events = self.db.execute(
-            "SELECT type, payload_json FROM events WHERE ts >= ? AND ts < ?"
+            "SELECT id, type, payload_json FROM events WHERE ts >= ? AND ts < ?"
             " AND type IN ('panic', 'resume', 'hold', 'ocr_hit', 'time-travel', 'power')",
             window,
         ).fetchall()
+        hits = [i for i, kind, _payload in events if kind == "ocr_hit"]
+        verdicts = self.ocr_verdicts(hits)
         return {
             "outcomes": outcomes,
             "people": people,
             "votes": [(kind, result) for kind, result in votes],
-            "events": [(kind, json.loads(payload)) for kind, payload in events],
+            "events": [(kind, json.loads(payload)) for _i, kind, payload in events],
+            "ocr_verdicts": Counter(v["verdict"] for v in verdicts.values()),
         }
 
     def outcome_counts(self) -> dict[str, int]:

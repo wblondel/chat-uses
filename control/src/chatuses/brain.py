@@ -92,7 +92,7 @@ ADMIN_USAGE = (
     "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
     "       | snapshots | snapshot | rewind-to NUMBER|SAVE\n"
-    "       | session | session start NAME | session end | sessions"
+    "       | session | session start NAME | session end | sessions | ocr | ocr-verdict HIT real|false"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
@@ -391,10 +391,10 @@ class Brain:
     def lockdown_changed(self, on: bool) -> None:
         self.overlay.lockdown(on)
 
-    def alert(self, text: str, image: bytes | None = None) -> None:
+    def alert(self, text: str, image: bytes | None = None, verdict_for: int | None = None) -> None:
         log.warning("moderation: %s", text)
         if self.discord:
-            self.discord.alert(text, image)
+            self.discord.alert(text, image, verdict_for=verdict_for)
 
     def ops(self, text: str) -> None:
         """The target's health, for #ops (safety/watchdog.py)."""
@@ -622,14 +622,19 @@ class Brain:
         """Screen OCR saw a listed word: report it (shadow), or hold the stream (enforce)."""
         shot = self._keep_screenshot(hit)
         enforce = self.ocr_mode == "enforce"
-        self.store.event(
+        hit_id = self.store.event(
             hit.ts, "ocr_hit", {"mode": self.ocr_mode, "found": list(hit.found), "screenshot": shot}
         )
         if enforce:
             self.moderation.hold("screen OCR", hit.lines, now=hit.ts)
         seen = "\n".join(f"||{line[:300]}||" for line in hit.found[:5])
         what = "held the stream" if enforce else "shadow mode, nothing was done on stream"
-        self.alert(f"👁️ Screen OCR saw a listed word ({what}):\n{seen}", hit.frame.png())
+        self.alert(
+            f"👁️ Screen OCR hit #{hit_id}: a listed word ({what}):\n{seen}\n"
+            "Was it real? (Your answers decide when screen OCR may hold the stream.)",
+            hit.frame.png(),
+            verdict_for=hit_id,
+        )
 
     async def keep_tidy(self) -> None:
         """Retention (PLAN.md 11): raw logs and screenshots go after 90 days. Never returns."""
@@ -887,6 +892,10 @@ class Brain:
                 if not rows:
                     return "ok", "No sessions yet."
                 return "ok", "\n".join(_session_line(row) for row in rows)
+            case ["ocr"]:
+                return "ok", self.ocr_text()
+            case ["ocr-verdict", hit, ("real" | "false") as verdict] if hit.lstrip("#").isdigit():
+                return _answer(self.moderation.verdict("console", int(hit.lstrip("#")), verdict))
             case ["bans"]:
                 rows = self.moderation.state()["banned"]
                 if not rows:
@@ -945,6 +954,23 @@ class Brain:
                 continue
             viewers = await self.youtube.viewers() if self.youtube else None
             self.sessions.sample(viewers, active_by_platform(self.pipeline.presence, time.time()))
+
+    def ocr_text(self) -> str:
+        """Screen OCR's record (the last 90 days): what decides turning enforcing on."""
+        summary = self.store.ocr_summary()
+        modes = ", ".join(f"{n} {mode}" for mode, n in summary["modes"].items())
+        lines = [
+            f"Screen OCR: {self.ocr_mode}. Hits in the last 90 days: {summary['hits']}"
+            + (f" ({modes})" if modes else "")
+            + f": {summary['real']} real, {summary['false']} false alarms, {summary['unmarked']} not marked."
+        ]
+        rows = self.store.recent_events(("ocr_hit",), limit=10)
+        verdicts = self.store.ocr_verdicts([i for i, *_ in rows])
+        for hit_id, ts, _kind, payload in rows:
+            verdict = verdicts.get(hit_id)
+            said = f"{verdict['verdict']} ({verdict['by']})" if verdict else "not marked"
+            lines.append(f"#{hit_id} {_clock(ts)} {payload.get('mode', '?')}: {said}")
+        return "\n".join(lines)
 
     def end_session(self) -> tuple[str, str]:
         ok, text, _report = self.sessions.end()

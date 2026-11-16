@@ -12,8 +12,8 @@ with friends (`docs/phase6.md`, step 5).
 Three steps of tooling, then the sessions themselves:
 
 1. **Session reports** (below): what each session was like, in numbers.
-2. Screen OCR verdicts: moderators mark each hit real or a false alarm, so
-   the beta says when enforcing is safe.
+2. **Screen OCR verdicts** (below): moderators mark each hit real or a false
+   alarm, so the beta says when enforcing is safe.
 3. The beta runbook: before, during and after a session; what to tune; the
    retro note.
 
@@ -70,7 +70,8 @@ paste into the session's retro note. For example:
 - People who sent commands: 31 (Discord 9, YouTube 22)
 - Commands: 1834 (14.7 a minute): 1502 accepted, 332 refused (rate_limited 210, invalid 98, filtered 24)
 - Votes: 9 proposed, 5 carried out (reboot 1 of 4, rewind 2 of 3, save 2 of 2); 3 failed, 1 vetoed
-- Panics: 0; content holds: 0 (0 confirmed as panics, 0 resumed as false alarms); covered 0.0 min in all; screen OCR hits: 3
+- Panics: 0; content holds: 0 (0 confirmed as panics, 0 false alarms resumed); covered 0.0 min in all
+- Screen OCR hits: 3 (1 real, 2 false alarms, 0 not marked)
 - Time travel: 2, reboots and resets: 1
 - Encoder: average speed 1.0x, slowest 0.985x (never behind), 3 frames dropped
 - CPU on average: host 41.2 % busy, bcast 1.6 CPUs, brain 0.1 CPUs, chatpc 0.9 CPUs
@@ -113,3 +114,68 @@ sudo infra/host/session.py end
 
 The report should have the commands sent, the encoder's speed (about 1.0x)
 and the CPU lines; `#ops` gets brain's part.
+
+## Step 2: screen OCR verdicts
+
+During the beta, screen OCR runs in shadow mode: a hit is only reported in
+`#mod-alerts`, nothing happens on stream. Whether to let it hold the stream
+(enforce) depends on how often it's right, so every hit now asks.
+
+- **In `#mod-alerts`,** each hit's post (`👁️ Screen OCR hit #12: …`) has
+  two buttons: **Real** and **False alarm**. Only moderators can press them
+  (the Moderator or Owner role, or the server's owner); the post then says
+  `Verdict: ✅ real (Mia)` or `Verdict: ❎ false alarm (Mia)`. The latest
+  press counts, so someone else can correct it; the buttons work on old
+  posts too, after a restart.
+- **On the dashboard,** the log's `ocr_hit` lines have the same two buttons;
+  the chosen one is outlined.
+- **On the console:** `chat-brain-admin ocr-verdict 12 real` (or `false`).
+
+`chat-brain-admin ocr` shows the record: the hits of the last 90 days, by
+mode, how many were real, false alarms or not marked, and the last ten with
+their verdicts. Session reports count them too (`Screen OCR hits: 3 (1 real,
+2 false alarms, 0 not marked)`).
+
+A content hold (enforce mode) already has a verdict of sorts: a moderator
+who confirms it as a panic says it was real, one who resumes says it
+wasn't. The session report counts those; a button's verdict on the hit
+itself is the one `ocr` counts.
+
+### When to turn enforcing on
+
+Enforcing holds the stream until a moderator resumes, so each false alarm
+covers the stream for as long as a moderator takes to look. A suggestion,
+yours to decide (then record it in PLAN.md's decision log):
+
+- every hit of the beta has a verdict (`ocr`: nothing "not marked");
+- false alarms are rare: fewer than one per session;
+- a moderator is online for every session (Phase 7's rule for public
+  sessions anyway), and has practised resuming a hold.
+
+Then set `OCR_MODE=enforce` in `/etc/chat-uses/brain.local.env` and run
+`sudo images/brain/deploy.sh`. A false alarm that keeps coming back (a
+word in a menu, say) is fixed in the word lists, not by turning enforcing
+off.
+
+### What was tested
+
+- `control/tests/test_ocr_verdicts.py`: a hit posted with its buttons and
+  its number; verdicts given, corrected (the latest counts), refused for a
+  hit that doesn't exist or a word that isn't one; the record and the last
+  hits through `chat-brain-admin`; a session report counting the verdicts
+  of its own hits only; the buttons refusing people who aren't moderators
+  and writing whose verdict it is on the post; the buttons' IDs carrying
+  the hit; the dashboard showing and taking verdicts, refusing bad ones.
+- A button press as Discord sends it (an `INTERACTION_CREATE` with the
+  alert's message and its buttons), dispatched by discord.py's own code to
+  the verdict and the edited post.
+- The dashboard's log rendered in Chromium: the buttons on each hit, the
+  chosen one outlined, the words still blurred.
+
+### On the server
+
+Deploy brain (`sudo images/build.sh brain && sudo images/brain/deploy.sh
+--replace`). The next screen OCR hit in `#mod-alerts` has the buttons. To
+see one without waiting, run red-team test 8 (`sudo infra/tests/redteam.sh
+--only 8`, `docs/redteam.md`): it decodes a listed word on the desktop's
+screen.

@@ -19,6 +19,7 @@ other pages can't read the answers.
     GET  /api/commands?user=&before=&limit=  the audit: who sent what, and what became of it
     GET  /api/events?types=&before=&limit=   moderation's log (types=all: everything)
     GET  /api/screens/<name>                 a screenshot screen OCR kept (PNG)
+    POST /api/ocr-verdict {"hit", "verdict"} a screen OCR hit was "real" or "false" (Phase 7)
 
 Actions answer {"ok": bool, "text": "..."}, as Discord's slash commands do.
 `X-Moderator: <name>` (the page sends what you typed) goes in the log as
@@ -82,6 +83,7 @@ def add_routes(app: web.Application, brain: "Brain", token: str) -> None:
     app.router.add_get("/api/commands", api.guard(api.commands))
     app.router.add_get("/api/events", api.guard(api.events))
     app.router.add_get("/api/screens/{name}", api.guard(api.screen))
+    app.router.add_post("/api/ocr-verdict", api.guard(api.ocr_verdict))
 
 
 async def _redirect(_request: web.Request) -> web.StreamResponse:
@@ -235,6 +237,13 @@ class _Api:
     async def endvote(self, request: web.Request) -> web.StreamResponse:
         return self._answer(self.mod.endvote(self._by(request)))
 
+    async def ocr_verdict(self, request: web.Request) -> web.StreamResponse:
+        body = await self._body(request)
+        hit, verdict = body.get("hit"), body.get("verdict")
+        if not isinstance(hit, int) or isinstance(hit, bool) or verdict not in ("real", "false"):
+            raise web.HTTPBadRequest(text='hit: a number; verdict: "real" or "false"\n')
+        return self._answer(self.mod.verdict(self._by(request), hit, str(verdict)))
+
     async def users(self, request: web.Request) -> web.StreamResponse:
         query = request.query.get("q", "").strip().casefold()
         now = time.time()
@@ -269,9 +278,14 @@ class _Api:
             before_id=_int(q.get("before"), None, 0, 2**62),
             limit=_int(q.get("limit"), 100, 1, MAX_LIMIT) or 100,
         )
-        return web.json_response(
-            {"events": [{"id": i, "ts": ts, "type": t, **payload} for i, ts, t, payload in rows]}
-        )
+        verdicts = self.brain.store.ocr_verdicts([i for i, _ts, t, _p in rows if t == "ocr_hit"])
+        events: list[dict[str, Any]] = []
+        for i, ts, t, payload in rows:
+            event = {"id": i, "ts": ts, "type": t, **payload}
+            if t == "ocr_hit":
+                event["verdict"] = verdicts.get(i)
+            events.append(event)
+        return web.json_response({"events": events})
 
     async def screen(self, request: web.Request) -> web.StreamResponse:
         name = request.match_info["name"]
