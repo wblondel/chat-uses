@@ -68,6 +68,9 @@ code=$(status "$SITE/wiki/")
 zims=$(incus exec intranet --project infra -- sh -c 'ls /srv/zim/*.zim 2>/dev/null | xargs -r -n1 basename' | tr '\n' ' ' || true)
 if [[ $code == 200 ]]; then
 	pass "offline Wikipedia at /wiki/ (${zims:-?})"
+	for zim in $zims; do
+		[[ $zim == *_nopic_* ]] || fail "$zim has pictures: anything in it can go on stream (deploy.sh --zim with the _nopic_ one)"
+	done
 elif [[ -z $zims ]]; then
 	info "no ZIM installed yet: images/intranet/deploy.sh --zim URL (docs/phase5.md)"
 else

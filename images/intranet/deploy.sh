@@ -8,10 +8,13 @@
 #   --zim URL                                      download this offline Wikipedia into it (replacing the
 #                                                  one there), checked against URL.sha256 when Kiwix has one
 #   --zim-file PATH                                the same from a file on the host
+#   --allow-pictures                               accept a ZIM with pictures (not "_nopic_"): see below
 #
 # ZIM files live on their own volume (intranet-zim, mounted at /srv/zim), so
 # --replace keeps them. Pick one at https://download.kiwix.org/zim/wikipedia/
-# (docs/phase5.md says which).
+# (docs/phase5.md says which): a "_nopic_" one. Pictures from any article can
+# be put on stream in two clicks, and screen OCR reads only text, so other
+# ZIMs are refused unless --allow-pictures.
 
 set -euo pipefail
 
@@ -24,12 +27,14 @@ VOLUME=intranet-zim
 REPLACE=0
 ZIM_URL=""
 ZIM_FILE=""
+ALLOW_PICTURES=0
 while (($#)); do
 	case $1 in
 	--replace) REPLACE=1 ;;
 	--image) IMAGE=${2:?}; shift ;;
 	--zim) ZIM_URL=${2:?}; shift ;;
 	--zim-file) ZIM_FILE=${2:?}; shift ;;
+	--allow-pictures) ALLOW_PICTURES=1 ;;
 	-h | --help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0 ;;
 	*) die "unknown argument $1" ;;
 	esac
@@ -39,6 +44,10 @@ done
 load_config
 [[ -z $ZIM_URL || $ZIM_URL =~ ^https://[^[:space:]]+\.zim$ ]] || die "--zim takes an https:// URL of a .zim file"
 [[ -z $ZIM_FILE || -f $ZIM_FILE ]] || die "no such file: $ZIM_FILE"
+zim_name=$(basename "${ZIM_URL:-${ZIM_FILE:-}}")
+if [[ -n ${ZIM_URL}${ZIM_FILE} && $zim_name != *_nopic_* ]] && ((!ALLOW_PICTURES)); then
+	die "$zim_name has pictures (it isn't a _nopic_ file): any of them can be put on stream, and screen OCR reads only text. Take the _nopic_ one (docs/phase5.md), or pass --allow-pictures"
+fi
 
 in_intranet() { incus exec "$NAME" --project infra -- "$@"; }
 
