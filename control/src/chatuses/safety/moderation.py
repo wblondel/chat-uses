@@ -15,6 +15,8 @@ a ban, end a panic or end a lockdown.
 - **Bans and timeouts** are by unified ID (`yt:…`, `dc:…`), or by the name
   the overlay showed, for anyone who sent a command recently. Moderators and
   the owner can't be banned this way.
+- **Ending a vote** (/endvote): a power vote that's going wrong stops at
+  once (not one already being carried out).
 - **Lockdown** (raids): only trusted roles (owner, moderator, Discord
   regulars, YouTube members) and people brain has known for a day may send
   commands. Points (Phase 6) will join them.
@@ -90,6 +92,7 @@ class Effects(Protocol):
     def lockdown_changed(self, on: bool) -> None: ...  # the overlay says so
     def alert(self, text: str) -> None: ...  # a post in #mod-alerts
     def snapshot(self, name: str) -> None: ...  # a forensic snapshot of the target, in the background
+    def end_vote(self, why: str) -> tuple[bool, str]: ...  # ended?, what to say (referee/votes.py)
 
 
 class Moderation:
@@ -297,6 +300,15 @@ class Moderation:
         user = self.store.user(msg.user_id)
         first_seen = user["first_seen"] if user else msg.ts
         return msg.ts - first_seen < LOCKDOWN_AGE
+
+    # --- votes ------------------------------------------------------------------------
+
+    def endvote(self, by: str, now: float | None = None) -> Answer:
+        now = time.time() if now is None else now
+        ended, text = self.effects.end_vote("ended by a moderator")
+        if ended:
+            self.store.event(now, "endvote", {"by": by})
+        return Answer(ended, text if ended else "No vote is running.")
 
     # --- for the dashboard and /status -----------------------------------------------
 

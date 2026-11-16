@@ -118,7 +118,7 @@ class _Client(discord.Client):
         self._guild = guild
 
     def _moderator_commands(self, mod: "Moderation") -> None:
-        """/panic, /resume, /ban, /timeout, /unban, /lockdown (PLAN.md 7.5, 7.6)."""
+        """/panic, /resume, /ban, /timeout, /unban, /lockdown (PLAN.md 7.5, 7.6), /endvote (6.1)."""
         tree = self.tree
         hidden = app_commands.default_permissions(moderate_members=True)  # shown to moderators only
 
@@ -169,6 +169,11 @@ class _Client(discord.Client):
         @hidden
         async def unban(interaction: discord.Interaction, who: str) -> None:  # pyright: ignore[reportUnusedFunction]
             await run(interaction, lambda by: mod.unban(by, who))
+
+        @tree.command(name="endvote", description="End the power vote running now")
+        @hidden
+        async def endvote(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
+            await run(interaction, lambda by: mod.endvote(by))
 
         @tree.command(name="lockdown", description="Raid? Only regulars may send commands")
         @hidden

@@ -121,6 +121,31 @@ def test_bans_lockdown_and_bad_requests() -> None:
     run(test)
 
 
+def test_the_vote_and_ending_it() -> None:
+    async def test() -> None:
+        async with dashboard() as (brain, client):
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert state["referee"]["ruleset"] == "roguelike" and state["referee"]["vote"] is None
+            assert "power_votes" in state["referee"]["features"]
+            assert "lives" in state["referee"]["not_built_yet"]
+            now = time.time()
+            brain.pipeline.presence.saw("console:alice", now - 600)
+            await brain.console_message("alice", "!reboot")
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert (state["referee"]["vote"]["text"], state["referee"]["vote"]["phase"]) == (
+                "!reboot",
+                "voting",
+            )
+            answer = await (await client.post("/api/endvote", json={}, headers=AUTH)).json()
+            assert answer == {"ok": True, "text": "Vote ended: !reboot (ended by a moderator)."}
+            answer = await (await client.post("/api/endvote", json={}, headers=AUTH)).json()
+            assert answer == {"ok": False, "text": "No vote is running."}
+            [(_, _, _, payload)] = brain.store.recent_events(("endvote",))
+            assert payload == {"by": "the dashboard"}
+
+    run(test)
+
+
 def test_the_audit_and_the_moderation_log() -> None:
     async def test() -> None:
         async with dashboard() as (brain, client):

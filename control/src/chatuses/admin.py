@@ -15,6 +15,13 @@ dashboard do it; logged as done by "console":
     chat-brain-admin unban WHO
     chat-brain-admin lockdown on|off            only regulars may send commands
     chat-brain-admin bans                       who is banned or timed out, until when
+    chat-brain-admin endvote                    end the power vote running now
+
+Rulesets and laws (PLAN.md 6.12, rulesets/):
+
+    chat-brain-admin ruleset [NAME]             the ruleset in use (and those there are), or switch
+    chat-brain-admin laws                       laws changed over the ruleset's
+    chat-brain-admin law NAME VALUE|default     change a law (within its bounds), or put it back
 
 Privacy (PLAN.md 11, docs/privacy.md): commands and logs are deleted after 90 days.
 

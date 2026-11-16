@@ -1,0 +1,23 @@
+# The default ruleset (PLAN.md 6.12). brain reads rulesets/NAME.yaml
+# (control/src/chatuses/referee/laws.py): anything left out keeps PLAN.md's
+# numbers (6.3, 6.4, 6.6), and every value is checked against its bounds.
+#
+# Switch with chat-brain-admin ruleset NAME; change one law while running
+# with chat-brain-admin law NAME VALUE (kept in the store, over the ruleset).
+name: roguelike
+description: Chat runs the machine; power votes for reboots and time travel.
+target_profile: debian-xfce
+# Features not built yet (lives, achievements, driver_seat, chaos) are named
+# here already; brain says which it runs.
+features: [anarchy, democracy, power_votes, snapshots, lives, achievements, driver_seat, chaos]
+laws:
+  democracy_window_s: 12
+  auto_snapshot_min: 15
+  lives_start: 3
+  driver_interval_min: 10
+  driver_duration_s: 60
+tiers:
+  rewind: { threshold: 0.66, quorum_fraction: 0.25, quorum_floor: 3, window_s: 30, veto_s: 30, cooldown_min: 10 }
+  newrun: { threshold: 0.75, quorum_fraction: 0.35, quorum_floor: 4, window_s: 45, veto_s: 60, cooldown_min: 60 }
+commands:
+  disabled: []

@@ -4,8 +4,8 @@ log (debugging, replays, the audit viewer, the public site later).
 WAL mode, one connection, used from brain's single event loop. Events can't
 be changed, and can be deleted only once they're past the retention period
 (90 days, PLAN.md 11) or for someone's deletion request (`forget`): triggers
-in the schema refuse anything else. Later phases add their tables (votes,
-runs, snapshots...) here.
+in the schema refuse anything else. Votes and laws are here (referee/); later
+phases add theirs (runs, snapshots...).
 """
 
 import json
@@ -42,6 +42,24 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,             -- e.g. youtube_video
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS votes (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,               -- reboot, save, reset, rewind, load, newrun, impeach
+    proposer TEXT NOT NULL,           -- '' once forgotten or past the retention period
+    opened_at REAL NOT NULL,
+    closed_at REAL,
+    params_json TEXT NOT NULL,        -- {"text": "!rewind 2", "arg": 2}
+    tally_json TEXT,                  -- yes, no, vetoes, quorum, active, result (words)
+    eligible_count INTEGER NOT NULL,
+    result TEXT                       -- done, error, failed, vetoed, cancelled; null while open
+);
+CREATE TABLE IF NOT EXISTS laws (
+    key TEXT PRIMARY KEY,             -- a law, or tiers.ACTION.SETTING (referee/laws.py)
+    value TEXT NOT NULL,              -- JSON number, over the ruleset's
+    amended_at REAL NOT NULL,
+    amended_by TEXT NOT NULL,
+    amendment_vote_id INTEGER REFERENCES votes(id)
 );
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
     BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
@@ -242,13 +260,86 @@ class Store:
         ).fetchall()
         return [(i, ts, t, json.loads(p)) for i, ts, t, p in rows]
 
+    # --- votes and laws (referee/) -------------------------------------------------------
+
+    def open_vote(
+        self, kind: str, proposer: str, opened: float, params: dict[str, Any], eligible: int
+    ) -> int:
+        with self.db:
+            self.db.execute("BEGIN")
+            cursor = self.db.execute(
+                "INSERT INTO votes (kind, proposer, opened_at, params_json, eligible_count)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (kind, proposer, opened, json.dumps(params), eligible),
+            )
+            vote_id = int(cursor.lastrowid or 0)
+            self._event(opened, "vote", {"id": vote_id, "kind": kind, "user": proposer, **params})
+        return vote_id
+
+    def close_vote(self, vote_id: int, closed: float, tally: dict[str, Any], result: str) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "UPDATE votes SET closed_at = ?, tally_json = ?, result = ? WHERE id = ?",
+                (closed, json.dumps(tally), result, vote_id),
+            )
+            self._event(closed, "vote-result", {"id": vote_id, "phase": result, **tally})
+
+    def votes(self, limit: int = 50) -> list[dict[str, Any]]:
+        """The latest votes, newest first."""
+        rows = self.db.execute(
+            "SELECT id, kind, proposer, opened_at, closed_at, params_json, tally_json, eligible_count, result"
+            " FROM votes ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": i,
+                "kind": kind,
+                "proposer": proposer,
+                "opened": opened,
+                "closed": closed,
+                "params": json.loads(params),
+                "tally": json.loads(tally) if tally else None,
+                "eligible": eligible,
+                "result": result,
+            }
+            for i, kind, proposer, opened, closed, params, tally, eligible, result in rows
+        ]
+
+    def laws(self) -> dict[str, float]:
+        """Laws changed while running, over the ruleset's."""
+        return {
+            key: float(json.loads(value)) for key, value in self.db.execute("SELECT key, value FROM laws")
+        }
+
+    def set_law(self, ts: float, key: str, value: float | None, by: str) -> None:
+        """Change a law (None: back to the ruleset's), logged. Bounds are the caller's (referee/laws.py)."""
+        with self.db:
+            self.db.execute("BEGIN")
+            if value is None:
+                self.db.execute("DELETE FROM laws WHERE key = ?", (key,))
+            else:
+                self.db.execute(
+                    """INSERT INTO laws (key, value, amended_at, amended_by) VALUES (?, ?, ?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                           amended_at = excluded.amended_at, amended_by = excluded.amended_by""",
+                    (key, json.dumps(value), ts, by),
+                )
+            self._event(ts, "law", {"law": key, "value": value, "by": by})
+
     def prune(self, now: float) -> tuple[int, int]:
-        """Delete commands and events past the retention period; how many of each."""
+        """Delete commands and events past the retention period; how many of each.
+
+        Votes stay, without who proposed them."""
         cutoff = now - RETENTION
         with self.db:
             self.db.execute("BEGIN")
             commands = self.db.execute("DELETE FROM commands WHERE ts < ?", (cutoff,)).rowcount
             events = self.db.execute("DELETE FROM events WHERE ts < ?", (cutoff,)).rowcount
+            self.db.execute(
+                "UPDATE votes SET proposer = '' WHERE opened_at < ? AND proposer != ''", (cutoff,)
+            )
         return commands, events
 
     def forget(self, ts: float, user_id: str) -> tuple[int, int]:
@@ -271,6 +362,7 @@ class Store:
                 )
                 self.db.execute("DELETE FROM events WHERE id = ?", (event_id,))
             self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
+            self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
             if self.banned_until(user_id) > ts:
                 self.db.execute("UPDATE users SET display_name = '', roles = '' WHERE id = ?", (user_id,))
             else:

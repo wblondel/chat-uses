@@ -146,6 +146,20 @@ html, body {
 .anarchy { color: var(--anarchy); }
 .democracy { color: var(--democracy); }
 
+/* The power vote (referee/votes.py): lit while chat can vote or veto. */
+#vote-panel.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+#vote { font-size: 20px; font-weight: normal; }
+.vote-what { font-size: 30px; font-weight: bold; color: var(--accent); overflow-wrap: anywhere; }
+.vote-by { color: var(--muted); font-size: 18px; margin-bottom: 6px; }
+.vote-time { font-size: 24px; font-weight: bold; }
+.vote-bar { height: 12px; margin: 8px 0 6px; background: var(--anarchy); border-radius: 6px; overflow: hidden; }
+.vote-yes { height: 100%; background: var(--accent); }
+.vote-need { font-size: 18px; color: var(--muted); }
+.vote-how { margin-top: 6px; font: bold 20px var(--mono); }
+.vote-result { font-size: 22px; font-weight: bold; }
+.vote-result.done, .vote-result.running { color: var(--accent); }
+.vote-result.failed, .vote-result.vetoed, .vote-result.cancelled, .vote-result.error { color: var(--anarchy); }
+
 .saves { display: flex; gap: 8px; margin-top: 10px; }
 .saves span {
   flex: 1; height: 54px;

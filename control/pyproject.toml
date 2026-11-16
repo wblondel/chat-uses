@@ -12,6 +12,7 @@ dependencies = [
     "discord-py>=2.7",
     "grpcio>=1.85.1",
     "protobuf>=7.36.2",
+    "pyyaml>=6.0.2",
 ]
 
 [dependency-groups]
@@ -22,6 +23,7 @@ dev = [
     "grpcio-tools>=1.85.1",
     "types-protobuf>=7.35.1.20260906",
     "types-grpcio>=1.85.0.20261028",
+    "types-pyyaml>=6.0.12",
 ]
 
 [project.scripts]

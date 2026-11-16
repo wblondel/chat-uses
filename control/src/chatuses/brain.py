@@ -25,10 +25,12 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     OCR_MODE                 screen OCR: shadow (report only, the default), enforce (hold), off
     OCR_INTERVAL, OCR_LANGS  seconds between reads (5); tesseract's languages (eng+ara)
     SCREENS_DIR              where OCR hits' screenshots are kept (/var/lib/chat-brain/screens)
+    RULESETS_DIR             the rulesets (/usr/lib/chat-brain/rulesets); which one is in the store
 
 Which YouTube video's chat to read is set with chat-brain-admin, and kept in
 the store across restarts. Moderation (panic, bans, lockdown) is
-safety/moderation.py; the dashboard and its API, dashboard.py.
+safety/moderation.py; the dashboard and its API, dashboard.py. Power votes,
+rulesets and laws are the referee's (referee/).
 """
 
 import asyncio
@@ -50,12 +52,16 @@ from aiohttp import web
 from chatuses import console, dashboard
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.youtube import YouTubeChat, video_id_from
-from chatuses.commands import Click, Drag, InputCommand, Meta, Move, describe
+from chatuses.commands import Click, Drag, InputCommand, Load, Meta, Move, Rewind, Save, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.identity import Platform, user_id
 from chatuses.incus import Incus, IncusError
 from chatuses.overlay import OverlayHub
-from chatuses.pipeline import ChatMessage, Pipeline
+from chatuses.pipeline import PAUSED, ChatMessage, Pipeline
+from chatuses.referee import laws
+from chatuses.referee.laws import DEFAULT, Ruleset, RulesetError
+from chatuses.referee.referee import Referee
+from chatuses.referee.votes import Proposal
 from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
 from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
@@ -76,8 +82,13 @@ SECRETS = "/etc/chat-uses/secrets"
 ADMIN_USAGE = (
     "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off\n"
     "       | panic [REASON] | resume | lockdown on|off | bans\n"
-    "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO"
+    "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
+    "       | endvote | ruleset [NAME] | laws | law NAME VALUE|default"
 )
+OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
+# Counted in the vote panel, not each put in the log: a vote would push every command off it.
+BALLOTS = ("yes", "no", "veto")
+REFEREE_TICK = 0.25  # seconds between the vote engine's checks
 PRUNE_EVERY = 24 * 3600.0  # seconds between retention passes
 
 
@@ -106,6 +117,7 @@ class Config:
     ocr_interval: float = 5.0
     ocr_langs: str = "eng+ara"
     screens_dir: str = "/var/lib/chat-brain/screens"
+    rulesets_dir: str = "/usr/lib/chat-brain/rulesets"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -142,6 +154,7 @@ class Config:
             ocr_interval=max(1.0, float(env.get("OCR_INTERVAL", "") or cls.ocr_interval)),
             ocr_langs=env.get("OCR_LANGS", "").strip() or cls.ocr_langs,
             screens_dir=env.get("SCREENS_DIR", "") or cls.screens_dir,
+            rulesets_dir=env.get("RULESETS_DIR", "") or cls.rulesets_dir,
         )
 
     def incus(self) -> tuple[Incus | None, str]:
@@ -179,6 +192,8 @@ class Brain:
         incus: Incus | None = None,
         target_host: str = "",
         target_instance: str = "",
+        ruleset: Ruleset = DEFAULT,
+        rulesets: Path | None = None,
     ) -> None:
         self.store = store
         self.filter = TextFilter()
@@ -190,9 +205,12 @@ class Brain:
             store,
             censor=self.filter,
             strikes=self.strikes,
+            # Banned users aren't active: they don't raise a vote's quorum.
+            is_banned=lambda user: store.banned_until(user) > time.time(),
             locked_out=self.moderation.held_by_lockdown,
             paused=lambda: self.moderation.panicking,
         )
+        self.referee = Referee(store, self.pipeline.presence, self, self.overlay.vote, rulesets, ruleset)
         self.incus = incus
         self.incus_off_reason = "" if incus else "not set up"
         self.target_host = target_host
@@ -242,12 +260,18 @@ class Brain:
             self.executor.submit(
                 Job(msg.user_id, command, ref=line)
             )  # can_take() said yes, nothing ran since
-        elif outcome.kind == "accepted" and command is not None:
-            # Meta commands: votes, modes and time travel arrive in Phase 6.
-            done = isinstance(command, Meta) and command.name in ("grid", "help", "rules")
-            self.overlay.add_line(name, platform, describe(command), "done" if done else "later")
+        elif outcome.kind == "accepted" and isinstance(command, Meta) and command.name in OVERLAY_ONLY:
+            self.overlay.add_line(name, platform, describe(command), "done")
             if command == Meta("grid"):
                 self.overlay.grid()
+        elif outcome.kind == "accepted" and isinstance(command, (Meta, Rewind, Load, Save)):  # referee/
+            reply = self.referee.handle(msg.user_id, name, command, msg.ts)
+            if not reply.ok:
+                if self._may_show_refusal(msg):
+                    self.overlay.add_line(name, platform, None, "refused", reply.text)
+                return "refused", reply.text
+            if not (isinstance(command, Meta) and command.name in BALLOTS):
+                self.overlay.add_line(name, platform, describe(command), "done")
         elif outcome.kind in ("invalid", "rate_limited", "filtered") and self._may_show_refusal(msg):
             self.overlay.add_line(name, platform, None, "refused", outcome.reason)
         if outcome.timed_out_until is not None:  # always shown: chat should see what it earned
@@ -272,6 +296,7 @@ class Brain:
         self.overlay.panic(on, kind)  # the page covers the screen, bcast mutes the target
         if on:
             self.executor.freeze()
+            self.referee.end_vote("cancelled: the stream is paused")
             return
         self.executor.thaw()
         ended = self.moderation.last_panic or {}
@@ -291,6 +316,25 @@ class Brain:
         log.warning("watchdog: %s", text)
         if self.discord:
             self.discord.alert(text, channel=self.ops_channel)
+
+    def end_vote(self, why: str) -> tuple[bool, str]:
+        reply = self.referee.end_vote(why)
+        return reply.ok, reply.text
+
+    # --- what a passed vote does (referee.Actions) -------------------------------------
+
+    def unavailable(self, action: str) -> str | None:
+        if self.moderation.panicking:
+            return PAUSED
+        if action == "newrun":
+            return "runs come later: !newrun isn't on yet"
+        if action == "impeach":
+            return "nobody is driving: the driver's seat comes later"
+        return None
+
+    async def run(self, proposal: Proposal) -> tuple[bool, str]:
+        # Phase 6 step 2: reboot and reset through Incus, snapshots, rewind and load.
+        return False, f"{proposal.text} isn't built yet: coming with the next update"
 
     def snapshot(self, name: str) -> None:
         if self.incus is None:
@@ -470,6 +514,7 @@ class Brain:
             )
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
+        lines.append(self.referee.status_line())
         health = self.watchdog.status()
         lines.append(f"Watchdog: {', '.join(health['problems']) or 'healthy'}")
         if self.watch is None:
@@ -532,6 +577,26 @@ class Brain:
                 commands, events = self.store.forget(time.time(), found)
                 self.strikes.forget(found)
                 return "ok", f"Forgot {found}: {commands} commands and {events} log entries deleted."
+            case ["endvote"]:
+                return _answer(self.moderation.endvote("console"))
+            case ["ruleset"]:
+                names = ", ".join(laws.available(self.referee.rulesets)) if self.referee.rulesets else "?"
+                return "ok", f"Ruleset: {self.referee.ruleset.name} (available: {names})"
+            case ["ruleset", name]:
+                try:
+                    return "ok", self.referee.set_ruleset(name, "console")
+                except RulesetError as err:
+                    return "error", f"Ruleset unchanged: {err}"
+            case ["laws"]:
+                changed = self.store.laws()
+                if not changed:
+                    return "ok", f"All laws are the ruleset's ({self.referee.ruleset.name})."
+                return "ok", "\n".join(f"{key} = {value:g}" for key, value in sorted(changed.items()))
+            case ["law", key, value]:
+                try:
+                    return "ok", self.referee.set_law(key, value, "console")
+                except RulesetError as err:
+                    return "error", f"Law unchanged: {err}"
             case ["bans"]:
                 rows = self.moderation.state()["banned"]
                 if not rows:
@@ -571,7 +636,13 @@ class Brain:
             dashboard.add_routes(app, self, admin_token)
         return app
 
-    async def run(self, config: Config, stop: asyncio.Event) -> None:
+    async def _referee_ticks(self) -> None:
+        """Close vote windows and veto countdowns on time. Never returns."""
+        while True:
+            self.referee.tick()
+            await asyncio.sleep(REFEREE_TICK)
+
+    async def serve(self, config: Config, stop: asyncio.Event) -> None:
         token = read_secret(config.admin_token_file)
         if not token:
             log.info("admin dashboard off: no token in %s", config.admin_token_file)
@@ -589,7 +660,7 @@ class Brain:
         self.start_adapters(config)
         self.start_ocr(config)
         self.ops_channel = config.discord_ops_channel
-        for job in (self.keep_tidy(), self.watchdog.run()):
+        for job in (self.keep_tidy(), self.watchdog.run(), self._referee_ticks()):
             task = asyncio.create_task(job)
             self._background.add(task)
             task.add_done_callback(self._background.discard)
@@ -630,15 +701,24 @@ async def amain(config: Config) -> None:
     if incus is None:
         log.info("forensic snapshots off: %s", why_not)
     with Store(config.db) as store:
+        rulesets = Path(config.rulesets_dir)
+        name = store.setting("ruleset") or DEFAULT.name
+        try:
+            ruleset = laws.load(rulesets, name)
+        except RulesetError as err:
+            log.error("ruleset %s: %s (using the built-in defaults)", name, err)
+            ruleset = DEFAULT
         brain = Brain(
             store,
             lambda: connect_to(config.target_host, config.vnc_port),
             incus,
             config.target_host,
             config.target_instance,
+            ruleset,
+            rulesets,
         )
         brain.incus_off_reason = why_not
-        await brain.run(config, stop)
+        await brain.serve(config, stop)
 
 
 def _answer(answer: Answer) -> tuple[str, str]:

@@ -60,6 +60,9 @@ find /usr/lib/chat-brain -name __pycache__ -prune -exec rm -rf {} +
 "$VENV/bin/python" -m compileall -q /usr/lib/chat-brain/chatuses
 # Smoke test: the code imports with the installed dependencies, tesseract runs.
 PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'import chatuses.brain, chatuses.console, chatuses.admin'
+PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'from pathlib import Path
+from chatuses.referee import laws
+laws.load(Path("/usr/lib/chat-brain/rulesets"), "roguelike")' # PyYAML, and a valid default ruleset
 tesseract --list-langs 2>/dev/null | sed -n '2,$p' | tr '\n' ' ' | sed 's/^/    tesseract languages: /; s/$/\n/'
 
 log "Services"

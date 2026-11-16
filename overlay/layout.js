@@ -8,6 +8,8 @@
 // - Connects to brain's websocket for the command log, the grid flash and
 //   the name at the pointer (Phase 4), and shows "Controls offline" while
 //   it can't.
+// - Shows the power vote running (PLAN.md 6.4): what, the count, the time
+//   left, then how it ended.
 // - Covers everything the moment brain's feed says "panic" (PLAN.md 7.5),
 //   and while brain is unreachable keeps to control/panic.json, which
 //   bcast's chat-bcast-panic keeps from the same feed: a panic ends only
@@ -197,6 +199,71 @@ function showPointer(x, y, user) {
   flashGrid([Math.floor(x / 100), Math.floor(y / 100)]);
 }
 
+// --- the power vote (control/src/chatuses/referee/votes.py) ---------------------
+
+const VOTE_ENDED = {
+  running: "Passed: happening now",
+  done: "Done",
+  error: "Didn't work",
+  failed: "Failed",
+  vetoed: "Vetoed",
+  cancelled: "Ended",
+};
+let vote = null;
+let voteAt = 0; // when it arrived: ends_in counts from then
+let voteTimer;
+
+function voteBar(yes, no) {
+  const bar = el("div", "vote-bar");
+  const part = el("div", "vote-yes");
+  part.style.width = yes + no ? `${(100 * yes) / (yes + no)}%` : "0";
+  bar.append(part);
+  return bar;
+}
+
+function renderVote() {
+  const panel = $("vote-panel");
+  const box = $("vote");
+  if (!vote) {
+    panel.classList.remove("active");
+    box.className = "value muted";
+    box.textContent = "No vote running";
+    return;
+  }
+  const open = vote.phase === "voting" || vote.phase === "veto";
+  const left = Math.max(0, Math.ceil(vote.ends_in - (performance.now() - voteAt) / 1000));
+  panel.classList.toggle("active", open);
+  box.className = "value";
+  const parts = [el("div", "vote-what", vote.text), el("div", "vote-by", `by ${vote.by}`)];
+  if (vote.phase === "voting") {
+    const needs = `needs ${vote.quorum} yes and ${Math.round(vote.threshold * 100)}%`;
+    parts.push(
+      el("div", "vote-time", `${left} s left`),
+      voteBar(vote.yes, vote.no),
+      el("div", "vote-need", `${vote.yes} yes · ${vote.no} no · ${needs}`),
+      el("div", "vote-how", "!yes   !no"),
+    );
+  } else if (vote.phase === "veto") {
+    parts.push(
+      el("div", "vote-time", `Passed: happens in ${left} s`),
+      el("div", "vote-need", `!veto to stop it (${vote.vetoes} of ${vote.veto_needed})`),
+    );
+  } else {
+    const how = VOTE_ENDED[vote.phase] ?? vote.phase;
+    const detail = vote.result && vote.phase !== "running" ? `: ${vote.result}` : "";
+    parts.push(el("div", `vote-result ${vote.phase}`, how + detail));
+  }
+  box.replaceChildren(...parts);
+}
+
+function setVote(v) {
+  vote = v ?? null;
+  voteAt = performance.now();
+  clearInterval(voteTimer);
+  renderVote();
+  if (vote && (vote.phase === "voting" || vote.phase === "veto")) voteTimer = setInterval(renderVote, 250);
+}
+
 function onMessage(msg) {
   switch (msg.type) {
     case "hello":
@@ -208,6 +275,10 @@ function onMessage(msg) {
       targetUp = msg.target;
       setControls();
       setLockdown(msg.lockdown === true);
+      setVote(msg.vote);
+      break;
+    case "vote":
+      setVote(msg.vote);
       break;
     case "panic":
       feedPanic = panicKind(msg.on, msg.kind);
@@ -259,6 +330,7 @@ function connectBrain(url) {
     brainUp = false;
     feedPanic = null; // back to panic.json until brain answers again
     applyScene();
+    setVote(null); // the vote lives in brain
     setControls();
     setTimeout(() => connectBrain(url), 3000);
   });

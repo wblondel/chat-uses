@@ -96,6 +96,14 @@ function renderState(s) {
     : "Lockdown off: everyone can send commands";
   $("lockdown").textContent = locked ? "End lockdown" : "Lockdown";
   $("lockdown").dataset.on = locked ? "1" : "";
+  const vote = s.referee.vote;
+  const open = vote && (vote.phase === "voting" || vote.phase === "veto");
+  $("vote-state").textContent = !vote
+    ? `No vote running (ruleset ${s.referee.ruleset})`
+    : open
+      ? `Vote: ${vote.text} by ${vote.by}, ${vote.phase}, ${vote.yes} yes / ${vote.no} no (${vote.quorum} needed)`
+      : `Vote: ${vote.text}: ${vote.phase}${vote.result ? `, ${vote.result}` : ""}`;
+  $("endvote").hidden = !open;
   const rows = s.banned.map((b) => {
     const tr = el("tr");
     const who = el("td");
@@ -248,6 +256,7 @@ $("resume").addEventListener("click", () => {
   if (confirm("Is the screen safe? Resume puts the machine back on stream.")) act("/api/resume", {});
 });
 $("lockdown").addEventListener("click", () => act("/api/lockdown", { on: !$("lockdown").dataset.on }));
+$("endvote").addEventListener("click", () => act("/api/endvote", {}));
 $("ban-form").addEventListener("submit", (e) => {
   e.preventDefault();
   act("/api/ban", { who: $("ban-who").value, duration: $("ban-duration").value, reason: $("ban-reason").value })

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import ANY
 
 import aiohttp
 import discord
@@ -151,9 +152,128 @@ def test_meta_commands() -> None:
             await brain.console_message("alice", "!grid")
             assert (await feed.next("log"))["state"] == "done"
             assert await feed.next() == {"type": "grid"}
-            await brain.console_message("alice", "!democracy")
+            assert await brain.console_message("alice", "!democracy") == (
+                "refused",
+                "democracy mode is coming soon",
+            )
             line = await feed.next("log")
-            assert (line["text"], line["state"]) == ("!democracy", "later")
+            assert (line["text"], line["state"], line["reason"]) == (
+                None,
+                "refused",
+                "democracy mode is coming soon",
+            )
+
+    run(test)
+
+
+def settle(brain: Brain, *names: str) -> None:
+    """Console users who've been around for 10 minutes and spoke a moment ago (PLAN.md 6.5)."""
+    now = time.time()
+    for name in names:
+        brain.pipeline.presence.saw(f"console:{name}", now - 600)
+        brain.pipeline.presence.saw(f"console:{name}", now - 5)
+
+
+def test_a_power_vote_on_the_overlay() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            assert await brain.console_message("newbie", "!reboot") == (
+                "refused",
+                "you can propose votes once you've been here 2 minutes",
+            )
+            settle(brain, "alice", "bob", "carol")
+            assert await brain.console_message("alice", "!reboot") == ("accepted", None)
+            vote = (await feed.next("vote"))["vote"]
+            assert (vote["text"], vote["by"], vote["phase"], vote["yes"], vote["quorum"]) == (
+                "!reboot",
+                "alice",
+                "voting",
+                1,
+                2,
+            )
+            assert 29 < vote["ends_in"] <= 30
+            proposed = await feed.next()  # the proposal goes in the log...
+            assert (proposed["type"], proposed["text"], proposed["state"]) == ("log", "!reboot", "done")
+            assert await brain.console_message("bob", "!yes") == ("accepted", None)
+            assert await feed.next() == {
+                "type": "vote",
+                "vote": {**vote, "yes": 2, "ends_in": ANY},
+            }  # no log line
+            assert await brain.console_message("carol", "!rewind") == (
+                "refused",
+                "a vote is already running: !yes or !no",
+            )
+            now = time.time()
+            brain.referee.clock = lambda: now + 31  # the window is over
+            brain.referee.tick()
+            assert (await feed.next("vote"))["vote"]["phase"] == "running"
+            ended = (await feed.next("vote"))["vote"]
+            assert (ended["phase"], ended["result"]) == (
+                "error",
+                "!reboot isn't built yet: coming with the next update",
+            )
+            [row] = brain.store.votes()
+            assert (row["kind"], row["proposer"], row["result"], row["tally"]["yes"]) == (
+                "reboot",
+                "console:alice",
+                "error",
+                2,
+            )
+            assert "Ruleset: roguelike; vote: !reboot: error" in brain.status_text()
+
+    run(test)
+
+
+def test_a_panic_ends_the_vote_and_moderators_can_too() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            settle(brain, "alice")
+            await brain.console_message("alice", "!reset")
+            assert (await feed.next("vote"))["vote"]["phase"] == "voting"
+            brain.moderation.panic("console", "test")
+            ended = (await feed.next("vote"))["vote"]
+            assert (ended["phase"], ended["result"]) == ("cancelled", "cancelled: the stream is paused")
+            assert await brain.console_message("alice", "!reboot") == ("refused", "the machine is paused")
+            brain.moderation.resume("console")
+            assert await brain.admin(["endvote"]) == ("error", "No vote is running.")
+            await brain.console_message("alice", "!reboot")
+            assert await brain.admin(["endvote"]) == ("ok", "Vote ended: !reboot (ended by a moderator).")
+
+    run(test)
+
+
+def test_rulesets_and_laws_from_the_admin_console(tmp_path: Path) -> None:
+    async def test() -> None:
+        rulesets = Path(__file__).resolve().parents[2] / "rulesets"
+        (tmp_path / "calm.yaml").write_text("commands: {disabled: [reboot]}\n")
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1), rulesets=rulesets)
+            assert await brain.admin(["ruleset"]) == ("ok", "Ruleset: roguelike (available: roguelike)")
+            assert await brain.admin(["ruleset", "nope"]) == (
+                "error",
+                f"Ruleset unchanged: no ruleset 'nope' in {rulesets}",
+            )
+            assert await brain.admin(["laws"]) == ("ok", "All laws are the ruleset's (roguelike).")
+            assert (await brain.admin(["law", "tiers.reboot.window_s", "45"]))[0] == "ok"
+            assert brain.referee.laws.tier("reboot").window_s == 45
+            assert await brain.admin(["law", "auto_snapshot_min", "5"]) == (
+                "error",
+                "Law unchanged: auto_snapshot_min: 5 is out of bounds (10 to 30)",
+            )
+            assert await brain.admin(["laws"]) == ("ok", "tiers.reboot.window_s = 45")
+            assert await brain.admin(["law", "tiers.reboot.window_s", "default"]) == (
+                "ok",
+                "tiers.reboot.window_s: back to the ruleset's",
+            )
+            assert brain.referee.laws.tier("reboot").window_s == 30
+            brain.referee.rulesets = tmp_path
+            assert await brain.admin(["ruleset", "calm"]) == ("ok", "Ruleset: calm")
+            assert store.setting("ruleset") == "calm"
+            settle(brain, "alice")
+            assert await brain.console_message("alice", "!reboot") == (
+                "refused",
+                "!reboot is off in this ruleset",
+            )
 
     run(test)
 
@@ -177,7 +297,7 @@ def test_brain_runs_and_stops(tmp_path: Path) -> None:
         stop = asyncio.Event()
         with Store(":memory:") as store:
             brain = Brain(store, lambda: connect_to("127.0.0.1", server.port))
-            task = asyncio.create_task(brain.run(config, stop))
+            task = asyncio.create_task(brain.serve(config, stop))
             async with asyncio.timeout(2):
                 await brain.executor.online.wait()
             assert await console.say(sock, "alice", "!enter") == {"outcome": "accepted", "reason": None}
@@ -240,7 +360,7 @@ def test_brain_stops_at_once_even_with_a_page_connected(tmp_path: Path) -> None:
         stop = asyncio.Event()
         with Store(":memory:") as store:
             brain = Brain(store, lambda: connect_to("127.0.0.1", server.port))
-            task = asyncio.create_task(brain.run(config, stop))
+            task = asyncio.create_task(brain.serve(config, stop))
             async with asyncio.timeout(2):
                 await brain.executor.online.wait()
             async with aiohttp.ClientSession() as session:
@@ -373,7 +493,7 @@ def test_admin_over_the_console_socket(tmp_path: Path) -> None:
         with Store(":memory:") as store:
             brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
             config = config_for(tmp_path, port=free_port())
-            task = asyncio.create_task(brain.run(config, stop))
+            task = asyncio.create_task(brain.serve(config, stop))
             sock = Path(config.console)
             async with asyncio.timeout(2):
                 while not sock.exists():
