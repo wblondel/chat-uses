@@ -94,7 +94,7 @@ Paste each run here, newest first: date, commit, where, the table.
 
 Commit d6f2366 for the full run, after the disk-limit fix (PLAN.md D51);
 tests 5-7 at 290f0a7 and 18 at cff6247, after fixing the runner (below);
-the by-hand tests at 9bc0ea9.
+the by-hand tests at 9bc0ea9, test 10 again at cc66d8a.
 
 | # | Result | Details |
 |---|---|---|
@@ -105,7 +105,7 @@ the by-hand tests at 9bc0ea9.
 | 5-7 | PASS | `net-isolation.sh`: 24 passed, 0 failed, next to the real egress and intranet (both back at their addresses afterwards) |
 | 8 | PASS | typed slurs refused: whole, in 3 pieces by 3 people, leetspeak, invisible characters; decoded on screen, seen by screen OCR in 6 s |
 | 9 | PASS | a name holding a slur showed as `viewer#NNNN` |
-| 10 | FAIL, fixed: re-run | `rm -rf /` from chat destroyed the target as expected, but `#ops` heard nothing in 5 minutes and the dashboard flipped between "can't check the target: command not found" and "healthy": the watchdog took systemctl's absence for a failed check, not a broken target. Fixed (see below); to run again once brain is rebuilt. The target was rebuilt with `images/debian-xfce/check.sh --keep` |
+| 10 | PASS (the revive waits for Phase 6) | `sudo rm -rf --no-preserve-root /` from chat: `#ops` got "🪦 The target (phase2-check) is running, but systemctl can't run in it (exit 127): its system looks destroyed (files deleted?). Nothing to restart: it needs rebuilding by hand." Rebuilt with `images/debian-xfce/check.sh --keep`. The first two runs failed: the watchdog stayed silent (below) |
 | 11 | PASS | VNC server stopped: the watchdog started it again, input back in 2 s |
 | 12 | PASS | `xrandr -s 1024x768` from chat: the stream showed the smaller desktop and clicks landed where the grid said; `xrandr -s 1600x900` put it back |
 | 13 | PASS | full-scale white noise in the target: −14.4 LUFS on the stream (YouTube's reference is −14) |
@@ -134,6 +134,14 @@ Found by the first server runs, and fixed:
   is destroyed: one alert in `#ops`, unhealthy until a check finds
   systemctl again, nothing restarted. And a check that fails stays a
   problem until one goes through, with one alert once it lasts a minute.
+  The first fix still missed it: Incus sends "Command not found" as an
+  error response to the wait, not in the operation's status, which the
+  unit test's fake Incus had guessed. Checked against a real Incus since.
+- **Rebuilding brain lost its store:** `deploy.sh --replace` deleted the
+  container and with it the bans, strikes, event log and the video it
+  followed (YouTube commands stopped). The store is on its own volume now
+  (PLAN.md D53), and `images/brain/check.sh` fails when brain runs older
+  code than the repo's.
 
 ### 2026-11-16, sandbox (not the server)
 
