@@ -437,6 +437,42 @@ def test_democracy_runs_the_most_voted_command() -> None:
     run(test)
 
 
+def test_discord_panel_presses_and_what_the_panel_shows() -> None:
+    async def test() -> None:
+        async with running(incus=FakeTarget()) as (brain, feed):
+            state = brain.panel_state()
+            assert (state.mode, state.meter, state.vote, state.democracy, state.votes, state.paused) == (
+                "anarchy", 50, None, True, True, False
+            )  # fmt: skip
+            settle(brain, "alice", "bob")
+            now = time.time()
+            brain.pipeline.presence.saw("dc:7", now - 600)
+            brain.pipeline.presence.saw("dc:7", now - 5)
+
+            def press(text: str, user: str = "dc:7") -> str:
+                return brain.press(ChatMessage(user, "Mia", text, time.time(), frozenset()))
+
+            assert press("!yes") == "No vote running."
+            await brain.console_message("other", "!nope")
+            assert (await feed.next("log"))["user"] == "other"  # the press's refusal wasn't on stream
+            assert await brain.console_message("alice", "!reboot") == ("accepted", None)
+            vote = vote_now(brain)
+            state = brain.panel_state()
+            assert state.vote is not None and state.vote["phase"] == "voting" and state.vote_ends == vote.ends
+            assert press("!yes") == "You voted yes." and vote.ballots["dc:7"] is True
+            assert press("!no") == "You voted no." and vote.ballots["dc:7"] is False
+            assert (
+                press("!yes", "dc:8") == "Votes count from people who were here 2 minutes before it opened."
+            )
+            assert press("!democracy") == "You pushed the meter toward democracy."
+            assert brain.panel_state().meter == 52
+            assert press("!democracy") == "One push every 10 s."
+            brain.moderation.panic("test", "")
+            assert brain.panel_state().paused
+
+    run(test)
+
+
 def test_rulesets_and_laws_from_the_admin_console(tmp_path: Path) -> None:
     async def test() -> None:
         rulesets = Path(__file__).resolve().parents[2] / "rulesets"
@@ -656,7 +692,7 @@ def test_discord_starts_with_a_token_and_a_server_id(tmp_path: Path, monkeypatch
             brain.start_adapters(config_for(tmp_path))  # no server ID: stays off
             assert brain.discord is None
             brain.start_adapters(config_for(tmp_path, discord_guild_id=111, discord_channel="#control"))
-            assert brain.discord is not None
+            assert brain.discord is not None and brain.discord.panel is not None
             async with asyncio.timeout(2):
                 while brain.discord.state != "stopped":
                     await asyncio.sleep(0.01)

@@ -53,6 +53,7 @@ from aiohttp import web
 
 from chatuses import console, dashboard
 from chatuses.adapters.discord_bot import DiscordChat
+from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Load, Meta, Move, Rewind, Save, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
@@ -64,7 +65,7 @@ from chatuses.referee import laws
 from chatuses.referee.laws import DEFAULT, Ruleset, RulesetError
 from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
-from chatuses.referee.votes import Proposal
+from chatuses.referee.votes import OPEN, Proposal
 from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
 from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
@@ -94,6 +95,13 @@ ADMIN_USAGE = (
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
 BALLOTS = ("yes", "no", "veto")
+PRESSED = {  # the Discord panel's answers to presses that went through
+    "!yes": "You voted yes.",
+    "!no": "You voted no.",
+    "!veto": "You vetoed it.",
+    "!anarchy": "You pushed the meter toward anarchy.",
+    "!democracy": "You pushed the meter toward democracy.",
+}
 REFEREE_TICK = 0.25  # seconds between the vote engine's checks
 AUTO_CHECK = 30.0  # seconds between looks at whether an auto snapshot is due
 TRAVELLING = "wait: the machine is travelling in time"
@@ -274,8 +282,12 @@ class Brain:
         if self.moderation.locked:
             self.overlay.lockdown(True)
 
-    def handle(self, msg: ChatMessage, platform: Platform) -> tuple[str, str | None]:
-        """One chat message, start to finish. Returns its outcome and the reason chat sees."""
+    def handle(
+        self, msg: ChatMessage, platform: Platform, *, private: bool = False
+    ) -> tuple[str, str | None]:
+        """One chat message, start to finish. Returns its outcome and the reason chat sees.
+
+        private: the reason goes back to them alone (a Discord panel press), not on stream."""
         if msg.roles & MODERATOR_ROLES and (answer := self._chat_moderation(msg, platform)):
             return ("moderation" if answer.ok else "invalid"), answer.text
         outcome = self.pipeline.handle(msg)
@@ -290,7 +302,7 @@ class Brain:
                 # during a reboot doesn't fill the log with dead lines.
                 payload = {"user": msg.user_id, "result": "busy", "command": to_json(command)}
                 self.store.event(time.time(), "executed", payload)
-                if self._may_show_refusal(msg):
+                if not private and self._may_show_refusal(msg):
                     self.overlay.add_line(name, platform, None, "refused", BUSY)
                 return "busy", BUSY
             line = self.overlay.add_line(name, platform, describe(command), "queued")
@@ -305,17 +317,48 @@ class Brain:
         elif outcome.kind == "accepted" and isinstance(command, (Meta, Rewind, Load, Save)):  # referee/
             reply = self.referee.handle(msg.user_id, name, command, msg.ts)
             if not reply.ok:
-                if self._may_show_refusal(msg):
+                if not private and self._may_show_refusal(msg):
                     self.overlay.add_line(name, platform, None, "refused", reply.text)
                 return "refused", reply.text
             if not (isinstance(command, Meta) and command.name in BALLOTS):
                 self.overlay.add_line(name, platform, describe(command), "done")
-        elif outcome.kind in ("invalid", "rate_limited", "filtered") and self._may_show_refusal(msg):
+        elif (
+            outcome.kind in ("invalid", "rate_limited", "filtered")
+            and not private
+            and self._may_show_refusal(msg)
+        ):
             self.overlay.add_line(name, platform, None, "refused", outcome.reason)
         if outcome.timed_out_until is not None:  # always shown: chat should see what it earned
             minutes = round((outcome.timed_out_until - msg.ts) / 60)
             self.overlay.add_line(name, platform, None, "refused", f"timed out for {minutes} minutes")
         return outcome.kind, outcome.reason
+
+    def press(self, msg: ChatMessage) -> str:
+        """A Discord panel button: as if they typed it in #control. The answer is theirs alone."""
+        outcome, reason = self.handle(msg, "dc", private=True)
+        if outcome == "accepted":
+            return PRESSED.get(msg.text, "Done.")
+        text = reason or outcome
+        return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!", "?")) else ".")
+
+    def panel_state(self) -> PanelState:
+        """What the Discord panel shows."""
+        now = time.time()
+        votes, modes, laws = self.referee.votes, self.referee.modes, self.referee.laws
+        vote, features = votes.current, self.referee.ruleset.features
+        return PanelState(
+            mode=modes.mode,
+            meter=modes.meter,
+            democracy_at=laws.meter_democracy_at,
+            anarchy_at=laws.meter_anarchy_at,
+            locked_until=modes.locked_until,
+            window_s=laws.democracy_window_s,
+            vote=votes.view(now),
+            vote_ends=vote.ends if vote is not None and vote.phase in OPEN else None,
+            democracy="democracy" in features,
+            votes="power_votes" in features,
+            paused=self.moderation.panicking,
+        )
 
     def _chat_moderation(self, msg: ChatMessage, platform: Platform) -> Answer | None:
         """`!panic [reason]` and `!resume` from moderators in chat: YouTube's have no slash commands."""
@@ -669,6 +712,8 @@ class Brain:
                 self.status_text,
                 self.moderation,
                 config.discord_alerts_channel,
+                press=self.press,
+                panel_state=self.panel_state,
             )
             self.discord.start()
         else:
@@ -731,7 +776,10 @@ class Brain:
             quota = (
                 f", {status['quota_used_today']} quota units today" if "quota_used_today" in status else ""
             )
-            lines.append(f"{PLATFORM_NAMES[name]}: {status['state']}{video}{quota}{detail}")
+            panel = (
+                f", panel {status['panel']}" if status["state"] == "connected" and "panel" in status else ""
+            )
+            lines.append(f"{PLATFORM_NAMES[name]}: {status['state']}{video}{quota}{panel}{detail}")
         lines.append(f"Overlay pages: {self.overlay.clients}")
         return "\n".join(lines)
 

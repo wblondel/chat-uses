@@ -48,7 +48,8 @@ really do (docs/phase5.md).
 >    message a moderator calmly, not in `#control`.
 >
 > **How it works:** commands go in `#control` (or YouTube chat): `!help`
-> lists them. Refused text never reaches the screen; three refused slurs in
+> lists them. The control panel's buttons in `#control` vote and push the
+> meter, as typing `!yes` or `!democracy` does. Refused text never reaches the screen; three refused slurs in
 > 10 minutes are a 10-minute timeout. Moderators get the screen's text read
 > to them (screen OCR) and can stop everything in a second.
 >

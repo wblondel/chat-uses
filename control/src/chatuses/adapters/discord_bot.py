@@ -10,6 +10,10 @@ infra/discord/setup_server.py creates), plus whoever owns the server.
 Like YouTube, feedback goes on the overlay, not as replies: replies would
 flood #control (D8). /status answers privately (ephemeral).
 
+The control panel (discord_panel.py): one message in #control with Yes,
+No, Veto, Anarchy and Democracy buttons, kept up to date. A press is the
+presser typing that command in #control; only they see the answer.
+
 Moderators (the Moderator or Owner role, or the server's owner) get /panic,
 /resume, /ban, /timeout, /unban and /lockdown. Discord shows them only to
 members who may time people out (the Moderator role can); brain checks the
@@ -33,6 +37,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
+from chatuses.adapters.discord_panel import Panel, PanelState, PanelView
 from chatuses.identity import user_id
 from chatuses.pipeline import ChatMessage
 
@@ -58,6 +63,7 @@ MAX_PENDING_ALERTS = 20  # kept while Discord is unreachable; older ones are dro
 NOT_A_MODERATOR = "Only moderators can do that."
 
 Deliver = Callable[[ChatMessage], None]
+NOT_HERE = "This panel only works in the stream's server."
 
 
 def chat_from(
@@ -197,6 +203,8 @@ class _Client(discord.Client):
             await run(interaction, lambda by: mod.lockdown(by, state == "on"))
 
     async def setup_hook(self) -> None:
+        if self.adapter.panel is not None:  # presses on any panel, from the start
+            self.add_view(PanelView(self.adapter.pressed))
         # Guild commands show up at once (global ones can take an hour).
         await self.tree.sync(guild=self._guild)
 
@@ -208,8 +216,8 @@ class _Client(discord.Client):
                 "the bot isn't in that server (DISCORD_GUILD_ID)",
             )
             return
-        names = {c.name for c in guild.text_channels} | {str(c.id) for c in guild.text_channels}
-        if self.adapter.channel not in names:
+        found = [c for c in guild.text_channels if self.adapter.channel in (c.name, str(c.id))]
+        if not found:
             self.adapter.state, self.adapter.reason = (
                 "connected",
                 f"no channel {self.adapter.channel!r} in {guild.name}",
@@ -218,6 +226,8 @@ class _Client(discord.Client):
         self.adapter.state, self.adapter.reason = "connected", ""
         log.info("Discord: reading #%s in %s", self.adapter.channel, guild.name)
         self.adapter.flush_alerts()
+        if self.adapter.panel is not None and self.user is not None:
+            self.adapter.panel.attach(found[0], self.user.id)
 
     async def on_disconnect(self) -> None:
         if self.adapter.state == "connected":
@@ -226,8 +236,14 @@ class _Client(discord.Client):
     async def on_resumed(self) -> None:
         self.adapter.state = "connected"
 
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        if self.adapter.panel is not None:
+            self.adapter.panel.deleted(payload.message_id)
+
     async def on_message(self, message: discord.Message) -> None:
         author = message.author
+        if self.adapter.panel is not None:
+            self.adapter.panel.saw(message.channel.id, author.id)
         member = author if isinstance(author, discord.Member) else None
         guild = message.guild
         chat = chat_from(
@@ -259,6 +275,8 @@ class DiscordChat:
         status_text: Callable[[], str],
         moderation: "Moderation | None" = None,
         alerts_channel: str = "mod-alerts",
+        press: Callable[[ChatMessage], str] | None = None,
+        panel_state: Callable[[], PanelState | None] | None = None,
     ) -> None:
         self.token = token
         self.guild_id = guild_id
@@ -267,6 +285,9 @@ class DiscordChat:
         self.status_text = status_text
         self.moderation = moderation
         self.alerts_channel = alerts_channel.removeprefix("#")
+        self.press = press  # a panel button: brain handles it as typed, returns the answer
+        self.panel = Panel(panel_state, self.pressed, self._ready) if press and panel_state else None
+        self.presses = 0
         self.state = "off"  # off, connecting, connected, reconnecting, stopped
         self.reason = ""
         self.messages = 0
@@ -274,6 +295,37 @@ class DiscordChat:
         self._client: _Client | None = None
         self._alerts: deque[tuple[str, bytes | None, str]] = deque(maxlen=MAX_PENDING_ALERTS)
         self._sending: set[asyncio.Task[None]] = set()
+
+    def _ready(self) -> bool:
+        return self._client is not None and self._client.is_ready()
+
+    async def pressed(self, interaction: discord.Interaction, word: str) -> None:
+        """A panel button: the presser typing !word in #control. Only they see the answer."""
+        user, guild = interaction.user, interaction.guild
+        member = user if isinstance(user, discord.Member) else None
+        chat = chat_from(
+            guild_id=self.guild_id,
+            channel=self.channel,
+            message_guild_id=guild.id if guild else None,
+            message_channel_id=interaction.channel_id or 0,
+            message_channel_name=getattr(interaction.channel, "name", None),
+            author_id=user.id,
+            author_name=user.display_name,
+            author_is_bot=user.bot,
+            author_role_names=[role.name for role in member.roles] if member else [],
+            author_owns_guild=guild is not None and guild.owner_id == user.id,
+            content=f"!{word}",
+            ts=time.time(),
+        )
+        if chat is None or self.press is None:
+            answer = NOT_HERE
+        else:
+            self.presses += 1
+            answer = self.press(chat)
+        try:
+            await interaction.response.send_message(answer, ephemeral=True)
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as err:  # too late (3 s), or offline
+            log.warning("Discord: couldn't answer a panel press: %s", err)
 
     def alert(self, text: str, image: bytes | None = None, channel: str | None = None) -> None:
         """Post in #mod-alerts, or another channel such as #ops (with a PNG, as a spoiler).
@@ -320,6 +372,8 @@ class DiscordChat:
         self._task = asyncio.create_task(self._run())
 
     async def close(self) -> None:
+        if self.panel is not None:  # first, while the bot is still connected
+            await self.panel.close()
         if self._task:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -332,6 +386,8 @@ class DiscordChat:
             "reason": self.reason,
             "channel": self.channel,
             "messages": self.messages,
+            "presses": self.presses,
+            "panel": self.panel.status() if self.panel is not None else "off",
             "alerts_waiting": len(self._alerts),
         }
 

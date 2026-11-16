@@ -22,7 +22,8 @@ server's `#control` channel.
   ID, your display name as the platform shows it, when we first and last saw
   you send a command, and your roles there (moderator, member, regular).
 - **Your commands:** each `!` command you send, when, and what became of it
-  (run, refused, and why). Ordinary chat messages aren't stored.
+  (run, refused, and why). Pressing a button on the Discord control panel
+  counts as sending its command. Ordinary chat messages aren't stored.
 - **Moderation records:** timeouts and bans (with who decided and why), and
   the moderation log (panics, lockdowns).
 - **Screenshots of the stream's computer** when its text matched our list of
