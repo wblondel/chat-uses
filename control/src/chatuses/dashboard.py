@@ -75,6 +75,7 @@ def add_routes(app: web.Application, brain: "Brain", token: str) -> None:
     app.router.add_post("/api/ban", api.guard(api.ban))
     app.router.add_post("/api/timeout", api.guard(api.timeout))
     app.router.add_post("/api/unban", api.guard(api.unban))
+    app.router.add_post("/api/endvote", api.guard(api.endvote))
     app.router.add_get("/api/users", api.guard(api.users))
     app.router.add_get("/api/commands", api.guard(api.commands))
     app.router.add_get("/api/events", api.guard(api.events))
@@ -171,6 +172,7 @@ class _Api:
                 "snapshots": brain.incus is not None,
                 "ocr": {"mode": brain.ocr_mode, **brain.watch.status()} if brain.watch else {"mode": "off"},
                 "watchdog": brain.watchdog.status(),
+                "referee": brain.referee.status(),
                 "status": brain.status_text(),
             }
         )
@@ -205,6 +207,9 @@ class _Api:
     async def unban(self, request: web.Request) -> web.StreamResponse:
         body = await self._body(request)
         return self._answer(self.mod.unban(self._by(request), self._text(body, "who")))
+
+    async def endvote(self, request: web.Request) -> web.StreamResponse:
+        return self._answer(self.mod.endvote(self._by(request)))
 
     async def users(self, request: web.Request) -> web.StreamResponse:
         query = request.query.get("q", "").strip().casefold()

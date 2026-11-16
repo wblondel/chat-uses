@@ -6,6 +6,7 @@ import pytest
 from chatuses.pipeline import ChatMessage, Pipeline
 from chatuses.safety.moderation import (
     LOCKDOWN_AGE,
+    Answer,
     Moderation,
     describe_duration,
     parse_duration,
@@ -31,6 +32,13 @@ class Effects:
 
     def snapshot(self, name: str) -> None:
         self.done.append(f"snapshot {name}")
+
+    vote_open: bool = False
+
+    def end_vote(self, why: str) -> tuple[bool, str]:
+        self.done.append(f"end_vote {why}")
+        ended, self.vote_open = self.vote_open, False
+        return ended, "Vote ended: !rewind (ended by a moderator)." if ended else "no vote running"
 
 
 @pytest.fixture
@@ -262,3 +270,15 @@ def test_resuming_a_hold_says_what_it_saw_is_cleared(store: Store) -> None:
     assert effects.done[0] == "hold False"
     assert "won't hold the stream again" in effects.done[1]
     assert store.recent_events(("resume",))[0][3]["kind"] == "hold"
+
+
+def test_a_moderator_ends_a_vote(store: Store) -> None:
+    mod, effects = moderation(store)
+    assert mod.endvote("Mod (dc:1) on Discord", now=1000.0) == Answer(False, "No vote is running.")
+    effects.vote_open = True
+    answer = mod.endvote("Mod (dc:1) on Discord", now=1001.0)
+    assert answer == Answer(True, "Vote ended: !rewind (ended by a moderator).")
+    assert effects.done == ["end_vote ended by a moderator", "end_vote ended by a moderator"]
+    assert [(t, p) for _, _, t, p in store.recent_events(("endvote",))] == [
+        ("endvote", {"by": "Mod (dc:1) on Discord"})
+    ]

@@ -249,5 +249,16 @@ case $incus_check in
 *) fail "${incus_check:-no answer from the Incus check}" ;;
 esac
 
+log "Referee"
+ruleset=$(in_brain chat-brain-admin ruleset 2>&1 || true)
+if [[ $ruleset == "Ruleset: "*"(available: "*"roguelike"* ]]; then
+	pass "${ruleset%% (*} (rulesets in the image: ${ruleset#*available: }"
+else
+	fail "rulesets: ${ruleset:-no answer} (are they in the image? /usr/lib/chat-brain/rulesets)"
+fi
+if in_brain journalctl -u chat-brain -b --no-pager 2>/dev/null | grep -q "ruleset .*using the built-in defaults"; then
+	fail "brain couldn't load its ruleset and runs on the built-in defaults: journalctl -u chat-brain"
+fi
+
 log "Result: $PASS passed, $FAIL failed"
 ((FAIL == 0))

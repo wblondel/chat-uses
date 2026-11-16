@@ -5,7 +5,8 @@ sends nothing that brain reads. Everything in them is already public (it is
 what the stream shows), so the feed needs no password. Messages:
 
     {"type": "hello", "log": [line...], "target": bool,     on connect
-     "panic": bool, "panic_kind": str, "lockdown": bool}
+     "panic": bool, "panic_kind": str, "lockdown": bool,
+     "vote": {...} | null}
     {"type": "log", ...line}                                a command, as chat sees it
     {"type": "log-state", "id": int, "state": str}          what became of it
     {"type": "pointer", "x": int, "y": int, "user": str}    who moved the pointer
@@ -14,6 +15,8 @@ what the stream shows), so the feed needs no password. Messages:
     {"type": "panic", "on": bool, "kind": str}              cover the stream at once (PLAN.md 7.5);
                                                             kind "hold": a content hold
     {"type": "lockdown", "on": bool}                        only regulars may send commands
+    {"type": "vote", "vote": {...} | null}                  the power vote, its count and time left
+                                                            (referee/votes.py view()); null: none
 
 bcast follows "panic" too (chat-bcast-panic), to mute the target's sound.
 
@@ -30,6 +33,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -59,6 +63,8 @@ class OverlayHub:
         self.panic_on = False
         self.panic_kind = "panic"
         self.lockdown_on = False
+        self._vote: dict[str, Any] | None = None
+        self._vote_at = 0.0  # when it was last sent (monotonic): a new page gets the time left
         self._clients: set[asyncio.Queue[str | None]] = set()
         self._sockets: set[web.WebSocketResponse] = set()
         self._lines: deque[Line] = deque(maxlen=KEEP_LINES)
@@ -103,6 +109,16 @@ class OverlayHub:
         self.lockdown_on = on
         self._send({"type": "lockdown", "on": on})
 
+    def vote(self, view: dict[str, Any] | None) -> None:
+        self._vote, self._vote_at = view, time.monotonic()
+        self._send({"type": "vote", "vote": view})
+
+    def _vote_now(self) -> dict[str, Any] | None:
+        if self._vote is None:
+            return None
+        left = max(0.0, float(self._vote.get("ends_in", 0)) - (time.monotonic() - self._vote_at))
+        return {**self._vote, "ends_in": round(left, 1)}
+
     async def close_all(self) -> None:
         """Let every page go (brain is stopping): they show "Controls offline" at once."""
         await asyncio.gather(
@@ -136,6 +152,7 @@ class OverlayHub:
             "panic": self.panic_on,
             "panic_kind": self.panic_kind,
             "lockdown": self.lockdown_on,
+            "vote": self._vote_now(),
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)
