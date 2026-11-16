@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck source=infra/host/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-STEPS=(packages admin-user ssh system updates firewall wireguard incus storage networks projects profiles incus-api summary)
+STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api summary)
 
 PACKAGES=(
 	ca-certificates curl jq gettext-base sudo python3 openssl
@@ -361,6 +361,50 @@ step_storage() {
 	info "created (${args[*]:-no size limit})"
 }
 
+# Disk limits (PLAN.md D51): Incus enforces each instance's root size with
+# btrfs qgroups, whose counts the kernel lets go stale when it deletes a deep
+# subvolume. chat-uses-btrfs-quota keeps them right, at boot and every 6 h.
+step_quotas() {
+	log "Disk limits (btrfs quota accounting)"
+	if [[ $POOL_DRIVER != btrfs ]]; then
+		info "pool driver $POOL_DRIVER: nothing to keep"
+		return
+	fi
+	local changed=0 pool=/var/lib/incus/storage-pools/$POOL_NAME
+	write_file /usr/local/sbin/chat-uses-btrfs-quota 0755 <"$CHAT_USES_HOST_DIR/btrfs-quota.sh" && changed=1
+	write_file /etc/systemd/system/chat-uses-btrfs-quota.service 0644 <<UNIT && changed=1
+[Unit]
+Description=chat-uses: keep btrfs quota counts right on Incus's pool (disk limits)
+After=incus.service
+Wants=incus.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chat-uses-btrfs-quota $pool
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	write_file /etc/systemd/system/chat-uses-btrfs-quota.timer 0644 <<'UNIT' && changed=1
+[Unit]
+Description=chat-uses: check btrfs quota counts every 6 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target
+UNIT
+	if have_systemd; then
+		((changed)) && systemctl daemon-reload
+		systemctl enable chat-uses-btrfs-quota.service chat-uses-btrfs-quota.timer >/dev/null 2>&1
+		systemctl start chat-uses-btrfs-quota.timer
+	fi
+	/usr/local/sbin/chat-uses-btrfs-quota "$pool" | sed 's/^/    /' ||
+		warn "disk limits: btrfs quota counts are broken (see above)"
+}
+
 # Templates are rendered into a variable before "incus ... edit": in a pipe,
 # a failing render would still hand Incus an empty config to apply.
 
@@ -465,6 +509,15 @@ step_summary() {
 			warn "project $project missing"
 		fi
 	done
+	if [[ $POOL_DRIVER == btrfs ]]; then
+		local uuid
+		uuid=$(btrfs filesystem show "/var/lib/incus/storage-pools/$POOL_NAME" 2>/dev/null | awk '/uuid:/ {print $NF; exit}' || true)
+		case $(cat "/sys/fs/btrfs/$uuid/qgroups/inconsistent" 2>/dev/null || echo off) in
+		0) info "disk limits: quota counts consistent" ;;
+		1) warn "disk limits: quota counts inconsistent (run: bootstrap.sh quotas)" ;;
+		*) warn "disk limits: quotas off on the pool (run: bootstrap.sh quotas)" ;;
+		esac
+	fi
 	if nft list table inet chat_uses_host >/dev/null 2>&1; then
 		info "firewall: loaded"
 	else
