@@ -17,6 +17,7 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     DISCORD_GUILD_ID         ... or without the server's ID
     DISCORD_CHANNEL          the channel commands are read from (control)
     DISCORD_ALERTS_CHANNEL   where moderators get alerts (mod-alerts)
+    DISCORD_OPS_CHANNEL      where the watchdog reports the target's health (ops)
     INCUS_URL                the host's Incus API, for forensic snapshots on panic;
                              off without it or without the certificates (INCUS_*)
     TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
@@ -59,6 +60,7 @@ from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
 from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
+from chatuses.safety.watchdog import Watchdog
 from chatuses.store import RETENTION, Store, to_json
 from chatuses.vnc import VncInput
 
@@ -92,6 +94,7 @@ class Config:
     discord_guild_id: int | None = None
     discord_channel: str = "control"
     discord_alerts_channel: str = "mod-alerts"
+    discord_ops_channel: str = "ops"
     incus_url: str = ""
     incus_project: str = "targets"
     incus_cert: str = f"{SECRETS}/incus-client.crt"
@@ -127,6 +130,7 @@ class Config:
             discord_guild_id=int(guild) if guild else None,
             discord_channel=env.get("DISCORD_CHANNEL", "") or cls.discord_channel,
             discord_alerts_channel=env.get("DISCORD_ALERTS_CHANNEL", "") or cls.discord_alerts_channel,
+            discord_ops_channel=env.get("DISCORD_OPS_CHANNEL", "") or cls.discord_ops_channel,
             incus_url=env.get("INCUS_URL", cls.incus_url),
             incus_project=env.get("INCUS_PROJECT", "") or cls.incus_project,
             incus_cert=env.get("INCUS_CERT", cls.incus_cert),
@@ -200,6 +204,16 @@ class Brain:
         self.youtube: YouTubeChat | None = None
         self.discord: DiscordChat | None = None
         self.watch: ScreenWatch | None = None  # screen OCR (start_ocr)
+        self.ops_channel = "ops"
+        self.watchdog = Watchdog(
+            incus,
+            target_host,
+            target_instance,
+            vnc_up=self.executor.online.is_set,
+            last_input=lambda: self.executor.last_input,
+            last_change=lambda: self.watch.last_change if self.watch else None,
+            alert=self.ops,
+        )
         self.ocr_mode = "off"
         self.screens_dir: Path | None = None
         if self.moderation.panicking:  # a panic outlives a restart
@@ -271,6 +285,12 @@ class Brain:
         log.warning("moderation: %s", text)
         if self.discord:
             self.discord.alert(text, image)
+
+    def ops(self, text: str) -> None:
+        """The target's health, for #ops (safety/watchdog.py)."""
+        log.warning("watchdog: %s", text)
+        if self.discord:
+            self.discord.alert(text, channel=self.ops_channel)
 
     def snapshot(self, name: str) -> None:
         if self.incus is None:
@@ -450,6 +470,8 @@ class Brain:
             )
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
+        health = self.watchdog.status()
+        lines.append(f"Watchdog: {', '.join(health['problems']) or 'healthy'}")
         if self.watch is None:
             lines.append("Screen OCR: off")
         else:
@@ -538,6 +560,7 @@ class Brain:
                     "overlay_pages": self.overlay.clients,
                     "chat": self.adapters(),
                     "ocr": {"mode": self.ocr_mode, **self.watch.status()} if self.watch else {"mode": "off"},
+                    "watchdog": self.watchdog.status(),
                 }
             )
 
@@ -565,9 +588,11 @@ class Brain:
         executor = asyncio.create_task(self.executor.run())
         self.start_adapters(config)
         self.start_ocr(config)
-        tidy = asyncio.create_task(self.keep_tidy())
-        self._background.add(tidy)
-        tidy.add_done_callback(self._background.discard)
+        self.ops_channel = config.discord_ops_channel
+        for job in (self.keep_tidy(), self.watchdog.run()):
+            task = asyncio.create_task(job)
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
         if self.watch:
             watch = asyncio.create_task(self.watch.run())
             self._background.add(watch)

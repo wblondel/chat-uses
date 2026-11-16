@@ -170,6 +170,7 @@ class _Api:
                 "chat": brain.adapters(),
                 "snapshots": brain.incus is not None,
                 "ocr": {"mode": brain.ocr_mode, **brain.watch.status()} if brain.watch else {"mode": "off"},
+                "watchdog": brain.watchdog.status(),
                 "status": brain.status_text(),
             }
         )
