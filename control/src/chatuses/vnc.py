@@ -4,7 +4,8 @@ The VNC server runs inside the target, where chat is root, so it is treated
 as hostile (PLAN.md 5.4): every step has a timeout, every length the server
 sends is capped, and after the handshake nothing it sends is parsed, only
 read and thrown away (which also notices a disconnect). The client never
-asks for screen updates. It joins as a shared client, so bcast's view stays
+asks for screen updates: screen.py reads the screen, on a connection of its
+own. It joins as a shared client, so bcast's view stays
 connected.
 
 Security type "None" only: VNC is reachable only from brain, bcast and the

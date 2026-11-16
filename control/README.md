@@ -56,6 +56,10 @@ bans and timeouts across platforms, lockdown (D44, D45). A panic freezes the
 executor, covers the overlay and takes a forensic snapshot through
 `incus.py` (brain's restricted access to the Incus API).
 
+`screen.py` reads the target's screen over a second, read-only VNC
+connection, and `safety/screen_ocr.py` reads its text with tesseract and
+looks for slurs (shadow mode: reports; enforce mode: a content hold, D46).
+
 `dashboard.py` is the admin dashboard (`/admin`, the page in `admin_page/`)
 and its API (`/api/*`), behind a token; Discord's moderators get slash
 commands in `adapters/discord_bot.py`.

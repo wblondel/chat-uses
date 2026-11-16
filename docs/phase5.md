@@ -368,6 +368,48 @@ the stream says "Content check" until `/resume`.
 
 ## What was tested before this landed
 
+Step 4:
+
+- **Unit tests, 1,958 in all:**
+  - the screen reader against a fake VNC server: a whole screen in the
+    format asked for, partial rectangles, other messages in between; and a
+    hostile server refused (another encoding, a rectangle outside the screen,
+    a huge one, an unknown message, a clipboard of 1 GB, a frame cut short,
+    a screen too big);
+  - PPM and PNG written by hand, checked byte for byte;
+  - the watch: words alone and run on across two lines, an unchanged screen
+    not read again, a line reported again only after 10 minutes, cleared
+    lines quiet while they stay on screen, reading the real (fake) screen,
+    pausing during a panic, reconnecting;
+  - tesseract's wrapper with a stand-in: the frame on stdin, one thread,
+    failures and timeouts (the whole process group killed);
+  - brain: shadow mode only reports, enforce mode holds until a moderator
+    resumes and then clears the lines, a panic during a hold, settings;
+    the dashboard's screenshots behind the token and a strict name; alerts
+    with the screenshot attached as a spoiler.
+- **In the sandbox**, brain built from this branch (tesseract with English,
+  French, Spanish, Italian and Arabic):
+  - `images/brain/check.sh`: 15 of 15, OCR reading the screen.
+  - **Red-team test 8, the OCR part:** a listed word shown in a terminal with
+    `echo <base64> | base64 -d`, typed in commands the text filter accepts,
+    was caught **7 s** after Enter, with the screenshot kept.
+  - **Enforce mode:** the stream showed "Content check" within 7 s of brain
+    starting with the word on screen, the sound was muted and input paused;
+    after `resume` the same text didn't hold the stream again.
+  - **False positives:** 16 reads of ordinary screens (`ls`, `dpkg -l`,
+    `/etc/services`, `ps`, `df`, `ip a`, `apt-cache search`, `man bash`, the
+    GPL, Firefox on the intranet's Wikipedia): none.
+  - **Speed** of one read (one core): `eng` 0.34 s, `eng+ara` 0.6 s, all five
+    languages 1 s. `eng+ara` read a few stray Arabic letters off a Latin page,
+    nothing listed.
+  - **The dashboard:** OCR hits blurred until pointed at, the screenshot
+    opening from the log.
+- **Found and fixed while testing:**
+  - **A tesseract that timed out left its pipes open:** its child processes
+    kept them. It now runs in its own process group, killed whole.
+  - **`!type` takes 40 characters,** so the red-team command is typed short:
+    a real attack would be too.
+
 Step 3:
 
 - **Unit tests, 1,933 in all:**
