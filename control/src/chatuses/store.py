@@ -4,8 +4,8 @@ log (debugging, replays, the audit viewer, the public site later).
 WAL mode, one connection, used from brain's single event loop. Events can't
 be changed, and can be deleted only once they're past the retention period
 (90 days, PLAN.md 11) or for someone's deletion request (`forget`): triggers
-in the schema refuse anything else. Votes and laws are here (referee/); later
-phases add theirs (runs, snapshots...).
+in the schema refuse anything else. Votes and laws are here (referee/), and
+chat's snapshots (snapshots.py); later phases add theirs (runs...).
 """
 
 import json
@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS votes (
     tally_json TEXT,                  -- yes, no, vetoes, quorum, active, result (words)
     eligible_count INTEGER NOT NULL,
     result TEXT                       -- done, error, failed, vetoed, cancelled; null while open
+);
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER,                   -- runs come with Phase 8
+    kind TEXT NOT NULL,               -- auto, named
+    name TEXT,                        -- a named save's name
+    instance TEXT NOT NULL,
+    backend_ref TEXT NOT NULL,        -- the Incus snapshot's name
+    created_at REAL NOT NULL,
+    thumb_path TEXT,                  -- thumbs/<id>.png, or null
+    deleted_at REAL
 );
 CREATE TABLE IF NOT EXISTS laws (
     key TEXT PRIMARY KEY,             -- a law, or tiers.ACTION.SETTING (referee/laws.py)
@@ -306,6 +317,41 @@ class Store:
             }
             for i, kind, proposer, opened, closed, params, tally, eligible, result in rows
         ]
+
+    def add_snapshot(self, ts: float, kind: str, name: str | None, instance: str, ref: str) -> int:
+        with self.db:
+            self.db.execute("BEGIN")
+            cursor = self.db.execute(
+                "INSERT INTO snapshots (kind, name, instance, backend_ref, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (kind, name, instance, ref, ts),
+            )
+            snapshot_id = int(cursor.lastrowid or 0)
+            self._event(ts, "snapshot-saved", {"id": snapshot_id, "kind": kind, "name": name, "ref": ref})
+        return snapshot_id
+
+    def set_snapshot_thumb(self, snapshot_id: int, path: str) -> None:
+        self.db.execute("UPDATE snapshots SET thumb_path = ? WHERE id = ?", (path, snapshot_id))
+
+    def delete_snapshot(self, ts: float, snapshot_id: int) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute("UPDATE snapshots SET deleted_at = ? WHERE id = ?", (ts, snapshot_id))
+            self._event(ts, "snapshot-deleted", {"id": snapshot_id})
+
+    def snapshots(self, kind: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """Snapshots still there, newest first."""
+        where, args = "deleted_at IS NULL", list[Any]()
+        if kind is not None:
+            where += " AND kind = ?"
+            args.append(kind)
+        rows = self.db.execute(
+            "SELECT id, kind, name, instance, backend_ref, created_at, thumb_path FROM snapshots"
+            f" WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+            (*args, limit),
+        ).fetchall()
+        keys = ("id", "kind", "name", "instance", "ref", "created", "thumb")
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     def laws(self) -> dict[str, float]:
         """Laws changed while running, over the ruleset's."""

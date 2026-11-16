@@ -27,15 +27,14 @@ from chatuses.store import Store
 log = logging.getLogger(__name__)
 
 # Built in brain so far (the rest of a ruleset's features come later).
-BUILT = frozenset({"anarchy", "power_votes"})
-# Snapshots and power actions arrive in step 2; until then a passed vote says so.
+BUILT = frozenset({"anarchy", "power_votes", "snapshots"})
 NEEDS_FEATURE = {"save": "snapshots", "rewind": "snapshots", "load": "snapshots"}
 
 
 class Actions(Protocol):
     """What brain does for a passed vote."""
 
-    def unavailable(self, action: str) -> str | None: ...  # why it can't happen now (None: it can)
+    def unavailable(self, proposal: Proposal) -> str | None: ...  # why it can't happen now (None: it can)
     async def run(self, proposal: Proposal) -> tuple[bool, str]: ...  # done?, a few words for chat
 
 
@@ -98,7 +97,9 @@ class Referee:
         feature = NEEDS_FEATURE.get(proposal.action)
         if feature and feature not in self.ruleset.features:
             return Reply(False, f"{feature} are off in this ruleset")
-        if why := self.actions.unavailable(proposal.action):
+        current = self.votes.current
+        busy = current is not None and current.phase in ("voting", "veto", "running")
+        if not busy and (why := self.actions.unavailable(proposal)):  # a vote running says so first
             return Reply(False, why)
         return self.votes.propose(user, name, proposal, now)
 

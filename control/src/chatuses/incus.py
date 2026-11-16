@@ -4,10 +4,11 @@ A restricted client certificate that reaches only the `targets` project
 (infra/host/bootstrap.sh, step incus-api). The host's own certificate is
 pinned: brain trusts that one certificate, whatever name it carries.
 
-Calls: the forensic snapshot taken when a moderator panics (PLAN.md 7.5),
-and for the watchdog (safety/watchdog.py) the instance's state and running
-a command in it (exit status only). Phase 6 adds rewinds and the runs'
-lifecycle.
+Calls: the forensic snapshot taken when a moderator panics (PLAN.md 7.5);
+for the watchdog (safety/watchdog.py) the instance's state and running a
+command in it (exit status only); for chat's votes (snapshots.py, PLAN.md
+6.6) snapshots made, listed, restored and deleted, reboots and resets.
+Phase 8 adds the runs' lifecycle.
 
 `python -m chatuses.incus` (images/brain/check.sh) checks the access with
 brain's settings, changing nothing: it finds the target's instance, and
@@ -19,11 +20,12 @@ import os
 import ssl
 import sys
 from typing import Any, cast
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import aiohttp
 
 TIMEOUT = 60.0  # seconds, for a whole call (a btrfs snapshot takes about one)
+RESTART_TIMEOUT = 30  # seconds a graceful reboot may take before Incus gives up
 # Incus reports these two exit statuses as a failed exec, with this wording,
 # rather than as the command's exit status. Given back as the statuses.
 EXEC_FAILURES = {"command not found": 127, "command not executable": 126}
@@ -125,26 +127,55 @@ class Incus:
             raise IncusError("no exit status")
         return code
 
-    async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
-        """Snapshot the instance (named, or found by address) as `name`; returns the instance's name."""
-        timeout = aiohttp.ClientTimeout(total=TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            if not instance:
-                instance = await self.instance_at(session, address)
-            data = await self._call(
-                session,
-                "POST",
-                f"/1.0/instances/{quote(instance, safe='')}/snapshots",
-                {"name": name, "stateful": False},
-            )
-            operation = data.get("operation")
-            if not isinstance(operation, str) or not operation.startswith("/1.0/operations/"):
-                raise IncusError("Incus didn't return an operation")
-            done = await self._call(session, "GET", f"{operation}/wait?timeout={int(TIMEOUT)}")
+    async def _operation(
+        self, session: aiohttp.ClientSession, method: str, path: str, body: object, what: str
+    ) -> None:
+        """Start an operation and wait for it; IncusError if it fails (Incus answers the wait
+        for a failed one with an error response, or with a failed status)."""
+        data = await self._call(session, method, path, body)
+        operation = data.get("operation")
+        if not isinstance(operation, str) or not operation.startswith("/1.0/operations/"):
+            raise IncusError("Incus didn't return an operation")
+        done = await self._call(session, "GET", f"{operation}/wait?timeout={int(TIMEOUT)}")
         meta: dict[str, Any] = done.get("metadata") or {}
         if meta.get("status") != "Success":
-            raise IncusError(str(meta.get("err") or meta.get("status") or "the snapshot failed"))
+            raise IncusError(str(meta.get("err") or meta.get("status") or f"{what} failed"))
+
+    def _session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT))
+
+    async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
+        """Snapshot the instance (named, or found by address) as `name`; returns the instance's name."""
+        async with self._session() as session:
+            if not instance:
+                instance = await self.instance_at(session, address)
+            path = f"/1.0/instances/{quote(instance, safe='')}/snapshots"
+            await self._operation(session, "POST", path, {"name": name, "stateful": False}, "the snapshot")
         return instance
+
+    async def snapshots(self, instance: str) -> list[str]:
+        """The instance's snapshots, by name."""
+        data = await self.get(f"/1.0/instances/{quote(instance, safe='')}/snapshots")
+        urls: list[object] = data.get("metadata") or []
+        return [unquote(str(url).rsplit("/", 1)[-1].split("?", 1)[0]) for url in urls]
+
+    async def restore(self, instance: str, name: str) -> None:
+        """Put the instance back as it was in this snapshot (Incus restarts a running container)."""
+        async with self._session() as session:
+            path = f"/1.0/instances/{quote(instance, safe='')}"
+            await self._operation(session, "PUT", path, {"restore": name}, "the restore")
+
+    async def delete_snapshot(self, instance: str, name: str) -> None:
+        async with self._session() as session:
+            path = f"/1.0/instances/{quote(instance, safe='')}/snapshots/{quote(name, safe='')}"
+            await self._operation(session, "DELETE", path, None, "deleting the snapshot")
+
+    async def restart(self, instance: str, *, force: bool) -> None:
+        """Reboot (force=False: the system shuts down cleanly, within the timeout) or reset (force=True)."""
+        async with self._session() as session:
+            path = f"/1.0/instances/{quote(instance, safe='')}/state"
+            body = {"action": "restart", "force": force, "timeout": RESTART_TIMEOUT}
+            await self._operation(session, "PUT", path, body, "the restart")
 
 
 def main() -> None:

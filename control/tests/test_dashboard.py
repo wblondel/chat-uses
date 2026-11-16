@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import test_utils
+from fake_incus import FakeTarget
 
 from chatuses.brain import Brain
 from chatuses.executor import connect_to
+from chatuses.incus import Incus
 from chatuses.store import Store
 
 TOKEN = "t" * 40
@@ -21,10 +23,10 @@ def run(test: Callable[[], Coroutine[Any, Any, None]]) -> None:
 
 @asynccontextmanager
 async def dashboard(
-    token: str | None = TOKEN,
+    token: str | None = TOKEN, incus: Incus | None = None
 ) -> AsyncGenerator[tuple[Brain, test_utils.TestClient[Any, Any]]]:
     with Store(":memory:") as store:
-        brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+        brain = Brain(store, lambda: connect_to("127.0.0.1", 1), incus)
         async with test_utils.TestClient(test_utils.TestServer(brain.web_app(token))) as client:
             yield brain, client
 
@@ -123,7 +125,7 @@ def test_bans_lockdown_and_bad_requests() -> None:
 
 def test_the_vote_and_ending_it() -> None:
     async def test() -> None:
-        async with dashboard() as (brain, client):
+        async with dashboard(incus=FakeTarget()) as (brain, client):
             state = await (await client.get("/api/state", headers=AUTH)).json()
             assert state["referee"]["ruleset"] == "roguelike" and state["referee"]["vote"] is None
             assert "power_votes" in state["referee"]["features"]
@@ -196,5 +198,39 @@ def test_screenshots_need_the_token_and_a_proper_name(tmp_path: Path) -> None:
             assert events[0]["type"] == "ocr_hit"
             state = await (await client.get("/api/state", headers=AUTH)).json()
             assert state["ocr"] == {"mode": "off"}
+
+    run(test)
+
+
+def test_snapshots_and_rewinding_from_the_dashboard() -> None:
+    async def test() -> None:
+        target = FakeTarget()
+        async with dashboard(incus=target) as (brain, client):
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert state["time_travel"] == []
+            assert brain.snapshots is not None
+            snap = await brain.snapshots.take("auto")
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert state["time_travel"] == [
+                {"id": snap.id, "kind": "auto", "label": snap.label, "created": snap.created, "thumb": False}
+            ]
+            headers = {**AUTH, "X-Moderator": "Mia"}
+            resp = await client.post("/api/rewind-to", json={"which": str(snap.id)}, headers=headers)
+            assert await resp.json() == {"ok": True, "text": f"Rewinding to #{snap.id} ({snap.label})…"}
+            await asyncio.sleep(0.05)
+            assert target.restored == [snap.ref]
+            [(_, _, _, payload)] = brain.store.recent_events(("rewind-to",))
+            assert payload == {"by": "Mia on the dashboard", "snapshot": str(snap.id)}
+            resp = await client.post("/api/rewind-to", json={"which": ""}, headers=AUTH)
+            assert resp.status == 400
+
+    run(test)
+
+
+def test_without_incus_the_dashboard_says_time_travel_is_off() -> None:
+    async def test() -> None:
+        async with dashboard() as (_brain, client):
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert state["time_travel"] is None
 
     run(test)

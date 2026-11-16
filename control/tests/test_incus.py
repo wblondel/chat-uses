@@ -41,6 +41,7 @@ class FakeIncusApi:
         self.requests: list[tuple[str, str, dict[str, str], Any]] = []
         self.refuse = ""
         self.exec_failure = ""  # the "err" of a failed exec operation
+        self.op_failure = ""  # the error a restore, delete or restart's wait answers with
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -49,7 +50,21 @@ class FakeIncusApi:
         app.router.add_get("/1.0/operations/{id}/wait", self.wait)
         app.router.add_get("/1.0/instances/{name}/state", self.state)
         app.router.add_post("/1.0/instances/{name}/exec", self.exec)
+        app.router.add_get("/1.0/instances/{name}/snapshots", self.list_snapshots)
+        app.router.add_put("/1.0/instances/{name}", self.operation)
+        app.router.add_delete("/1.0/instances/{name}/snapshots/{snap}", self.operation)
+        app.router.add_put("/1.0/instances/{name}/state", self.operation)
         return app
+
+    async def list_snapshots(self, request: web.Request) -> web.Response:
+        await self._note(request)
+        names = ["auto-20261116-150000", "save-clean%20up-20261116-150500"]  # Incus quotes them
+        urls = [f"/1.0/instances/{request.match_info['name']}/snapshots/{n}?project=targets" for n in names]
+        return web.json_response({"type": "sync", "metadata": urls})
+
+    async def operation(self, request: web.Request) -> web.Response:
+        await self._note(request)
+        return web.json_response({"type": "async", "operation": "/1.0/operations/op2"}, status=202)
 
     async def _note(self, request: web.Request) -> None:
         body = json.loads(await request.text()) if request.can_read_body else None
@@ -90,6 +105,10 @@ class FakeIncusApi:
         if request.match_info["id"] == "exec1":
             return web.json_response(
                 {"type": "sync", "metadata": {"status": "Success", "metadata": {"return": 3}}}
+            )
+        if request.match_info["id"] == "op2" and self.op_failure:  # as Incus answers a failed wait
+            return web.json_response(
+                {"type": "error", "error_code": 400, "error": self.op_failure, "metadata": None}, status=400
             )
         return web.json_response({"type": "sync", "metadata": {"status": "Success"}})
 
@@ -206,5 +225,32 @@ def test_exec_gives_back_the_exit_statuses_incus_reports_as_errors(tmp_path: Pat
             api.exec_failure = "Instance is not running"
             with pytest.raises(IncusError, match="Instance is not running"):
                 await incus.exec("desk", ["systemctl", "is-active", "chat-xvnc"])
+
+    run(test)
+
+
+def test_snapshots_restore_delete_and_restart(tmp_path: Path) -> None:
+    async def test() -> None:
+        api = FakeIncusApi()
+        async with serving(tmp_path, api) as (url, files):
+            incus = Incus(url, str(files["client"]), str(files["client_key"]), str(files["server"]))
+            assert await incus.snapshots("desk") == ["auto-20261116-150000", "save-clean up-20261116-150500"]
+            await incus.restore("desk", "auto-20261116-150000")
+            await incus.delete_snapshot("desk", "auto-20261116-150000")
+            await incus.restart("desk", force=False)
+            await incus.restart("desk", force=True)
+            api.op_failure = "Snapshot desk/gone does not exist"
+            with pytest.raises(IncusError, match="does not exist"):
+                await incus.restore("desk", "gone")
+        calls = [(m, path, body) for m, path, _query, body in api.requests if "/operations/" not in path]
+        assert calls == [
+            ("GET", "/1.0/instances/desk/snapshots", None),
+            ("PUT", "/1.0/instances/desk", {"restore": "auto-20261116-150000"}),
+            ("DELETE", "/1.0/instances/desk/snapshots/auto-20261116-150000", None),
+            ("PUT", "/1.0/instances/desk/state", {"action": "restart", "force": False, "timeout": 30}),
+            ("PUT", "/1.0/instances/desk/state", {"action": "restart", "force": True, "timeout": 30}),
+            ("PUT", "/1.0/instances/desk", {"restore": "gone"}),
+        ]
+        assert all(query.get("project") == "targets" for _m, _p, query, _b in api.requests)
 
     run(test)

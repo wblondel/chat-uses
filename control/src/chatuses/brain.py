@@ -26,6 +26,7 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     OCR_INTERVAL, OCR_LANGS  seconds between reads (5); tesseract's languages (eng+ara)
     SCREENS_DIR              where OCR hits' screenshots are kept (/var/lib/chat-brain/screens)
     RULESETS_DIR             the rulesets (/usr/lib/chat-brain/rulesets); which one is in the store
+    THUMBS_DIR               snapshots' thumbnails for the overlay (/var/lib/chat-brain/thumbs)
 
 Which YouTube video's chat to read is set with chat-brain-admin, and kept in
 the store across restarts. Moderation (panic, bans, lockdown) is
@@ -37,6 +38,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -67,6 +69,8 @@ from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
 from chatuses.safety.watchdog import Watchdog
+from chatuses.screen import Frame
+from chatuses.snapshots import Snap, Snapshots
 from chatuses.store import RETENTION, Store, to_json
 from chatuses.vnc import VncInput
 
@@ -89,6 +93,11 @@ OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
 BALLOTS = ("yes", "no", "veto")
 REFEREE_TICK = 0.25  # seconds between the vote engine's checks
+AUTO_CHECK = 30.0  # seconds between looks at whether an auto snapshot is due
+TRAVELLING = "wait: the machine is travelling in time"
+NO_INCUS = "time travel is off: brain has no Incus access"
+NO_REBOOT = "the machine didn't shut down within 30 s: !reset forces it"
+_THUMB = re.compile(r"\d{1,9}\.png")
 PRUNE_EVERY = 24 * 3600.0  # seconds between retention passes
 
 
@@ -118,6 +127,7 @@ class Config:
     ocr_langs: str = "eng+ara"
     screens_dir: str = "/var/lib/chat-brain/screens"
     rulesets_dir: str = "/usr/lib/chat-brain/rulesets"
+    thumbs_dir: str = "/var/lib/chat-brain/thumbs"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -155,6 +165,7 @@ class Config:
             ocr_langs=env.get("OCR_LANGS", "").strip() or cls.ocr_langs,
             screens_dir=env.get("SCREENS_DIR", "") or cls.screens_dir,
             rulesets_dir=env.get("RULESETS_DIR", "") or cls.rulesets_dir,
+            thumbs_dir=env.get("THUMBS_DIR", "") or cls.thumbs_dir,
         )
 
     def incus(self) -> tuple[Incus | None, str]:
@@ -194,6 +205,8 @@ class Brain:
         target_instance: str = "",
         ruleset: Ruleset = DEFAULT,
         rulesets: Path | None = None,
+        thumbs: Path | None = None,
+        grab: Callable[[], Awaitable[Frame | None]] | None = None,
     ) -> None:
         self.store = store
         self.filter = TextFilter()
@@ -215,6 +228,16 @@ class Brain:
         self.incus_off_reason = "" if incus else "not set up"
         self.target_host = target_host
         self.target_instance = target_instance
+        self.thumbs = thumbs
+        self.snapshots: Snapshots | None = None  # chat's time travel (snapshots.py): needs Incus
+        if incus is not None:
+            self.snapshots = Snapshots(
+                store, incus, self._instance, lambda: self.referee.laws, thumbs, grab, self._timeline_changed
+            )
+            self._timeline_changed()
+        self._found_instance = ""
+        self._travelling = False  # a rewind, load, reboot or reset under way
+        self._started = time.time()
         self._record = record_in(store)
         self._names: dict[int, str] = {}  # overlay line -> who, while its command runs
         self._last_refusal: dict[str, float] = {}
@@ -323,18 +346,149 @@ class Brain:
 
     # --- what a passed vote does (referee.Actions) -------------------------------------
 
-    def unavailable(self, action: str) -> str | None:
+    def unavailable(self, proposal: Proposal) -> str | None:
+        action, arg = proposal.action, proposal.arg
         if self.moderation.panicking:
             return PAUSED
         if action == "newrun":
             return "runs come later: !newrun isn't on yet"
         if action == "impeach":
             return "nobody is driving: the driver's seat comes later"
+        if self.snapshots is None:
+            return NO_INCUS
+        if self._travelling:
+            return TRAVELLING
+        if action == "rewind" and self.snapshots.auto(int(arg or 1)) is None:
+            have = len(self.snapshots.all("auto"))
+            return f"only {have} snapshots to go back to" if have else "no snapshot to go back to yet"
+        if action == "load" and self.snapshots.named(str(arg)) is None:
+            return f"no save called {arg}"
         return None
 
     async def run(self, proposal: Proposal) -> tuple[bool, str]:
-        # Phase 6 step 2: reboot and reset through Incus, snapshots, rewind and load.
-        return False, f"{proposal.text} isn't built yet: coming with the next update"
+        """What a passed vote does: a few words for chat."""
+        if self.snapshots is None:
+            return False, NO_INCUS
+        snapshots = self.snapshots
+        try:
+            match proposal.action:
+                case "save":
+                    snap = await snapshots.take("named", str(proposal.arg))
+                    return True, f"saved as {snap.label}"
+                case "rewind" | "load":
+                    snap = (
+                        snapshots.auto(int(proposal.arg or 1))
+                        if proposal.action == "rewind"
+                        else (snapshots.named(str(proposal.arg)))
+                    )
+                    if snap is None:
+                        return False, "that snapshot is gone"
+                    await self._travel(snap)
+                    return True, f"back to {snap.label}"
+                case "reboot" | "reset":
+                    return await self._power(proposal.action == "reset")
+                case _:
+                    return False, f"{proposal.text} can't be done"
+        except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+            reason = str(err) or type(err).__name__
+            self.ops(f"⚠️ {proposal.text} (voted by chat) failed: {reason}")
+            return False, "it didn't work (the moderators know)"
+
+    async def _instance(self) -> str:
+        """The target's instance: TARGET_INSTANCE, or found by its address once."""
+        if self.target_instance:
+            return self.target_instance
+        if not self._found_instance:
+            assert self.incus is not None
+            self._found_instance = await self.incus.find(self.target_host)
+        return self._found_instance
+
+    async def _travel(self, snap: Snap) -> None:
+        """Put the target back to a snapshot. Input queued for the screen before is dropped."""
+        assert self.snapshots is not None
+        self._travelling = True
+        self.executor.freeze()
+        try:
+            await self.snapshots.restore(snap)
+        finally:
+            self._travelling = False
+            if not self.moderation.panicking:
+                self.executor.thaw()
+
+    async def _power(self, force: bool) -> tuple[bool, str]:
+        assert self.incus is not None
+        self._travelling = True
+        self.executor.freeze()
+        try:
+            await self.incus.restart(await self._instance(), force=force)
+        except IncusError as err:
+            if not force and "shutting down" in str(err).lower():
+                return False, NO_REBOOT
+            raise
+        finally:
+            self._travelling = False
+            if not self.moderation.panicking:
+                self.executor.thaw()
+        self.store.event(time.time(), "power", {"action": "reset" if force else "reboot"})
+        return True, "reset" if force else "rebooted"
+
+    def rewind_to(self, which: str, by: str) -> tuple[bool, str]:
+        """A moderator's /rewind-to: any snapshot of chat's, no vote; in the background."""
+        if self.snapshots is None:
+            return False, NO_INCUS.capitalize() + "."
+        snap = self.snapshots.find(which)
+        if snap is None:
+            return False, f"No snapshot {which!r}: the dashboard (or chat-brain-admin snapshots) lists them."
+        if self._travelling:
+            return False, TRAVELLING.capitalize() + "."
+        self.referee.end_vote(f"ended: {by} rewound")
+        task = asyncio.get_running_loop().create_task(self._rewind_to(snap, by))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return True, f"Rewinding to #{snap.id} ({snap.label})…"
+
+    async def _rewind_to(self, snap: Snap, by: str) -> None:
+        try:
+            await self._travel(snap)
+        except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+            self.alert(f"⏪ Rewind to #{snap.id} ({snap.label}) by {by} failed: {err or type(err).__name__}")
+            return
+        self.alert(f"⏪ {by} rewound the machine to #{snap.id} ({snap.label}).")
+
+    def _timeline_changed(self) -> None:
+        if self.snapshots is not None:
+            self.overlay.timeline(self.snapshots.view())
+
+    def _auto_due(self, now: float) -> bool:
+        """An auto snapshot now? Due, the target healthy, and its screen changed since the last (6.6)."""
+        if self.snapshots is None or self.moderation.panicking or self._travelling:
+            return False
+        vote = self.referee.votes.current
+        if vote is not None and vote.phase == "running":
+            return False
+        last = self.snapshots.latest_auto_time() or self._started
+        if now - last < self.referee.laws.auto_snapshot_min * 60:
+            return False
+        if not self.executor.online.is_set() or self.watchdog.problems():
+            return False
+        changed = self.watch.last_change if self.watch else (self.executor.last_input or None)
+        return changed is not None and changed > last
+
+    async def _auto_snapshots(self) -> None:
+        """Never returns."""
+        failing = False
+        while True:
+            await asyncio.sleep(AUTO_CHECK)
+            if self.snapshots is None or not self._auto_due(time.time()):
+                continue
+            try:
+                await self.snapshots.take("auto")
+                failing = False
+            except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+                log.warning("auto snapshot: %s", err)
+                if not failing:  # once, until one works again
+                    self.ops(f"⚠️ Auto snapshot failed: {err or type(err).__name__}")
+                failing = True
 
     def snapshot(self, name: str) -> None:
         if self.incus is None:
@@ -515,6 +669,13 @@ class Brain:
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
         lines.append(self.referee.status_line())
+        if self.snapshots is None:
+            lines.append(f"Snapshots: off ({self.incus_off_reason})")
+        else:
+            autos, saves = self.snapshots.all("auto"), self.snapshots.all("named")
+            latest = f", latest {autos[0].label}" if autos else ""
+            names = f" ({', '.join(s.label for s in saves)})" if saves else ""
+            lines.append(f"Snapshots: {len(autos)} auto{latest}; {len(saves)} saves{names}")
         health = self.watchdog.status()
         lines.append(f"Watchdog: {', '.join(health['problems']) or 'healthy'}")
         if self.watch is None:
@@ -577,6 +738,25 @@ class Brain:
                 commands, events = self.store.forget(time.time(), found)
                 self.strikes.forget(found)
                 return "ok", f"Forgot {found}: {commands} commands and {events} log entries deleted."
+            case ["snapshots"]:
+                if self.snapshots is None:
+                    return "error", NO_INCUS
+                rows = self.snapshots.all()
+                if not rows:
+                    return "ok", "No snapshots yet."
+                return "ok", "\n".join(
+                    f"#{s.id} {s.kind} {s.label} ({_clock(s.created)}, {s.ref})" for s in rows
+                )
+            case ["snapshot"]:
+                if self.snapshots is None:
+                    return "error", NO_INCUS
+                try:
+                    snap = await self.snapshots.take("auto")
+                except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+                    return "error", f"Snapshot failed: {err or type(err).__name__}"
+                return "ok", f"Snapshot #{snap.id} taken ({snap.ref})."
+            case ["rewind-to", which]:
+                return _answer(self.moderation.rewind_to("console", which))
             case ["endvote"]:
                 return _answer(self.moderation.endvote("console"))
             case ["ruleset"]:
@@ -632,9 +812,20 @@ class Brain:
         app = web.Application(client_max_size=64 * 1024)
         app.router.add_get("/ws/overlay", self.overlay.handle)
         app.router.add_get("/healthz", health)
+        app.router.add_get("/thumbs/{name}", self._thumb)
         if admin_token:
             dashboard.add_routes(app, self, admin_token)
         return app
+
+    async def _thumb(self, request: web.Request) -> web.StreamResponse:
+        """A snapshot's thumbnail, for the overlay's timeline: a past frame of the stream (D37)."""
+        name = request.match_info["name"]
+        if self.thumbs is None or not _THUMB.fullmatch(name):
+            raise web.HTTPNotFound()
+        path = self.thumbs / name
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/png"})
 
     async def _referee_ticks(self) -> None:
         """Close vote windows and veto countdowns on time. Never returns."""
@@ -660,7 +851,12 @@ class Brain:
         self.start_adapters(config)
         self.start_ocr(config)
         self.ops_channel = config.discord_ops_channel
-        for job in (self.keep_tidy(), self.watchdog.run(), self._referee_ticks()):
+        if self.snapshots is not None:
+            try:
+                await self.snapshots.reconcile()
+            except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+                log.warning("snapshots: can't list the target's: %s", err)
+        for job in (self.keep_tidy(), self.watchdog.run(), self._referee_ticks(), self._auto_snapshots()):
             task = asyncio.create_task(job)
             self._background.add(task)
             task.add_done_callback(self._background.discard)
@@ -708,6 +904,14 @@ async def amain(config: Config) -> None:
         except RulesetError as err:
             log.error("ruleset %s: %s (using the built-in defaults)", name, err)
             ruleset = DEFAULT
+
+        async def grab() -> Frame | None:
+            reader = await read_screen(config.target_host, config.vnc_port)
+            try:
+                return await reader.grab()
+            finally:
+                await reader.close()
+
         brain = Brain(
             store,
             lambda: connect_to(config.target_host, config.vnc_port),
@@ -716,6 +920,8 @@ async def amain(config: Config) -> None:
             config.target_instance,
             ruleset,
             rulesets,
+            Path(config.thumbs_dir),
+            grab,
         )
         brain.incus_off_reason = why_not
         await brain.serve(config, stop)
