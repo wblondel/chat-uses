@@ -13,8 +13,16 @@ Reading a public chat only needs an API key, sent as `x-goog-api-key`.
   after a long outage. Executing them late would surprise everyone.
 - A chat that ended (or went offline) stops the adapter until a new video is
   set: each broadcast has its own chat.
-- The quota is 10,000 units a day by default. Units are counted here and the
-  adapter stops at QUOTA_STOP rather than run into the hard limit.
+- The quota is 10,000 units a day by default, and YouTube's day starts at
+  midnight Pacific. Units are counted here (kept in brain's store, so a
+  restart doesn't start the count again) and the adapter pauses at
+  QUOTA_STOP rather than run into the hard limit. When the quota is used up,
+  by us or as Google says (403 quotaExceeded, or a streamList refusal about
+  quota), it waits for the reset and goes on by itself, and says so once
+  (on_quota: #ops).
+- Each streamList call costs 5 units however long YouTube keeps it open, so
+  what a day of chat costs depends on how often YouTube closes the stream:
+  status shows the calls and how long they lasted on average.
 
 The stream_list_pb2 module is generated from Google's proto
 (proto/stream_list.proto, proto/generate.sh).
@@ -28,7 +36,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
@@ -49,13 +57,17 @@ STREAM_LIST = "/youtube.api.v3.V3DataLiveChatMessageService/StreamList"
 
 COST_VIDEOS_LIST = 1
 COST_STREAM_LIST = 5
-QUOTA_STOP = 9000  # of the default 10,000 units a day
+QUOTA_DAILY = 10_000  # YouTube's default daily quota
+QUOTA_STOP = 9000  # of it: we pause here, before Google refuses
 QUOTA_DAY = ZoneInfo("America/Los_Angeles")  # YouTube's quota resets at midnight Pacific
+QUOTA_RESUME_AFTER = 120.0  # seconds after the reset before trying again (clocks differ)
+QUOTA_REASONS = ("quotaExceeded", "dailyLimitExceeded")
 
 MAX_AGE = 30.0  # seconds: older commands are dropped
 MIN_CALL_GAP = 5.0  # seconds between two streamList calls, whatever happens
 WAIT_FOR_LIVE = 60.0  # seconds between checks while the video isn't live yet
 BACKOFF = (2.0, 120.0)  # after an error: first and longest wait
+TOO_SOON_WAIT = 30.0  # seconds after YouTube says a call came too soon after the last
 SEEN_IDS = 2000  # message IDs remembered to drop duplicates
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
@@ -108,14 +120,65 @@ class Stop(Exception):
     """The adapter stops for this video; `str()` is the reason, shown in status."""
 
 
+class QuotaOut(Exception):
+    """The day's quota is used up: the adapter waits for the reset, then goes on."""
+
+
+class Quota:
+    """Units spent in YouTube's day (midnight Pacific to midnight), kept across restarts.
+
+    load/save read and write "DAY UNITS" (brain's store, setting youtube_quota)."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.time,
+        load: Callable[[], str | None] = lambda: None,
+        save: Callable[[str], None] = lambda _value: None,
+    ) -> None:
+        self.clock, self._save = clock, save
+        day, _, used = (load() or "").partition(" ")
+        self.day, self.used = (day, int(used)) if used.isdigit() else ("", 0)
+
+    def today(self) -> str:
+        return datetime.fromtimestamp(self.clock(), QUOTA_DAY).date().isoformat()
+
+    def _roll(self) -> None:
+        if self.day != (day := self.today()):
+            self.day, self.used = day, 0
+
+    def spent(self) -> int:
+        self._roll()
+        return self.used
+
+    def spend(self, units: int) -> None:
+        """Count units before a call; QuotaOut if they'd take us past QUOTA_STOP."""
+        self._roll()
+        if self.used + units > QUOTA_STOP:
+            how = "used up" if self.used >= QUOTA_DAILY else "nearly used"
+            raise QuotaOut(f"the daily quota is {how} ({self.used} units)")
+        self.used += units
+        self._save(f"{self.day} {self.used}")
+
+    def used_up(self) -> None:
+        """Google says the day's quota is gone: nothing more until the reset."""
+        self._roll()
+        self.used = max(self.used, QUOTA_DAILY)
+        self._save(f"{self.day} {self.used}")
+
+    def resets_at(self) -> float:
+        """The next midnight Pacific, as a Unix time."""
+        now = datetime.fromtimestamp(self.clock(), QUOTA_DAY)
+        midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), QUOTA_DAY)
+        return midnight.timestamp()
+
+
 @dataclass
 class Counters:
     messages: int = 0  # chat messages handed to brain
     stale: int = 0  # dropped as too old
     duplicates: int = 0
     calls: int = 0  # streamList calls
-    quota_day: str = ""
-    quota_used: int = 0
+    stream_seconds: float = 0.0  # how long they stayed open, in all
     errors: deque[str] = field(default_factory=lambda: deque(maxlen=5))
 
 
@@ -128,6 +191,8 @@ class YouTubeChat:
         api: str = API,
         channel: Callable[[], grpc.aio.Channel] | None = None,
         clock: Callable[[], float] = time.time,
+        quota: Quota | None = None,
+        on_quota: Callable[[str], None] = lambda _text: None,
     ) -> None:
         self.api_key = api_key
         self.deliver = deliver
@@ -142,6 +207,9 @@ class YouTubeChat:
             )
         )
         self.clock = clock
+        self.quota = quota or Quota(clock)
+        self.on_quota = on_quota  # brain: a line in #ops when the quota runs out
+        self._quota_told = ""  # the quota day #ops was told about
         self.video_id: str | None = None
         self.state = "off"  # off, looking, waiting, streaming, ended, stopped
         self.reason = ""
@@ -174,7 +242,6 @@ class YouTubeChat:
             self._task = None
 
     def status(self) -> dict[str, Any]:
-        self._spend(0)  # roll the quota day over if needed
         c = self.counters
         return {
             "state": self.state,
@@ -182,35 +249,45 @@ class YouTubeChat:
             "video": self.video_id,
             "messages": c.messages,
             "stale": c.stale,
-            "calls": c.calls,
-            "quota_used_today": c.quota_used,
+            "calls": c.calls,  # since brain started
+            "average_stream_s": round(c.stream_seconds / c.calls) if c.calls else None,
+            "quota_used_today": self.quota.spent(),
             "recent_errors": list(c.errors),
         }
 
     # --- the work ---------------------------------------------------------------
 
     async def _run(self, video_id: str) -> None:
-        try:
-            chat_id = await self._find_chat(video_id)
-            await self._stream(chat_id)
-        except Stop as stop:
-            self.reason = str(stop)
-            if self.state != "ended":
-                self.state = "stopped"
-            log.warning("YouTube chat for %s: %s", video_id, stop)
-        except Exception as err:  # never die silently: show it in status
-            self.state, self.reason = "stopped", f"unexpected error: {type(err).__name__}"
-            log.exception("YouTube chat for %s stopped", video_id)
+        while True:
+            try:
+                chat_id = await self._find_chat(video_id)
+                await self._stream(chat_id)
+            except QuotaOut as out:
+                await self._wait_for_quota(str(out))
+                continue  # the same video, from the start: its chat may have changed
+            except Stop as stop:
+                self.reason = str(stop)
+                if self.state != "ended":
+                    self.state = "stopped"
+                log.warning("YouTube chat for %s: %s", video_id, stop)
+            except Exception as err:  # never die silently: show it in status
+                self.state, self.reason = "stopped", f"unexpected error: {type(err).__name__}"
+                log.exception("YouTube chat for %s stopped", video_id)
+            return
 
-    def _spend(self, units: int) -> None:
-        day = datetime.fromtimestamp(self.clock(), QUOTA_DAY).date().isoformat()
-        if day != self.counters.quota_day:
-            self.counters.quota_day, self.counters.quota_used = day, 0
-        if units and self.counters.quota_used + units > QUOTA_STOP:
-            raise Stop(
-                f"daily quota nearly used ({self.counters.quota_used} units): set the video again tomorrow"
+    async def _wait_for_quota(self, why: str) -> None:
+        resets = self.quota.resets_at()
+        at = datetime.fromtimestamp(resets, UTC).strftime("%H:%M UTC")
+        self.state = "waiting"
+        self.reason = f"{why}: YouTube chat is paused until the quota resets at midnight Pacific ({at})"
+        log.warning("YouTube chat: %s", self.reason)
+        if self._quota_told != self.quota.day:
+            self._quota_told = self.quota.day
+            self.on_quota(
+                f"⏸️ YouTube chat is paused: {why} ({self.quota.spent()} units today). "
+                f"It goes on by itself when the quota resets, at midnight Pacific ({at})."
             )
-        self.counters.quota_used += units
+        await asyncio.sleep(max(0.0, resets - self.clock()) + QUOTA_RESUME_AFTER)
 
     def _error(self, text: str) -> None:
         self.counters.errors.append(text)
@@ -221,7 +298,7 @@ class YouTubeChat:
         url = f"{self.api}/videos"
         params = {"part": "liveStreamingDetails", "id": video_id, "key": self.api_key}
         while True:
-            self._spend(COST_VIDEOS_LIST)
+            self.quota.spend(COST_VIDEOS_LIST)
             try:
                 async with (
                     aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session,
@@ -237,6 +314,9 @@ class YouTubeChat:
                 self._error(f"videos.list: HTTP {status}")
                 await asyncio.sleep(WAIT_FOR_LIVE)
                 continue
+            if status == 403 and (reason := _google_reason(data)) in QUOTA_REASONS:
+                self.quota.used_up()
+                raise QuotaOut(f"YouTube says the daily quota is used up ({reason})")
             if status != 200:
                 raise Stop(f"videos.list refused ({status}): {_google_reason(data)}")
             items: list[dict[str, Any]] = data.get("items") or []
@@ -266,7 +346,7 @@ class YouTubeChat:
             )
             while True:
                 await asyncio.sleep(max(0.0, self._last_call + MIN_CALL_GAP - time.monotonic()))
-                self._spend(COST_STREAM_LIST)
+                self.quota.spend(COST_STREAM_LIST)
                 self._last_call = time.monotonic()
                 self.counters.calls += 1
                 request = pb.LiveChatMessageListRequest(
@@ -288,6 +368,8 @@ class YouTubeChat:
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, BACKOFF[1])
                     continue
+                finally:
+                    self.counters.stream_seconds += time.monotonic() - self._last_call
                 # The server closed the stream normally: resume from the token.
 
     def _rpc_error(self, err: grpc.aio.AioRpcError, backoff: float) -> float:
@@ -303,7 +385,10 @@ class YouTubeChat:
         if code == grpc.StatusCode.INVALID_ARGUMENT:
             raise Stop(f"YouTube rejected the request: {detail}")
         if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
-            return max(backoff, 30.0)
+            if "quota" in detail.lower():  # not "too soon after the last call": the day's quota
+                self.quota.used_up()
+                raise QuotaOut(f"YouTube says the daily quota is used up ({detail[:80]})")
+            return max(backoff, TOO_SOON_WAIT)
         self.state, self.reason = "reconnecting", code.name
         return backoff
 
