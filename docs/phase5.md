@@ -392,19 +392,20 @@ VNC and screen checks run, and only alert.
 
 ### Sound
 
-The encoder now compresses the whole mix above `AUDIO_COMPRESS` (0.2,
-−14 dB) at 20:1, in front of the limiter (D47). Measured with ffmpeg's
-loudness meter:
+The encoder now compresses the whole mix above `AUDIO_COMPRESS` (0.14,
+−17 dB) at 20:1, in front of the limiter (D47). Measured with ffmpeg's
+loudness meter on stereo test sound, and on the sandbox's stream:
 
 | Sound | Before | After |
 |---|---|---|
-| Full-scale white noise (red-team test 13) | −3.5 LUFS | −14.1 LUFS |
-| Pink noise at a normal level | −23.8 | −23.8 |
-| Loud bass-heavy noise | −20.0 | −22.1 |
-| Very loud pink noise | −16.5 | −20.2 |
+| Full-scale white noise from the target, **on the stream** (red-team test 13) | −0.5 LUFS (the same noise through the old chain) | **−14.3 LUFS** |
+| Pink noise at a normal level | −20.7 | −21.1 |
+| Loud bass-heavy noise | −16.9 | −19.8 |
+| Very loud pink noise | −13.5 | −18.4 |
 
 −14 LUFS is YouTube's reference loudness: chat's worst noise is as loud as a
-loud video, not ear-splitting; normal sound is untouched. To change it, set
+loud video, not ear-splitting; normal sound is about untouched, and only
+sound already louder than YouTube would play it is pulled down. To change it, set
 `AUDIO_COMPRESS` in `/etc/chat-uses/bcast.local.env` (1 turns it off) and
 run `images/bcast/deploy.sh`.
 
@@ -447,6 +448,36 @@ Discord: the watchdog posts in `#ops` (`DISCORD_OPS_CHANNEL`), which
 `setup_server.py` already made.
 
 ## What was tested before this landed
+
+Step 5 (watchdog, sound, privacy):
+
+- **Unit tests, 1,973 in all:**
+  - the watchdog against a stand-in Incus: a healthy target; a dead service
+    restarted, then left to a human after 3 tries, then tried again later;
+    services asked every 30 s, not every check; a stopped target reported
+    once, never started; VNC down a minute restarting the display; a frozen
+    screen reported once; Incus trouble reported;
+  - the Incus client's state and exec over real TLS;
+  - retention: old rows pruned, recent ones still protected; a deletion
+    request removing someone's commands and events, keeping a ban; an older
+    database getting the new trigger; brain's daily pass and `forget`;
+  - alerts sent to the right channel (`#ops`, `#mod-alerts`).
+- **In the sandbox**, brain and bcast built from this branch:
+  - `images/bcast/check.sh`: 8 of 8, sound in sync (−9 to −36 ms).
+  - **Red-team test 13:** full-scale white noise played in the target came
+    out of the stream at **−14.3 LUFS**.
+  - **The watchdog over the real Incus API:** the instance's state, and
+    `systemctl` run in the target through exec with brain's restricted
+    certificate. The sandbox's targets run without systemd, so every
+    service read as down and each restart failed (exit 1): the watchdog
+    reported each, and stopped after 3 tries per service. On the server,
+    the services are real; `images/brain/check.sh` shows them.
+  - `images/brain/check.sh`: 15 of 16 (the watchdog's view, above).
+- **Found and fixed while testing:**
+  - **Stereo noise is 3 dB louder than mono:** the first threshold, set on
+    mono test sound, let the stream reach −11.4 LUFS. Now set on stereo.
+  - **The sandbox ran out of disk** building images: old image versions
+    deleted (17 GB of them).
 
 Step 4:
 
