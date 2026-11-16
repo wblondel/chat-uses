@@ -16,9 +16,15 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     DISCORD_TOKEN_FILE       Discord bot token; Discord is off without it
     DISCORD_GUILD_ID         ... or without the server's ID
     DISCORD_CHANNEL          the channel commands are read from (control)
+    DISCORD_ALERTS_CHANNEL   where moderators get alerts (mod-alerts)
+    INCUS_URL                the host's Incus API, for forensic snapshots on panic;
+                             off without it or without the certificates (INCUS_*)
+    TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
+    ADMIN_TOKEN_FILE         the admin dashboard's and API's token; both are off without it
 
 Which YouTube video's chat to read is set with chat-brain-admin, and kept in
-the store across restarts.
+the store across restarts. Moderation (panic, bans, lockdown) is
+safety/moderation.py; the dashboard and its API, dashboard.py.
 """
 
 import asyncio
@@ -32,16 +38,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 
-from chatuses import console
+from chatuses import console, dashboard
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.youtube import YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Meta, Move, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.identity import Platform, user_id
+from chatuses.incus import Incus, IncusError
 from chatuses.overlay import OverlayHub
 from chatuses.pipeline import ChatMessage, Pipeline
+from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
+from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
 from chatuses.store import Store, to_json
 from chatuses.vnc import VncInput
@@ -51,6 +61,13 @@ log = logging.getLogger("chatuses.brain")
 REFUSAL_GAP = 10.0  # seconds: at most one refusal per user on stream in this time
 BUSY = "the machine isn't taking input right now"
 PLATFORM_NAMES = {"youtube": "YouTube", "discord": "Discord"}
+CHAT_PLATFORMS = {"yt": "YouTube", "dc": "Discord", "console": "console"}
+SECRETS = "/etc/chat-uses/secrets"
+ADMIN_USAGE = (
+    "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off\n"
+    "       | panic [REASON] | resume | lockdown on|off | bans\n"
+    "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO"
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +82,14 @@ class Config:
     discord_token_file: str = "/etc/chat-uses/secrets/discord-bot-token"
     discord_guild_id: int | None = None
     discord_channel: str = "control"
+    discord_alerts_channel: str = "mod-alerts"
+    incus_url: str = ""
+    incus_project: str = "targets"
+    incus_cert: str = f"{SECRETS}/incus-client.crt"
+    incus_key: str = f"{SECRETS}/incus-client.key"
+    incus_server_cert: str = f"{SECRETS}/incus-server.crt"
+    target_instance: str = ""
+    admin_token_file: str = f"{SECRETS}/admin-token"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -85,7 +110,31 @@ class Config:
             discord_token_file=env.get("DISCORD_TOKEN_FILE", cls.discord_token_file),
             discord_guild_id=int(guild) if guild else None,
             discord_channel=env.get("DISCORD_CHANNEL", "") or cls.discord_channel,
+            discord_alerts_channel=env.get("DISCORD_ALERTS_CHANNEL", "") or cls.discord_alerts_channel,
+            incus_url=env.get("INCUS_URL", cls.incus_url),
+            incus_project=env.get("INCUS_PROJECT", "") or cls.incus_project,
+            incus_cert=env.get("INCUS_CERT", cls.incus_cert),
+            incus_key=env.get("INCUS_KEY", cls.incus_key),
+            incus_server_cert=env.get("INCUS_SERVER_CERT", cls.incus_server_cert),
+            target_instance=env.get("TARGET_INSTANCE", cls.target_instance),
+            admin_token_file=env.get("ADMIN_TOKEN_FILE", cls.admin_token_file),
         )
+
+    def incus(self) -> tuple[Incus | None, str]:
+        """brain's Incus access, or None and why not."""
+        if not self.incus_url:
+            return None, "INCUS_URL isn't set"
+        missing = [
+            f for f in (self.incus_cert, self.incus_key, self.incus_server_cert) if not Path(f).is_file()
+        ]
+        if missing:
+            return None, f"missing {', '.join(missing)}"
+        try:
+            return Incus(
+                self.incus_url, self.incus_cert, self.incus_key, self.incus_server_cert, self.incus_project
+            ), ""
+        except (OSError, ValueError) as err:  # ssl.SSLError is an OSError
+            return None, f"can't load the certificates: {err}"
 
 
 def read_secret(path: str) -> str | None:
@@ -99,20 +148,46 @@ def read_secret(path: str) -> str | None:
 
 
 class Brain:
-    def __init__(self, store: Store, connect: Callable[[], Awaitable[VncInput]]) -> None:
+    def __init__(
+        self,
+        store: Store,
+        connect: Callable[[], Awaitable[VncInput]],
+        incus: Incus | None = None,
+        target_host: str = "",
+        target_instance: str = "",
+    ) -> None:
         self.store = store
         self.filter = TextFilter()
-        self.pipeline = Pipeline(store, censor=self.filter)
+        self.strikes = Strikes()
         self.overlay = OverlayHub()
         self.executor = Executor(connect, report=self._executed, on_status=self.overlay.status)
+        self.moderation = Moderation(store, self, self.strikes, self.filter.safe_name)
+        self.pipeline = Pipeline(
+            store,
+            censor=self.filter,
+            strikes=self.strikes,
+            locked_out=self.moderation.held_by_lockdown,
+            paused=lambda: self.moderation.panicking,
+        )
+        self.incus = incus
+        self.incus_off_reason = "" if incus else "not set up"
+        self.target_host = target_host
+        self.target_instance = target_instance
         self._record = record_in(store)
         self._names: dict[int, str] = {}  # overlay line -> who, while its command runs
         self._last_refusal: dict[str, float] = {}
+        self._background: set[asyncio.Task[None]] = set()
         self.youtube: YouTubeChat | None = None
         self.discord: DiscordChat | None = None
+        if self.moderation.panicking:  # a panic outlives a restart
+            self.panic_changed(True)
+        if self.moderation.locked:
+            self.overlay.lockdown(True)
 
     def handle(self, msg: ChatMessage, platform: Platform) -> tuple[str, str | None]:
         """One chat message, start to finish. Returns its outcome and the reason chat sees."""
+        if msg.roles & MODERATOR_ROLES and (answer := self._chat_moderation(msg, platform)):
+            return ("moderation" if answer.ok else "invalid"), answer.text
         outcome = self.pipeline.handle(msg)
         name = self.filter.safe_name(msg.user_id, msg.display_name)
         command = outcome.command
@@ -142,6 +217,58 @@ class Brain:
             minutes = round((outcome.timed_out_until - msg.ts) / 60)
             self.overlay.add_line(name, platform, None, "refused", f"timed out for {minutes} minutes")
         return outcome.kind, outcome.reason
+
+    def _chat_moderation(self, msg: ChatMessage, platform: Platform) -> Answer | None:
+        """`!panic [reason]` and `!resume` from moderators in chat: YouTube's have no slash commands."""
+        word, _, rest = msg.text.strip().partition(" ")
+        if word.lower() not in ("!panic", "!resume"):
+            return None
+        name = self.filter.safe_name(msg.user_id, msg.display_name)
+        by = f"{name} ({msg.user_id}) in {CHAT_PLATFORMS[platform]} chat"
+        if word.lower() == "!panic":
+            return self.moderation.panic(by, rest)
+        return self.moderation.resume(by)
+
+    # --- what moderation does to the stream (safety/moderation.Effects) --------------
+
+    def panic_changed(self, on: bool) -> None:
+        self.overlay.panic(on)  # the page covers the screen, bcast mutes the target
+        if on:
+            self.executor.freeze()
+        else:
+            self.executor.thaw()
+
+    def lockdown_changed(self, on: bool) -> None:
+        self.overlay.lockdown(on)
+
+    def alert(self, text: str) -> None:
+        log.warning("moderation: %s", text)
+        if self.discord:
+            self.discord.alert(text)
+
+    def snapshot(self, name: str) -> None:
+        if self.incus is None:
+            self.store.event(time.time(), "snapshot", {"name": name, "result": "off"})
+            self.alert(f"No forensic snapshot: brain has no Incus access ({self.incus_off_reason}).")
+            return
+        task = asyncio.create_task(self._snapshot(self.incus, name))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _snapshot(self, incus: Incus, name: str) -> None:
+        start = time.monotonic()
+        try:
+            instance = await incus.snapshot(name, instance=self.target_instance, address=self.target_host)
+        except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+            reason = str(err) or type(err).__name__
+            self.store.event(time.time(), "snapshot", {"name": name, "result": "failed", "error": reason})
+            self.alert(f"Forensic snapshot `{name}` failed: {reason}")
+            return
+        ms = round((time.monotonic() - start) * 1000)
+        self.store.event(
+            time.time(), "snapshot", {"name": name, "instance": instance, "result": "ok", "ms": ms}
+        )
+        self.alert(f"📸 Forensic snapshot `{instance}/{name}` taken (kept private: chat can't rewind to it).")
 
     def _may_show_refusal(self, msg: ChatMessage) -> bool:
         last = self._last_refusal.get(msg.user_id)
@@ -186,7 +313,13 @@ class Brain:
         token = read_secret(config.discord_token_file)
         if token and config.discord_guild_id:
             self.discord = DiscordChat(
-                token, config.discord_guild_id, config.discord_channel, self._deliver("dc"), self.status_text
+                token,
+                config.discord_guild_id,
+                config.discord_channel,
+                self._deliver("dc"),
+                self.status_text,
+                self.moderation,
+                config.discord_alerts_channel,
             )
             self.discord.start()
         else:
@@ -213,6 +346,12 @@ class Brain:
         """For people: Discord's /status and chat-brain-admin status."""
         machine = "taking commands" if self.executor.online.is_set() else "not taking input"
         lines = [f"Machine: {machine} ({self.executor.queue.qsize()} waiting)"]
+        if panic := self.moderation.panic_state:
+            lines.append(
+                f"PANIC since {_clock(panic.get('since', 0))}, by {panic.get('by')}: /resume ends it"
+            )
+        if lockdown := self.moderation.lockdown_state:
+            lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
         for name, status in self.adapters().items():
             errors: list[str] = status.get("recent_errors") or []
             reason = status.get("reason") or (f"last error: {errors[-1]}" if errors else "")
@@ -245,8 +384,31 @@ class Brain:
                 self.youtube.follow(video)
                 self.store.set_setting("youtube_video", video)
                 return "ok", f"YouTube chat: following {video} (chat-brain-admin status shows how it goes)"
+            case ["panic", *reason]:
+                return _answer(self.moderation.panic("console", " ".join(reason)))
+            case ["resume"]:
+                return _answer(self.moderation.resume("console"))
+            case ["lockdown", ("on" | "off") as state]:
+                return _answer(self.moderation.lockdown("console", state == "on"))
+            case ["ban", who, duration, *reason]:
+                return _answer(self.moderation.ban("console", who, duration, " ".join(reason)))
+            case ["timeout", who]:
+                return _answer(self.moderation.timeout("console", who))
+            case ["timeout", who, minutes] if minutes.isdigit():
+                return _answer(self.moderation.timeout("console", who, int(minutes)))
+            case ["unban", who]:
+                return _answer(self.moderation.unban("console", who))
+            case ["bans"]:
+                rows = self.moderation.state()["banned"]
+                if not rows:
+                    return "ok", "Nobody is banned or timed out."
+                return "ok", "\n".join(
+                    f"{r['name'] or '?'} ({r['user']}) "
+                    + (f"until {_clock(r['until'])}" if r["until"] else "forever")
+                    for r in rows
+                )
             case _:
-                return "error", "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off"
+                return "error", ADMIN_USAGE
 
     async def console_message(self, name: str, text: str) -> tuple[str, str | None]:
         try:
@@ -255,7 +417,7 @@ class Brain:
             return "error", "bad name"
         return self.handle(ChatMessage(uid, name, text, time.time()), "console")
 
-    def web_app(self) -> web.Application:
+    def web_app(self, admin_token: str | None = None) -> web.Application:
         async def health(_request: web.Request) -> web.Response:
             return web.json_response(
                 {
@@ -266,13 +428,23 @@ class Brain:
                 }
             )
 
-        app = web.Application()
+        app = web.Application(client_max_size=64 * 1024)
         app.router.add_get("/ws/overlay", self.overlay.handle)
         app.router.add_get("/healthz", health)
+        if admin_token:
+            dashboard.add_routes(app, self, admin_token)
         return app
 
     async def run(self, config: Config, stop: asyncio.Event) -> None:
-        runner = web.AppRunner(self.web_app(), access_log=None, shutdown_timeout=3.0)
+        token = read_secret(config.admin_token_file)
+        if not token:
+            log.info("admin dashboard off: no token in %s", config.admin_token_file)
+        elif len(token) < 32:
+            log.error(
+                "admin dashboard off: the token in %s is too short (32+ characters)", config.admin_token_file
+            )
+            token = None
+        runner = web.AppRunner(self.web_app(token), access_log=None, shutdown_timeout=3.0)
         await runner.setup()
         await web.TCPSite(runner, config.bind, config.port).start()
         Path(config.console).parent.mkdir(parents=True, exist_ok=True)
@@ -292,6 +464,9 @@ class Brain:
             log.info("stopping")
             await self.overlay.close_all()  # first: pages say "Controls offline", not "machine down"
             await self.stop_adapters()
+            for task in list(self._background):
+                task.cancel()
+            await asyncio.gather(*self._background, return_exceptions=True)
             executor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await executor
@@ -305,9 +480,27 @@ async def amain(config: Config) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
+    incus, why_not = config.incus()
+    if incus is None:
+        log.info("forensic snapshots off: %s", why_not)
     with Store(config.db) as store:
-        brain = Brain(store, lambda: connect_to(config.target_host, config.vnc_port))
+        brain = Brain(
+            store,
+            lambda: connect_to(config.target_host, config.vnc_port),
+            incus,
+            config.target_host,
+            config.target_instance,
+        )
+        brain.incus_off_reason = why_not
         await brain.run(config, stop)
+
+
+def _answer(answer: Answer) -> tuple[str, str]:
+    return ("ok" if answer.ok else "error"), answer.text
+
+
+def _clock(ts: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
 def main() -> None:

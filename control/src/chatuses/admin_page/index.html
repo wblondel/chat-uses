@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chat-uses admin</title>
+<!-- brain's admin dashboard (control/src/chatuses/dashboard.py). Everything
+     shown can come from chat, so admin.js only ever sets textContent. -->
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<form id="login" class="card" hidden>
+  <h1>chat-uses admin</h1>
+  <label>Token <input id="login-token" type="password" autocomplete="off" required></label>
+  <label>Your name (for the log) <input id="login-name" maxlength="40" autocomplete="nickname"></label>
+  <button type="submit">Open</button>
+  <p class="muted">The token is in <code>/etc/chat-uses/secrets/brain-admin-token</code> on the host. It stays in this tab only.</p>
+  <p id="login-error" class="error" hidden></p>
+</form>
+
+<main id="app" hidden>
+  <header>
+    <h1>chat-uses admin</h1>
+    <span id="who" class="muted"></span>
+    <button id="logout" class="quiet">Log out</button>
+  </header>
+
+  <section class="card" id="panic-card">
+    <div class="state" id="panic-state">…</div>
+    <div class="row">
+      <input id="panic-reason" placeholder="What's on screen (for #mod-alerts)" maxlength="200">
+      <button id="panic" class="danger">PANIC</button>
+      <button id="resume" class="ok" hidden>Resume</button>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Stream</h2>
+      <pre id="status">…</pre>
+      <div class="row">
+        <span id="lockdown-state">Lockdown: …</span>
+        <button id="lockdown"></button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Ban or time out</h2>
+      <form id="ban-form" class="stack">
+        <input id="ban-who" placeholder="Name as the overlay shows it, or yt:… / dc:…" required maxlength="100">
+        <div class="row">
+          <input id="ban-duration" placeholder="10m, 2h, 7d, 1w, perm" required maxlength="20">
+          <input id="ban-reason" placeholder="Reason (for the log)" maxlength="200">
+          <button type="submit">Ban</button>
+        </div>
+      </form>
+      <h3>Banned or timed out</h3>
+      <table id="bans"><thead><tr><th>Who</th><th>Until</th><th></th></tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Audit</h2>
+    <div class="row">
+      <input id="audit-user" placeholder="Filter: yt:… / dc:… (click a name below)" maxlength="100">
+      <button id="audit-clear" class="quiet">All</button>
+    </div>
+    <table id="audit">
+      <thead><tr><th>Time</th><th>Who</th><th>ID</th><th>Sent</th><th>Outcome</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="audit-more" class="quiet">Older</button>
+  </section>
+
+  <section class="card">
+    <h2>Moderation log</h2>
+    <table id="events">
+      <thead><tr><th>Time</th><th>What</th><th>Details</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <p id="message" class="toast" hidden></p>
+</main>
+<script src="admin.js"></script>
+</body>
+</html>

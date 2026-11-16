@@ -1,7 +1,8 @@
 """From chat message to accepted command (PLAN.md 5.7, command flow):
 
-    moderation gate (banned or timed out?) -> parser -> rate limits (input
-    only) -> text filter -> accepted, for the referee and the executor
+    moderation gate (banned or timed out? kept out by lockdown?) -> parser
+    -> paused (input during a panic) -> rate limits (input only) -> text
+    filter -> accepted, for the referee and the executor
 
 Every message counts for presence (who is active, who may vote). Every
 command, accepted or not, is recorded with its outcome; ordinary chat isn't
@@ -23,7 +24,9 @@ from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import HATE, PERSONAL, Kind, TextFilter
 from chatuses.store import Store
 
-OutcomeKind = Literal["chat", "accepted", "invalid", "rate_limited", "filtered", "banned"]
+OutcomeKind = Literal["chat", "accepted", "invalid", "rate_limited", "filtered", "banned", "locked", "paused"]
+LOCKED = "lockdown: only regulars can send commands right now"
+PAUSED = "the machine is paused"
 REASONS: dict[Kind, str] = {"hate": HATE, "personal": PERSONAL}
 
 
@@ -66,6 +69,8 @@ class Pipeline:
         censor: Censor | None = None,
         strikes: Strikes | None = None,
         is_banned: Callable[[str], bool] = lambda _user: False,
+        locked_out: Callable[[ChatMessage], bool] = lambda _msg: False,
+        paused: Callable[[], bool] = lambda: False,
     ) -> None:
         self.store = store
         self.grid = grid or Grid()
@@ -74,6 +79,8 @@ class Pipeline:
         self.censor: Censor = censor or TextFilter()
         self.strikes = strikes or Strikes()
         self.is_banned = is_banned
+        self.locked_out = locked_out  # lockdown (safety/moderation.py)
+        self.paused = paused  # panic: input is frozen
 
     def handle(self, msg: ChatMessage) -> Outcome:
         self.presence.saw(msg.user_id, msg.ts)
@@ -102,8 +109,12 @@ class Pipeline:
     def _judge(self, msg: ChatMessage, parsed: Command | ParseError) -> Outcome:
         if self.is_banned(msg.user_id) or self.store.banned_until(msg.user_id) > msg.ts:
             return Outcome("banned", reason="you can't send commands right now")
+        if self.locked_out(msg):
+            return Outcome("locked", reason=LOCKED)
         if isinstance(parsed, ParseError):
             return Outcome("invalid", reason=parsed.reason)
+        if isinstance(parsed, InputCommand) and self.paused():
+            return Outcome("paused", parsed, PAUSED)
         if isinstance(parsed, InputCommand):
             verdict = self.limiter.allow(msg.user_id, msg.ts)
             if verdict == "user":
