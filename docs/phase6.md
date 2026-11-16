@@ -4,8 +4,8 @@ PLAN.md Phase 6: chat votes on power actions and time travel, switches
 between anarchy and democracy, and rulesets set the numbers. Five steps,
 each tested before the next:
 
-1. **Rulesets, laws and power votes** (this page, below).
-2. Snapshots and power: auto snapshots, named saves, `!rewind`, `!load`,
+1. **Rulesets, laws and power votes** (below).
+2. **Snapshots and power** (below): auto snapshots, named saves, `!rewind`, `!load`,
    `!reboot`, `!reset`, the overlay's timeline.
 3. Democracy mode: the meter, 12-second ballots, tally bars.
 4. The Discord control panel: Yes / No / Veto / Anarchy / Democracy buttons.
@@ -81,9 +81,6 @@ every 10 s. The dashboard shows it
 too, with the ruleset. Votes are kept in the store (`votes`); who proposed
 one is erased after 90 days or on a deletion request, like everything else.
 
-**Until step 2,** a vote that passes says "isn't built yet": snapshots,
-rewinds, reboots and resets are next.
-
 ### On the server
 
 ```bash
@@ -98,7 +95,7 @@ rulesets in the image.
 To try a vote, two or more people in chat (YouTube or Discord) who've each
 sent a message, waited 2 minutes, and spoken again in the last 5 minutes:
 one writes `!reboot`, another `!yes`. The sidebar counts down 30 s, then
-says the vote passed and that the reboot isn't built yet. On your own, two
+says the vote passed (since step 2, the machine reboots). On your own, two
 console names work the same way (`chat-brain-say --as alice '!reboot'`).
 
 ### What was tested
@@ -116,3 +113,89 @@ console names work the same way (`chat-brain-say --as alice '!reboot'`).
   Discord and the dashboard.
 - The overlay's vote panel, rendered in Chromium from a fake feed: open,
   veto countdown, failed.
+
+## Step 2: snapshots, time travel and power
+
+What a passed vote does (`control/src/chatuses/snapshots.py`, PLAN.md 6.6):
+
+| Vote | What happens |
+|---|---|
+| `!save NAME` | a named save, `save-NAME-<time>` on the target; 3 slots: the same name replaces it, a new one in a full set the oldest |
+| `!rewind`, `!rewind N` | back to the latest auto snapshot, or the N-th back |
+| `!load NAME` | back to that save |
+| `!reboot` | a clean reboot (30 s to shut down; if it doesn't, chat is told `!reset` forces it) |
+| `!reset` | a hard reset |
+
+- **Auto snapshots** every 15 minutes (`auto_snapshot_min`, 10 to 30),
+  only while the target is healthy (input up, the watchdog happy, no panic)
+  and its screen changed since the last one; a ring of 8
+  (`auto_snapshot_keep`).
+- **Before a vote even opens**, brain says if it can't happen: no snapshot
+  that far back, no save by that name, a rewind already under way.
+- **During time travel** (and reboots) input is frozen; commands queued
+  for the screen before are dropped, then input comes back (unless a
+  panic started meanwhile). The desktop reconnects by itself: Incus
+  restarts the container to restore it, in about a second.
+- **Moderators** go back to any of chat's snapshots without a vote:
+  `/rewind-to SNAPSHOT` on Discord (its number, or a save's name), *Rewind
+  to* on the dashboard's new Snapshots list, or `chat-brain-admin rewind-to
+  N`. An open vote ends; `#mod-alerts` says when it's done.
+- **Thumbnails** (200 px) are taken with each snapshot, kept in
+  `/var/lib/chat-brain/thumbs` (on brain's data volume, D53) and served to
+  the overlay at `/thumbs/<number>.png`: they are past frames of the
+  stream, like the rest of the feed (D37). They go with their snapshot.
+- **The overlay's "Time travel" panel** shows the save slots (with names)
+  and the 3 latest auto snapshots, captioned `!rewind`, `!rewind 2`,
+  `!rewind 3`: the six thumbnails of PLAN.md's timeline, labelled with
+  what to type to reach them.
+- **When brain starts** it forgets snapshots the target no longer has (it
+  was rebuilt, or someone deleted them), so chat is never offered one that's
+  gone.
+- Forensic snapshots taken on panic (`panic-…`) are never chat's: they
+  aren't in the list.
+
+```bash
+admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
+admin snapshot            # take an auto snapshot now (to try things)
+admin snapshots           # chat's snapshots: number, kind, label, Incus name
+admin rewind-to 3         # go back to #3 (or a save's name), no vote
+```
+
+### On the server
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+sudo images/brain/check.sh
+```
+
+Then, with two or three people in chat (or console names) settled in:
+`admin snapshot`, then `!save clean` and `!yes`: the slot fills with its
+thumbnail. Type something on the desktop, then `!rewind` and enough
+`!yes`: after the vote and its 30-second veto countdown, the desktop drops
+for a second and comes back as it was. `!load clean` likewise.
+
+### What was tested
+
+- `tests/test_snapshots.py`: the ring, save slots (same name, oldest),
+  rewind targets, finding by number or name, two snapshots in one second,
+  restore, reconcile after a rebuild, failed deletes and thumbnails, a
+  failed snapshot not recorded, the overlay's view.
+- `tests/test_incus.py`: listing, restore, delete, restart (graceful and
+  forced) send what Incus expects; a refused restore raises.
+- `tests/test_brain.py`: `!save`, `!rewind`, `!load` votes end to end on a
+  fake Incus (input frozen during, back after); a reboot the machine
+  ignores tells chat to `!reset`; no Incus, no time travel; refusals before
+  a vote opens; a moderator's rewind; when auto snapshots are due;
+  thumbnails served and nothing else.
+- `tests/test_dashboard.py`, `test_moderation.py`, `test_discord.py`: the
+  Snapshots list and *Rewind to*, `/rewind-to`.
+- **On a real Incus (6.0, the sandbox),** through brain's own client with a
+  restricted certificate: snapshot, list, restore (0.8 s; a file written
+  after the snapshot is gone), delete, reset (0.8 s); a reboot of a
+  container whose init ignores the shutdown signal fails after 30 s (so
+  brain's wording). The snapshot manager on it: the ring, a save restored,
+  thumbnails kept with their snapshots, reconcile after a deletion behind
+  brain's back. Snapshot names with `_` and suffixes are accepted.
+- The overlay's Time travel panel rendered in Chromium from a fake feed,
+  with and without a vote running: it fits the sidebar.

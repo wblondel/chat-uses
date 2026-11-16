@@ -119,3 +119,16 @@ def test_ppm_and_png() -> None:
     assert zlib.decompress(png[start : start + length]) == b"\x00\x01\x02\x03\x04\x05\x06"
     assert png.endswith(b"IEND\xaeB`\x82")
     assert frame.digest() != Frame(2, 1, bytes(8)).digest()
+
+
+def test_a_thumbnail_is_small_and_keeps_the_picture() -> None:
+    w, h = 1600, 900
+    px = bytearray(w * h * 4)
+    for y in range(h):
+        for x in range(800, w):  # the right half is white
+            px[(y * w + x) * 4 : (y * w + x) * 4 + 3] = b"\xff\xff\xff"
+    thumb = Frame(w, h, bytes(px)).thumbnail()
+    assert (thumb.width, thumb.height, len(thumb.rgbx)) == (200, 112, 200 * 112 * 4)
+    left, right = (60 * 200 + 50) * 4, (60 * 200 + 150) * 4
+    assert thumb.rgbx[left : left + 3] == b"\x00\x00\x00" and thumb.rgbx[right : right + 3] == b"\xff\xff\xff"
+    assert Frame(32, 18, bytes(32 * 18 * 4)).thumbnail(16).height == 9

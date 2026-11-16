@@ -10,6 +10,8 @@
 //   it can't.
 // - Shows the power vote running (PLAN.md 6.4): what, the count, the time
 //   left, then how it ended.
+// - Shows chat's snapshots (PLAN.md 6.6): the saves to !load and the latest
+//   auto snapshots to !rewind to, with thumbnails brain serves.
 // - Covers everything the moment brain's feed says "panic" (PLAN.md 7.5),
 //   and while brain is unreachable keeps to control/panic.json, which
 //   bcast's chat-bcast-panic keeps from the same feed: a panic ends only
@@ -264,6 +266,45 @@ function setVote(v) {
   if (vote && (vote.phase === "voting" || vote.phase === "veto")) voteTimer = setInterval(renderVote, 250);
 }
 
+// --- time travel (control/src/chatuses/snapshots.py) ----------------------------
+
+const REWINDS = 3; // auto snapshots shown: !rewind, !rewind 2, !rewind 3
+let thumbsBase = ""; // brain's address over HTTP: thumbnails are at /thumbs/<id>.png
+
+function shot(snap, caption, kind) {
+  const box = el("div", `shot ${kind}${snap ? " taken" : ""}`);
+  const pic = el("div", "pic");
+  if (snap && snap.thumb && thumbsBase) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = `${thumbsBase}/thumbs/${snap.id}.png`;
+    pic.append(img);
+  }
+  box.append(pic, el("div", "cap", caption));
+  return box;
+}
+
+function setTimeline(view) {
+  if (!view) {
+    $("saves").replaceChildren();
+    $("timeline").replaceChildren();
+    return;
+  }
+  const slots = Math.min(3, view.slots ?? 3);
+  const saves = [];
+  for (let i = 0; i < slots; i++) {
+    const save = view.saves[i];
+    saves.push(shot(save, save ? save.label : "empty", "save"));
+  }
+  $("saves").replaceChildren(...saves);
+  const autos = view.timeline.filter((s) => s.kind === "auto").slice(0, REWINDS);
+  const rewinds = [];
+  for (let i = 0; i < REWINDS; i++) {
+    rewinds.push(shot(autos[i], i ? `!rewind ${i + 1}` : "!rewind", "auto"));
+  }
+  $("timeline").replaceChildren(...rewinds);
+}
+
 function onMessage(msg) {
   switch (msg.type) {
     case "hello":
@@ -276,6 +317,10 @@ function onMessage(msg) {
       setControls();
       setLockdown(msg.lockdown === true);
       setVote(msg.vote);
+      setTimeline(msg.timeline);
+      break;
+    case "timeline":
+      setTimeline(msg);
       break;
     case "vote":
       setVote(msg.vote);
@@ -361,6 +406,9 @@ async function main() {
     config = await (await fetch("control/config.json", { cache: "no-store" })).json();
   } catch {
     // No config: no brain to connect to.
+  }
+  if (config.brainUrl) {
+    thumbsBase = config.brainUrl.replace(/^ws/, "http").replace(/\/ws\/overlay$/, "");
   }
   connectBrain(config.brainUrl);
 }

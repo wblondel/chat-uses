@@ -52,6 +52,29 @@ class Frame:
         """Netpbm P6, what tesseract reads from stdin without any library."""
         return f"P6\n{self.width} {self.height}\n255\n".encode() + self.rgb()
 
+    def thumbnail(self, width: int = 200) -> "Frame":
+        """A small copy for the overlay's timeline: each pixel the average of 4 samples
+        from its block (less shimmer than one sample, and fast enough in pure Python)."""
+        step = self.width / width
+        height = max(1, round(self.height / step))
+        src, w = self.rgbx, self.width
+
+        def at(i: float, limit: int) -> int:
+            return min(limit - 1, int(i * step))
+
+        xs = [(at(x + 0.25, w) * 4, at(x + 0.75, w) * 4) for x in range(width)]
+        out = bytearray(width * height * 4)
+        o = 0
+        for y in range(height):
+            top, bottom = at(y + 0.25, self.height) * w * 4, at(y + 0.75, self.height) * w * 4
+            for left, right in xs:
+                a, b, c, d = top + left, top + right, bottom + left, bottom + right
+                out[o] = (src[a] + src[b] + src[c] + src[d]) >> 2
+                out[o + 1] = (src[a + 1] + src[b + 1] + src[c + 1] + src[d + 1]) >> 2
+                out[o + 2] = (src[a + 2] + src[b + 2] + src[c + 2] + src[d + 2]) >> 2
+                o += 4
+        return Frame(width, height, bytes(out))
+
     def png(self) -> bytes:
         """PNG (RGB, 8-bit), for alerts and the dashboard: standard library only."""
         rgb, stride = self.rgb(), self.width * 3

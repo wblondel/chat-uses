@@ -186,6 +186,9 @@ class NoEffects:
     def end_vote(self, why: str) -> tuple[bool, str]:
         return False, "no vote running"
 
+    def rewind_to(self, which: str, by: str) -> tuple[bool, str]:
+        return False, "no snapshot"
+
 
 def test_moderator_slash_commands_are_role_gated_and_private() -> None:
     async def test() -> None:
@@ -194,7 +197,17 @@ def test_moderator_slash_commands_are_role_gated_and_private() -> None:
             chat = DiscordChat("token", GUILD, "control", lambda _m: None, lambda: "", mod)
             client = discord_bot._Client(chat)  # pyright: ignore[reportPrivateUsage]
             names = {c.name for c in client.tree.get_commands()}
-            assert names >= {"status", "panic", "resume", "ban", "timeout", "unban", "lockdown", "endvote"}
+            assert names >= {
+                "status",
+                "panic",
+                "resume",
+                "ban",
+                "timeout",
+                "unban",
+                "lockdown",
+                "endvote",
+                "rewind-to",
+            }
             panic = cast(app_commands.Command[Any, Any, None], client.tree.get_command("panic"))
             assert panic.default_permissions is not None and panic.default_permissions.moderate_members
             assert client.tree.get_command("status").default_permissions is None  # type: ignore[union-attr]

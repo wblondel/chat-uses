@@ -118,7 +118,8 @@ class _Client(discord.Client):
         self._guild = guild
 
     def _moderator_commands(self, mod: "Moderation") -> None:
-        """/panic, /resume, /ban, /timeout, /unban, /lockdown (PLAN.md 7.5, 7.6), /endvote (6.1)."""
+        """Moderators' tools: /panic, /resume, /ban, /timeout, /unban, /lockdown (PLAN.md 7.5,
+        7.6); /endvote, /rewind-to (6.1)."""
         tree = self.tree
         hidden = app_commands.default_permissions(moderate_members=True)  # shown to moderators only
 
@@ -174,6 +175,12 @@ class _Client(discord.Client):
         @hidden
         async def endvote(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
             await run(interaction, lambda by: mod.endvote(by))
+
+        @tree.command(name="rewind-to", description="Put the machine back to a snapshot now (no vote)")
+        @app_commands.describe(snapshot="Its number (the dashboard lists them) or a save's name")
+        @hidden
+        async def rewind_to(interaction: discord.Interaction, snapshot: str) -> None:  # pyright: ignore[reportUnusedFunction]
+            await run(interaction, lambda by: mod.rewind_to(by, snapshot))
 
         @tree.command(name="lockdown", description="Raid? Only regulars may send commands")
         @hidden

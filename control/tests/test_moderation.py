@@ -35,6 +35,12 @@ class Effects:
 
     vote_open: bool = False
 
+    def rewind_to(self, which: str, by: str) -> tuple[bool, str]:
+        self.done.append(f"rewind_to {which} by {by}")
+        if which != "3":
+            return False, f"No snapshot {which!r}"
+        return True, "Rewinding to #3 (14:20)…"
+
     def end_vote(self, why: str) -> tuple[bool, str]:
         self.done.append(f"end_vote {why}")
         ended, self.vote_open = self.vote_open, False
@@ -281,4 +287,16 @@ def test_a_moderator_ends_a_vote(store: Store) -> None:
     assert effects.done == ["end_vote ended by a moderator", "end_vote ended by a moderator"]
     assert [(t, p) for _, _, t, p in store.recent_events(("endvote",))] == [
         ("endvote", {"by": "Mod (dc:1) on Discord"})
+    ]
+
+
+def test_a_moderator_rewinds_without_a_vote(store: Store) -> None:
+    mod, effects = moderation(store)
+    assert mod.rewind_to("Mod (dc:1) on Discord", "nope", now=1000.0) == Answer(False, "No snapshot 'nope'")
+    assert mod.rewind_to("Mod (dc:1) on Discord", " 3 ", now=1001.0) == Answer(
+        True, "Rewinding to #3 (14:20)…"
+    )
+    assert effects.done[-1] == "rewind_to 3 by Mod (dc:1) on Discord"
+    assert [p for _, _, _, p in store.recent_events(("rewind-to",))] == [
+        {"by": "Mod (dc:1) on Discord", "snapshot": "3"}
     ]

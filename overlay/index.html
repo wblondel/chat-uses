@@ -41,9 +41,12 @@
       <div class="label">Vote</div>
       <div class="value muted" id="vote">No vote running</div>
     </section>
-    <section class="panel">
-      <div class="label">Saves</div>
-      <div class="saves" id="saves"><span></span><span></span><span></span></div>
+    <!-- Chat's snapshots (snapshots.py): the saves to !load, and the latest
+         auto snapshots to !rewind to, each with its thumbnail from brain. -->
+    <section class="panel" id="travel-panel">
+      <div class="label">Time travel</div>
+      <div class="shots" id="saves"></div>
+      <div class="shots" id="timeline"></div>
     </section>
   </aside>
 

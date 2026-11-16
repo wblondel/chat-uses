@@ -123,6 +123,45 @@ function renderState(s) {
     rows.push(tr);
   }
   $("bans").tBodies[0].replaceChildren(...rows);
+  renderSnapshots(s.time_travel);
+}
+
+function renderSnapshots(list) {
+  const body = $("snapshots").tBodies[0];
+  if (list === null) {
+    $("snapshots-note").textContent = "Time travel is off: brain has no Incus access.";
+    body.replaceChildren();
+    return;
+  }
+  const rows = list.map((snap) => {
+    const tr = el("tr");
+    const pic = el("td");
+    if (snap.thumb) {
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.alt = "";
+      img.src = `/thumbs/${snap.id}.png`;
+      pic.append(img);
+    }
+    const go = el("button", "Rewind to", "quiet");
+    go.addEventListener("click", () => {
+      if (confirm(`Put the machine back to #${snap.id} (${snap.label})? What chat did since is lost.`)) {
+        act("/api/rewind-to", { which: String(snap.id) });
+      }
+    });
+    const cell = el("td");
+    cell.append(go);
+    tr.append(el("td", `#${snap.id}`), pic, el("td", `${snap.kind === "named" ? "save" : "auto"}: ${snap.label}`), el("td", when(snap.created)), cell);
+    return tr;
+  });
+  if (!rows.length) {
+    const tr = el("tr");
+    const td = el("td", "None yet", "muted");
+    td.colSpan = 5;
+    tr.append(td);
+    rows.push(tr);
+  }
+  body.replaceChildren(...rows);
 }
 
 function auditRow(c) {

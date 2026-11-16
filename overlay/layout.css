@@ -160,11 +160,21 @@ html, body {
 .vote-result.done, .vote-result.running { color: var(--accent); }
 .vote-result.failed, .vote-result.vetoed, .vote-result.cancelled, .vote-result.error { color: var(--anarchy); }
 
-.saves { display: flex; gap: 8px; margin-top: 10px; }
-.saves span {
-  flex: 1; height: 54px;
-  border: 1px dashed var(--line); border-radius: 6px;
+/* Time travel: save slots, then the latest auto snapshots (thumbnails from brain). */
+.shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.shot { min-width: 0; }
+.shot .pic {
+  aspect-ratio: 16 / 9; overflow: hidden;
+  border: 1px dashed var(--line); border-radius: 6px; background: var(--bg);
 }
+.shot.taken .pic { border-style: solid; }
+.shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shot .cap {
+  margin-top: 2px; text-align: center;
+  font: bold 12px var(--mono); letter-spacing: -0.3px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.shot.save.taken .cap { color: var(--accent); }
 
 /* --- bottom strip ----------------------------------------------------------- */
 

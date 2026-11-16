@@ -6,7 +6,7 @@ what the stream shows), so the feed needs no password. Messages:
 
     {"type": "hello", "log": [line...], "target": bool,     on connect
      "panic": bool, "panic_kind": str, "lockdown": bool,
-     "vote": {...} | null}
+     "vote": {...} | null, "timeline": {...} | null}
     {"type": "log", ...line}                                a command, as chat sees it
     {"type": "log-state", "id": int, "state": str}          what became of it
     {"type": "pointer", "x": int, "y": int, "user": str}    who moved the pointer
@@ -17,6 +17,8 @@ what the stream shows), so the feed needs no password. Messages:
     {"type": "lockdown", "on": bool}                        only regulars may send commands
     {"type": "vote", "vote": {...} | null}                  the power vote, its count and time left
                                                             (referee/votes.py view()); null: none
+    {"type": "timeline", "timeline": [...], "saves": [...],  chat's snapshots (snapshots.py view()):
+     "slots": int}                                          thumbnails at /thumbs/<id>.png
 
 bcast follows "panic" too (chat-bcast-panic), to mute the target's sound.
 
@@ -65,6 +67,7 @@ class OverlayHub:
         self.lockdown_on = False
         self._vote: dict[str, Any] | None = None
         self._vote_at = 0.0  # when it was last sent (monotonic): a new page gets the time left
+        self._timeline: dict[str, Any] | None = None
         self._clients: set[asyncio.Queue[str | None]] = set()
         self._sockets: set[web.WebSocketResponse] = set()
         self._lines: deque[Line] = deque(maxlen=KEEP_LINES)
@@ -113,6 +116,10 @@ class OverlayHub:
         self._vote, self._vote_at = view, time.monotonic()
         self._send({"type": "vote", "vote": view})
 
+    def timeline(self, view: dict[str, Any]) -> None:
+        self._timeline = view
+        self._send({"type": "timeline", **view})
+
     def _vote_now(self) -> dict[str, Any] | None:
         if self._vote is None:
             return None
@@ -153,6 +160,7 @@ class OverlayHub:
             "panic_kind": self.panic_kind,
             "lockdown": self.lockdown_on,
             "vote": self._vote_now(),
+            "timeline": self._timeline,
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)

@@ -112,3 +112,5 @@ code { font-family: ui-monospace, monospace; }
   body { padding: 8px; }
   .id { display: none; }
 }
+
+img.thumb { width: 120px; height: auto; display: block; border: 1px solid #333; }

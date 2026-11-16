@@ -14,6 +14,7 @@ import aiohttp
 import discord
 import pytest
 from aiohttp import WSMsgType, test_utils
+from fake_incus import FakeTarget
 from fake_vnc import FakeVnc
 
 from chatuses import brain as brain_module
@@ -24,9 +25,11 @@ from chatuses.brain import Brain, Config
 from chatuses.executor import connect_to
 from chatuses.incus import Incus, IncusError
 from chatuses.pipeline import PAUSED, ChatMessage
+from chatuses.referee.votes import Vote
 from chatuses.safety.screen_ocr import Hit
 from chatuses.safety.textfilter import HATE, LISTS
 from chatuses.screen import Frame
+from chatuses.snapshots import Snapshots
 from chatuses.store import Store
 
 
@@ -55,11 +58,13 @@ class Feed:
 
 
 @asynccontextmanager
-async def running(server: FakeVnc | None = None) -> AsyncGenerator[tuple[Brain, Feed]]:
+async def running(
+    server: FakeVnc | None = None, incus: Incus | None = None, thumbs: Path | None = None
+) -> AsyncGenerator[tuple[Brain, Feed]]:
     """A brain with its executor running, and an overlay page connected to it."""
     port = server.port if server else 1  # port 1: nothing listens, the target stays offline
     with Store(":memory:") as store:
-        brain = Brain(store, lambda: connect_to("127.0.0.1", port))
+        brain = Brain(store, lambda: connect_to("127.0.0.1", port), incus, thumbs=thumbs)
         task = asyncio.create_task(brain.executor.run())
         async with test_utils.TestClient(test_utils.TestServer(brain.web_app())) as client:
             ws = await client.ws_connect("/ws/overlay")
@@ -174,9 +179,20 @@ def settle(brain: Brain, *names: str) -> None:
         brain.pipeline.presence.saw(f"console:{name}", now - 5)
 
 
+def snaps(brain: Brain) -> Snapshots:
+    assert brain.snapshots is not None
+    return brain.snapshots
+
+
+def vote_now(brain: Brain) -> Vote:
+    assert brain.referee.votes.current is not None
+    return brain.referee.votes.current
+
+
 def test_a_power_vote_on_the_overlay() -> None:
     async def test() -> None:
-        async with running() as (brain, feed):
+        target = FakeTarget()
+        async with running(incus=target) as (brain, feed):
             assert await brain.console_message("newbie", "!reboot") == (
                 "refused",
                 "you can propose votes once you've been here 2 minutes",
@@ -208,25 +224,24 @@ def test_a_power_vote_on_the_overlay() -> None:
             brain.referee.tick()
             assert (await feed.next("vote"))["vote"]["phase"] == "running"
             ended = (await feed.next("vote"))["vote"]
-            assert (ended["phase"], ended["result"]) == (
-                "error",
-                "!reboot isn't built yet: coming with the next update",
-            )
+            assert (ended["phase"], ended["result"]) == ("done", "rebooted")
+            assert target.restarts == [False]  # graceful
             [row] = brain.store.votes()
             assert (row["kind"], row["proposer"], row["result"], row["tally"]["yes"]) == (
                 "reboot",
                 "console:alice",
-                "error",
+                "done",
                 2,
             )
-            assert "Ruleset: roguelike; vote: !reboot: error" in brain.status_text()
+            assert "Ruleset: roguelike; vote: !reboot: done, rebooted" in brain.status_text()
+            assert not brain.executor.frozen  # input is back after the reboot
 
     run(test)
 
 
 def test_a_panic_ends_the_vote_and_moderators_can_too() -> None:
     async def test() -> None:
-        async with running() as (brain, feed):
+        async with running(incus=FakeTarget()) as (brain, feed):
             settle(brain, "alice")
             await brain.console_message("alice", "!reset")
             assert (await feed.next("vote"))["vote"]["phase"] == "voting"
@@ -238,6 +253,156 @@ def test_a_panic_ends_the_vote_and_moderators_can_too() -> None:
             assert await brain.admin(["endvote"]) == ("error", "No vote is running.")
             await brain.console_message("alice", "!reboot")
             assert await brain.admin(["endvote"]) == ("ok", "Vote ended: !reboot (ended by a moderator).")
+
+    run(test)
+
+
+def test_time_travel_votes_save_rewind_and_load() -> None:
+    async def test() -> None:
+        target = FakeTarget()
+        async with running(incus=target) as (brain, feed):
+            settle(brain, "alice", "bob", "carol", "dan")
+            assert await brain.console_message("alice", "!rewind") == (
+                "refused",
+                "no snapshot to go back to yet",
+            )
+            assert await brain.console_message("alice", "!load clean") == ("refused", "no save called clean")
+            assert (await brain.admin(["snapshot"]))[0] == "ok"  # an operator takes one
+            timeline = await feed.next("timeline")
+            latest = snaps(brain).auto(1)
+            assert latest and [s["label"] for s in timeline["timeline"]] == [latest.label]
+            assert await brain.console_message("alice", "!rewind 2") == (
+                "refused",
+                "only 1 snapshots to go back to",
+            )
+
+            async def vote(text: str, voters: tuple[str, ...] = ("bob", "carol", "dan")) -> dict[str, Any]:
+                assert await brain.console_message("alice", text) == ("accepted", None)
+                for voter in voters:
+                    await brain.console_message(voter, "!yes")
+                start = vote_now(brain).opened
+                for after in (31, 62):  # the window, then the veto countdown if there's one
+                    brain.referee.clock = lambda after=after: start + after
+                    brain.referee.tick()
+                    await asyncio.sleep(0.05)  # the action runs as a task
+                    if brain.referee.votes.current and brain.referee.votes.current.phase != "veto":
+                        break
+                current = brain.referee.votes.current
+                assert current is not None
+                return {"phase": current.phase, "result": current.result}
+
+            assert await vote("!save clean") == {"phase": "done", "result": "saved as clean"}
+            saves = (await feed.next("timeline"))["saves"]
+            assert [s["label"] for s in saves] == ["clean"]
+            brain.referee.votes._cooldown.clear()  # pyright: ignore[reportPrivateUsage]
+            first = snaps(brain).auto(1)
+            assert first
+            assert await vote("!rewind") == {"phase": "done", "result": f"back to {first.label}"}
+            assert target.restored == [first.ref] and not brain.executor.frozen
+            brain.referee.votes._cooldown.clear()  # pyright: ignore[reportPrivateUsage]
+            save = snaps(brain).named("clean")
+            assert save
+            assert await vote("!load clean") == {"phase": "done", "result": "back to clean"}
+            assert target.restored[-1] == save.ref
+            assert [p["kind"] for _, _, _, p in brain.store.recent_events(("time-travel",))] == [
+                "named",
+                "auto",
+            ]
+
+    run(test)
+
+
+def test_a_reboot_the_machine_ignores_says_to_reset() -> None:
+    async def test() -> None:
+        target = FakeTarget()
+        target.ignores_shutdown = True
+        async with running(incus=target) as (brain, _feed):
+            settle(brain, "alice", "bob")
+            await brain.console_message("alice", "!reboot")
+            await brain.console_message("bob", "!yes")
+            start = vote_now(brain).opened
+            brain.referee.clock = lambda: start + 31
+            brain.referee.tick()
+            await asyncio.sleep(0.05)
+            current = brain.referee.votes.current
+            assert current and (current.phase, current.result) == ("error", brain_module.NO_REBOOT)
+            assert not brain.executor.frozen
+
+    run(test)
+
+
+def test_without_incus_there_is_no_time_travel() -> None:
+    async def test() -> None:
+        async with running() as (brain, _feed):
+            settle(brain, "alice")
+            for text in ("!rewind", "!save x", "!reboot"):
+                assert await brain.console_message("alice", text) == ("refused", brain_module.NO_INCUS)
+            assert await brain.admin(["snapshots"]) == ("error", brain_module.NO_INCUS)
+            assert "Snapshots: off (not set up)" in brain.status_text()
+
+    run(test)
+
+
+def test_a_moderator_rewinds_to_any_snapshot() -> None:
+    async def test() -> None:
+        target = FakeTarget()
+        async with running(incus=target) as (brain, _feed):
+            await brain.admin(["snapshot"])
+            settle(brain, "alice")
+            await brain.console_message("alice", "!reboot")  # an open vote ends
+            assert await brain.admin(["rewind-to", "nope"]) == (
+                "error",
+                "No snapshot 'nope': the dashboard (or chat-brain-admin snapshots) lists them.",
+            )
+            snap = snaps(brain).auto(1)
+            assert snap
+            assert await brain.admin(["rewind-to", "1"]) == ("ok", f"Rewinding to #1 ({snap.label})…")
+            await asyncio.sleep(0.05)
+            assert target.restored == [snap.ref]
+            assert brain.referee.votes.current and brain.referee.votes.current.phase == "cancelled"
+            assert (await brain.admin(["snapshots"]))[1].startswith(f"#1 auto {snap.label}")
+
+    run(test)
+
+
+def test_auto_snapshots_when_due_and_something_changed() -> None:
+    async def test() -> None:
+        async with running(incus=FakeTarget()) as (brain, _feed):
+            start = brain._started  # pyright: ignore[reportPrivateUsage]
+            brain.executor.online.set()  # as if the desktop were connected
+            due = start + 15 * 60 + 1
+            assert not brain._auto_due(start + 60)  # pyright: ignore[reportPrivateUsage]
+            assert not brain._auto_due(due)  # pyright: ignore[reportPrivateUsage]  # nothing changed
+            brain.executor.last_input = start + 100
+            assert brain._auto_due(due)  # pyright: ignore[reportPrivateUsage]
+            brain.moderation.panic("console")
+            assert not brain._auto_due(due)  # pyright: ignore[reportPrivateUsage]
+            brain.moderation.resume("console")
+            snap = await snaps(brain).take("auto")
+            assert not brain._auto_due(snap.created + 60)  # pyright: ignore[reportPrivateUsage]
+            brain.executor.last_input = snap.created + 30
+            assert brain._auto_due(snap.created + 15 * 60 + 1)  # pyright: ignore[reportPrivateUsage]
+
+    run(test)
+
+
+def test_thumbnails_are_served_and_nothing_else(tmp_path: Path) -> None:
+    async def test() -> None:
+        (tmp_path / "7.png").write_bytes(b"\x89PNG fake")
+        (tmp_path / "secret.txt").write_text("no")
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1), thumbs=tmp_path)
+            async with test_utils.TestClient(test_utils.TestServer(brain.web_app())) as client:
+                resp = await client.get("/thumbs/7.png")
+                assert resp.status == 200 and resp.content_type == "image/png"
+                assert await resp.read() == b"\x89PNG fake"
+                for path in (
+                    "/thumbs/8.png",
+                    "/thumbs/secret.txt",
+                    "/thumbs/..%2Fsecret.txt",
+                    "/thumbs/x.png",
+                ):
+                    assert (await client.get(path)).status == 404, path
 
     run(test)
 
