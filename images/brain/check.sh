@@ -167,6 +167,20 @@ INFO*) info "${ocr#*|}" ;;
 *) fail "${ocr#*|}" ;;
 esac
 
+log "Watchdog"
+watchdog=$(python3 -c '
+import json, sys
+w = json.loads(sys.argv[1] or "{}").get("watchdog", {})
+if w.get("state") == "healthy":
+    print("PASS|watchdog: the target is healthy (" + ", ".join(f"{u} {s}" for u, s in w.get("services", {}).items()) + ")")
+else:
+    print("FAIL|watchdog: " + ("; ".join(w.get("problems") or []) or w.get("last_error") or "no answer"))
+' "$(health)")
+case $watchdog in
+PASS*) pass "${watchdog#*|}" ;;
+*) fail "${watchdog#*|}" ;;
+esac
+
 log "Moderation"
 api() { # PATH [TOKEN]: the admin API's HTTP status, then its body
 	python3 - "http://$BRAIN_IP:$BRAIN_PORT$1" "${2:-}" <<'PY'

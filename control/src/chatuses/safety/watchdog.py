@@ -95,6 +95,8 @@ class Watchdog:
             found.append("VNC is down")
         if self.screen == "frozen":
             found.append("the screen looks frozen")
+        if self.last_error:
+            found.append(f"can't check the target: {self.last_error}")
         return found
 
     async def run(self) -> None:

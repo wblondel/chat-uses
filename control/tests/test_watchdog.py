@@ -178,6 +178,7 @@ def test_incus_trouble_is_noted_and_the_other_checks_go_on() -> None:
         w, _, _ = dog(incus, [False])
         await w.check()
         assert w.last_error == "not authorized" and w.vnc_down_since is not None
+        assert "can't check the target: not authorized" in w.status()["problems"]
 
     run(test)
 
