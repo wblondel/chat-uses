@@ -48,6 +48,20 @@ if in_brain test -d /run/systemd/system 2>/dev/null; then
 else
 	info "systemd is not running in brain: service check skipped"
 fi
+# The commit the running brain was built from (images/build.sh stamps the
+# image; Incus copies that into the container's config) against the repo:
+# deploy.sh without --replace keeps the old container, and its old code.
+built=$(incus config get brain image.chat-uses.commit --project infra 2>/dev/null || true)
+repo=$(git -C "$CHAT_USES_REPO" rev-parse --short HEAD 2>/dev/null || true)
+if [[ -z $built || -z $repo || $built == unknown ]] ||
+	! git -C "$CHAT_USES_REPO" cat-file -e "$built^{commit}" 2>/dev/null; then
+	info "brain's code: built from ${built:-an unknown commit}, the repo at ${repo:-?}"
+elif git -C "$CHAT_USES_REPO" diff --quiet "$built" HEAD -- control/src control/requirements.txt \
+	images/brain/rootfs images/brain/provision.sh 2>/dev/null; then
+	pass "brain runs the repo's code (built from $built)"
+else
+	fail "brain runs older code (built from $built, the repo is at $repo): images/build.sh brain && images/brain/deploy.sh --replace"
+fi
 if [[ $(incus config device get brain data source --project infra 2>/dev/null) == brain-data ]] &&
 	in_brain mountpoint -q /var/lib/chat-brain 2>/dev/null; then
 	pass "the store is on the brain-data volume (a --replace keeps it)"

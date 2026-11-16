@@ -106,7 +106,13 @@ class Incus:
             operation = data.get("operation")
             if not isinstance(operation, str) or not operation.startswith("/1.0/operations/"):
                 raise IncusError("Incus didn't return an operation")
-            done = await self._call(session, "GET", f"{operation}/wait?timeout={int(TIMEOUT)}")
+            try:
+                done = await self._call(session, "GET", f"{operation}/wait?timeout={int(TIMEOUT)}")
+            except IncusError as err:
+                # How Incus answers the wait (an error response, code 400).
+                if str(err).strip().lower() in EXEC_FAILURES:
+                    return EXEC_FAILURES[str(err).strip().lower()]
+                raise
         meta: dict[str, Any] = done.get("metadata") or {}
         if meta.get("status") != "Success":
             err = str(meta.get("err") or "")
