@@ -3,7 +3,9 @@
 #
 # Usage:
 #   sudo images/brain/deploy.sh             create brain if missing, else push config and restart
-#   sudo images/brain/deploy.sh --replace   recreate brain from the latest chat-uses/brain image
+#                                           (the running code stays: a new image needs --replace)
+#   sudo images/brain/deploy.sh --replace   recreate brain from the latest chat-uses/brain image,
+#                                           keeping its store; after images/build.sh brain
 #   --image ALIAS                           launch from another image (default chat-uses/brain)
 #
 # brain's store (bans, timeouts, strikes, the video it follows, the event log,

@@ -84,8 +84,9 @@ class FakeIncusApi:
     async def wait(self, request: web.Request) -> web.Response:
         await self._note(request)
         if request.match_info["id"] == "exec1" and self.exec_failure:
-            failed = {"status": "Failure", "status_code": 400, "err": self.exec_failure}
-            return web.json_response({"type": "sync", "metadata": failed})
+            # Exactly what Incus answers (seen on Incus 6.0 and on the server's 7.6).
+            failed = {"type": "error", "status": "", "status_code": 0, "operation": "", "error_code": 400}
+            return web.json_response({**failed, "error": self.exec_failure, "metadata": None})
         if request.match_info["id"] == "exec1":
             return web.json_response(
                 {"type": "sync", "metadata": {"status": "Success", "metadata": {"return": 3}}}
