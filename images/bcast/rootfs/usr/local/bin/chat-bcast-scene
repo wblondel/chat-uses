@@ -4,12 +4,12 @@
 #   chat-bcast-scene starting [title] [subtitle]  "Starting soon"
 #   chat-bcast-scene brb [title] [subtitle]       "We'll be right back" (also for panic)
 # The layout page picks it up within a second. "starting" and "brb" also mute
-# the target's sound; "live" unmutes it.
+# the target's sound; "live" unmutes it, unless a moderator's panic is on
+# (brain's /panic, followed by chat-bcast-panic: it ends with /resume).
 set -eu
 scene=${1:-}
 case $scene in
-live) mute=0 ;;
-starting | brb) mute=1 ;;
+live | starting | brb) ;;
 *) echo "usage: chat-bcast-scene live|starting|brb [title] [subtitle]" >&2; exit 1 ;;
 esac
 dir=/var/lib/chat-bcast/control
@@ -18,8 +18,8 @@ python3 -c 'import json, sys; print(json.dumps({"scene": sys.argv[1], "title": s
 	"$scene" "${2:-}" "${3:-}" >"$tmp"
 chmod 0644 "$tmp"
 mv "$tmp" "$dir/scene.json"
-if ! PULSE_SERVER=unix:/run/chat-bcast-audio/native pactl set-sink-mute target "$mute"; then
-	echo "scene: $scene, but the target's sound could not be $( ((mute)) && echo muted || echo unmuted)" >&2
+if ! sound=$(/usr/lib/chat-bcast/apply-mute 2>&1); then
+	echo "scene: $scene, but $sound" >&2
 	exit 1
 fi
-echo "scene: $scene (target sound $( ((mute)) && echo muted || echo on))"
+echo "scene: $scene (${sound#target })"

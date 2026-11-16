@@ -6,9 +6,15 @@ pinned: brain trusts that one certificate, whatever name it carries.
 
 For now one call: the forensic snapshot taken when a moderator panics
 (PLAN.md 7.5). Phase 6 adds rewinds and the runs' lifecycle.
+
+`python -m chatuses.incus` (images/brain/check.sh) checks the access with
+brain's settings: it finds the target's instance, changing nothing.
 """
 
+import asyncio
+import os
 import ssl
+import sys
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -59,6 +65,11 @@ class Incus:
                     return str(instance["name"])
         raise IncusError(f"no instance in project {self.project} has the address {address}")
 
+    async def find(self, address: str) -> str:
+        """The target's instance name, by its address (a read-only call)."""
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as session:
+            return await self.instance_at(session, address)
+
     async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
         """Snapshot the instance (named, or found by address) as `name`; returns the instance's name."""
         timeout = aiohttp.ClientTimeout(total=TIMEOUT)
@@ -79,3 +90,21 @@ class Incus:
         if meta.get("status") != "Success":
             raise IncusError(str(meta.get("err") or meta.get("status") or "the snapshot failed"))
         return instance
+
+
+def main() -> None:
+    from chatuses.brain import Config  # here: brain imports this module
+
+    config = Config.from_env(os.environ)
+    incus, why_not = config.incus()
+    if incus is None:
+        sys.exit(f"Incus access off: {why_not}")
+    try:
+        name = asyncio.run(incus.find(config.target_host))
+    except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+        sys.exit(f"Incus API at {config.incus_url}: {err or type(err).__name__}")
+    print(f"Incus API at {config.incus_url}: target {config.target_host} is instance {name}")
+
+
+if __name__ == "__main__":
+    main()

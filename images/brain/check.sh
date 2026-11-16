@@ -7,6 +7,10 @@
 # pointer to the middle of the screen, and the feed reports who moved it),
 # and the chat adapters' state: YouTube reading a video's chat, Discord
 # connected. An adapter without its secrets is reported, not failed.
+# Moderation (Phase 5): no panic or lockdown on, the admin API refuses
+# requests without its token (also from bcast) and answers with it, and
+# brain's Incus access (for the panic's forensic snapshot) finds the target.
+# It never triggers a panic: images/brain/panic-drill.sh does, on purpose.
 #
 # Usage:
 #   sudo images/brain/check.sh
@@ -137,6 +141,52 @@ while IFS='|' read -r kind text; do
 	*) info "$text" ;;
 	esac
 done <<<"$verdicts"
+
+log "Moderation"
+api() { # PATH [TOKEN]: the admin API's HTTP status, then its body
+	python3 - "http://$BRAIN_IP:$BRAIN_PORT$1" "${2:-}" <<'PY'
+import sys, urllib.error, urllib.request as u
+req = u.Request(sys.argv[1], headers={"Authorization": f"Bearer {sys.argv[2]}"} if sys.argv[2] else {})
+try:
+    with u.build_opener(u.ProxyHandler({})).open(req, timeout=5) as resp:
+        print(resp.status); print(resp.read().decode())
+except urllib.error.HTTPError as err:
+    print(err.code)
+except OSError as err:
+    print(0); print(err)
+PY
+}
+token_file=$CHAT_USES_ETC/secrets/brain-admin-token
+if [[ -s $token_file ]]; then
+	answer=$(api /api/state "$(cat "$token_file")")
+	if [[ $(head -1 <<<"$answer") == 200 ]]; then
+		pass "admin API answers with the token (dashboard: http://$BRAIN_IP:$BRAIN_PORT/admin over WireGuard)"
+		state=$(tail -n +2 <<<"$answer")
+		if [[ $state == *'"panic": null'* ]]; then pass "no panic on"; else fail "a panic is on: the stream is covered until someone resumes"; fi
+		if [[ $state == *'"lockdown": null'* ]]; then pass "no lockdown on"; else info "lockdown is on: only regulars can send commands"; fi
+	else
+		fail "admin API with the token: HTTP $(head -1 <<<"$answer") (was brain deployed after the token was made?)"
+	fi
+	for bad in "" wrong-token; do
+		code=$(api /api/state "$bad" | head -1)
+		if [[ $code == 401 ]]; then pass "admin API refuses ${bad:+a wrong token}${bad:-no token}"; else fail "admin API without the right token: HTTP $code"; fi
+	done
+	if incus info bcast --project infra >/dev/null 2>&1; then
+		# shellcheck disable=SC2016 # expanded inside bcast
+		code=$(incus exec bcast --project infra -- curl -s -o /dev/null -w '%{http_code}' "http://$BRAIN_IP:$BRAIN_PORT/api/state" || true)
+		if [[ $code == 401 ]]; then pass "from bcast, the admin API refuses too"; else fail "admin API from bcast: HTTP $code"; fi
+	fi
+else
+	fail "no $token_file: run images/brain/deploy.sh (it makes the token)"
+fi
+# shellcheck disable=SC2016 # expanded inside brain
+incus_check=$(in_brain bash -c 'set -a; . /etc/chat-uses/brain.env; [ -f /etc/chat-uses/brain.local.env ] && . /etc/chat-uses/brain.local.env; set +a
+	PYTHONPATH=/usr/lib/chat-brain /opt/chat-brain/venv/bin/python -m chatuses.incus' 2>&1 || true)
+case $incus_check in
+*" is instance "*) pass "$incus_check (forensic snapshots on panic)" ;;
+*"access off"*) fail "$incus_check: run 'bootstrap.sh incus-api', then deploy.sh" ;;
+*) fail "${incus_check:-no answer from the Incus check}" ;;
+esac
 
 log "Result: $PASS passed, $FAIL failed"
 ((FAIL == 0))

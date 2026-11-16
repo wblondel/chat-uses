@@ -11,6 +11,9 @@
 #   /etc/chat-uses/brain.local.env             setting overrides (see images/brain/rootfs/etc/chat-uses/brain.env.tmpl)
 #   /etc/chat-uses/secrets/discord-bot-token   the Discord bot token          (root:brain 0640 inside)
 #   /etc/chat-uses/secrets/google-api-key      the YouTube Data API key       (root:brain 0640 inside)
+#   /etc/chat-uses/secrets/brain-incus.crt,    brain's Incus client certificate, and the host's to
+#     brain-incus.key, incus-server.crt        pin (bootstrap.sh incus-api makes them): snapshots
+#   /etc/chat-uses/secrets/brain-admin-token   the admin dashboard's token; made here if missing
 # The image itself never contains secrets.
 
 set -euo pipefail
@@ -60,15 +63,28 @@ else
 	info "no $CHAT_USES_ETC/brain.local.env: image defaults (target $TARGET_IP)"
 fi
 in_brain install -d -m 0750 -o root -g brain /etc/chat-uses/secrets # images before step 4 lack it
-for secret in discord-bot-token google-api-key; do
-	src=$CHAT_USES_ETC/secrets/$secret
+install -d -m 0700 "$CHAT_USES_ETC/secrets"
+if [[ ! -s $CHAT_USES_ETC/secrets/brain-admin-token ]]; then
+	(umask 077 && openssl rand -hex 32 >"$CHAT_USES_ETC/secrets/brain-admin-token")
+	info "made the admin dashboard's token: $CHAT_USES_ETC/secrets/brain-admin-token"
+fi
+# host file -> brain's name for it -> what's off without it
+for secret in \
+	"discord-bot-token discord-bot-token Discord" \
+	"google-api-key google-api-key YouTube chat" \
+	"brain-incus.crt incus-client.crt forensic snapshots (bootstrap.sh incus-api)" \
+	"brain-incus.key incus-client.key forensic snapshots" \
+	"incus-server.crt incus-server.crt forensic snapshots" \
+	"brain-admin-token admin-token the admin dashboard"; do
+	read -r src dest what <<<"$secret"
+	src=$CHAT_USES_ETC/secrets/$src
 	if [[ -s $src ]]; then
-		incus file push "$src" "$NAME/etc/chat-uses/secrets/$secret" --project infra --mode 0640
-		in_brain chown root:brain "/etc/chat-uses/secrets/$secret"
-		info "pushed $secret"
+		incus file push "$src" "$NAME/etc/chat-uses/secrets/$dest" --project infra --mode 0640
+		in_brain chown root:brain "/etc/chat-uses/secrets/$dest"
+		info "pushed $dest"
 	else
-		in_brain rm -f "/etc/chat-uses/secrets/$secret"
-		info "no $src: that chat adapter stays off"
+		in_brain rm -f "/etc/chat-uses/secrets/$dest"
+		info "no $src: $what stays off"
 	fi
 done
 

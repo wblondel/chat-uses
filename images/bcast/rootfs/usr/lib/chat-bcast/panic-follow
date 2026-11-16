@@ -1,0 +1,191 @@
+#!/usr/bin/python3
+"""Follow brain's panic state: mute the target's sound (PLAN.md 7.5, D44).
+
+The layout page covers the stream the moment brain's feed says "panic" (it
+reads the same feed). This reads it too and, on every change:
+
+- writes control/panic.json, which the page also polls: a page that reloads
+  while brain is unreachable is still covered;
+- runs apply-mute, which mutes the target's sound (unmutes on resume, unless
+  the scene keeps it muted).
+
+While brain can't be reached the last state stays: a panic ends when brain
+says so, never because brain went away. With BRAIN_URL empty, there's
+nothing to follow.
+
+The websocket client is the standard library's sockets (bcast has no
+websocket library): RFC 6455, text frames, and pongs for brain's heartbeat.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import urlsplit
+
+STATE = "/var/lib/chat-bcast/control/panic.json"
+APPLY_MUTE = "/usr/lib/chat-bcast/apply-mute"
+GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+MAX_MESSAGE = 1 << 20
+SILENCE = 60  # seconds without a frame (brain pings every 20 s) = the connection is dead
+RETRY = (1.0, 5.0)
+
+
+class Closed(Exception):
+    pass
+
+
+def log(message):
+    print(message, file=sys.stderr, flush=True)
+
+
+def recv_exact(sock, n):
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            raise Closed("connection closed")
+        data += chunk
+    return data
+
+
+def connect(url):
+    parts = urlsplit(url)
+    if parts.scheme != "ws" or not parts.hostname:
+        raise SystemExit(f"BRAIN_URL must be ws://HOST:PORT/PATH, not {url!r}")
+    sock = socket.create_connection((parts.hostname, parts.port or 80), timeout=5)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    key = base64.b64encode(os.urandom(16))
+    sock.sendall(
+        (
+            f"GET {parts.path or '/'} HTTP/1.1\r\nHost: {parts.netloc}\r\nUpgrade: websocket\r\n"
+            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key.decode()}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        ).encode()
+    )
+    head = b""
+    while b"\r\n\r\n" not in head:
+        head += recv_exact(sock, 1)
+        if len(head) > 16384:
+            raise Closed("handshake reply too long")
+    status = head.split(b"\r\n", 1)[0]
+    if b" 101 " not in status + b" ":
+        raise Closed(f"refused: {status.decode(errors='replace')}")
+    accept = base64.b64encode(hashlib.sha1(key + GUID).digest())
+    if b"sec-websocket-accept: " + accept.lower() not in head.lower():
+        raise Closed("bad Sec-WebSocket-Accept")
+    sock.settimeout(SILENCE)
+    return sock
+
+
+def send_frame(sock, opcode, payload):
+    """A client frame (masked, as RFC 6455 requires)."""
+    mask = os.urandom(4)
+    header = bytes([0x80 | opcode])
+    n = len(payload)
+    header += bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n)
+    sock.sendall(header + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(payload)))
+
+
+def messages(sock):
+    while True:
+        b0, b1 = recv_exact(sock, 2)
+        opcode, length = b0 & 0x0F, b1 & 0x7F
+        if length == 126:
+            (length,) = struct.unpack(">H", recv_exact(sock, 2))
+        elif length == 127:
+            (length,) = struct.unpack(">Q", recv_exact(sock, 8))
+        if length > MAX_MESSAGE:
+            raise Closed("message too large")
+        mask = recv_exact(sock, 4) if b1 & 0x80 else b""
+        payload = recv_exact(sock, length)
+        if mask:
+            payload = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
+        if opcode == 8:
+            raise Closed("closed by brain")
+        if opcode == 9:  # ping: brain's heartbeat
+            send_frame(sock, 10, payload[:125])
+        elif opcode == 1:
+            yield payload.decode("utf-8", "replace")
+
+
+def panic_in(text):
+    """True/False if this feed message says whether there's a panic, else None."""
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(msg, dict):
+        return None
+    if msg.get("type") == "hello":
+        return msg.get("panic") is True
+    if msg.get("type") == "panic":
+        return msg.get("on") is True
+    return None
+
+
+def read_state():
+    try:
+        with open(STATE) as f:
+            return json.load(f).get("panic") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def write_state(panic):
+    directory = os.path.dirname(STATE)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".panic.")
+    with os.fdopen(fd, "w") as f:
+        json.dump({"panic": panic, "since": time.time()}, f)
+        f.write("\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, STATE)
+
+
+def apply_mute():
+    done = subprocess.run([APPLY_MUTE], capture_output=True, text=True, check=False)
+    log((done.stdout or done.stderr).strip())
+
+
+def main():
+    url = os.environ.get("BRAIN_URL", "")
+    if not url:
+        log("BRAIN_URL is empty: no brain to follow")
+        while True:
+            time.sleep(3600)
+    panic = read_state()
+    apply_mute()  # after a restart (of this, or of PulseAudio before it)
+    wait, last_error = RETRY[0], ""
+    while True:
+        sock = None
+        try:
+            sock = connect(url)
+            log(f"following {url}")
+            wait, last_error = RETRY[0], ""
+            for text in messages(sock):
+                said = panic_in(text)
+                if said is None or said == panic:
+                    continue
+                panic = said
+                write_state(panic)
+                apply_mute()
+                log("PANIC: stream covered, target muted" if panic else "panic over")
+        except (OSError, Closed) as err:
+            error = str(err) or type(err).__name__
+            if error != last_error:  # one line per kind of trouble, not one per retry
+                log(f"brain's feed: {error} (panic stays {'on' if panic else 'off'}); retrying")
+                last_error = error
+        finally:
+            if sock is not None:
+                sock.close()
+        time.sleep(wait)
+        wait = min(wait * 2, RETRY[1])
+
+
+if __name__ == "__main__":
+    main()

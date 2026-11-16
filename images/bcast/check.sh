@@ -53,7 +53,7 @@ fi
 
 log "Pipeline (target $target_host${TARGET:+, instance $TARGET})"
 if in_bcast test -d /run/systemd/system 2>/dev/null; then
-	for unit in xvfb audio mediamtx websockify audio-in browser encoder forwarder; do
+	for unit in xvfb audio mediamtx websockify audio-in browser encoder forwarder panic; do
 		state=$(in_bcast systemctl is-active "chat-bcast-$unit" 2>/dev/null || true)
 		if [[ $state == active ]]; then pass "chat-bcast-$unit active"; else fail "chat-bcast-$unit is ${state:-unknown}"; fi
 	done
@@ -65,6 +65,12 @@ if in_bcast curl -fsS http://127.0.0.1:6080/ 2>/dev/null | grep -q 'chat-uses la
 else
 	fail "layout page not served"
 fi
+panic=$(in_bcast curl -fsS http://127.0.0.1:6080/control/panic.json 2>/dev/null || true)
+case $panic in
+*'"panic": false'*) pass "no panic (control/panic.json)" ;;
+*'"panic": true'*) fail "a panic is on: the stream is covered and the target muted until a moderator resumes" ;;
+*) fail "control/panic.json not served (chat-bcast-panic keeps it)" ;;
+esac
 
 log "Stream format"
 # r_frame_rate: FLV keeps whole milliseconds (33, 33, 34 ...), so the averaged

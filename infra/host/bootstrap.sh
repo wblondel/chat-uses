@@ -3,7 +3,8 @@
 #
 # Turns a fresh Debian 13 server into the chat-uses host: SSH hardening,
 # automatic security updates, kernel settings, firewall, WireGuard admin
-# tunnel, Incus with its storage pool, networks, projects and profiles.
+# tunnel, Incus with its storage pool, networks, projects and profiles, and
+# brain's restricted access to the Incus API.
 #
 # Idempotent: run it again after every change to infra/. Each step only
 # changes what differs from the repository.
@@ -21,10 +22,10 @@ set -euo pipefail
 # shellcheck source=infra/host/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-STEPS=(packages admin-user ssh system updates firewall wireguard incus storage networks projects profiles summary)
+STEPS=(packages admin-user ssh system updates firewall wireguard incus storage networks projects profiles incus-api summary)
 
 PACKAGES=(
-	ca-certificates curl jq gettext-base sudo python3
+	ca-certificates curl jq gettext-base sudo python3 openssl
 	unattended-upgrades apt-listchanges
 	nftables wireguard-tools qrencode tcpdump
 	# Container-only Incus: the "incus" package adds QEMU for VMs, which this
@@ -407,6 +408,48 @@ step_profiles() {
 			info "$project/$name"
 		done
 	done
+}
+
+# brain's access to the Incus API (PLAN.md 5.3, D4, D44): a client certificate
+# restricted to the "targets" project, over the API listening on infranet's
+# address only (the firewall lets only brain in). Panic takes its forensic
+# snapshot this way; Phase 6's rewinds will too. images/brain/deploy.sh
+# pushes the files into brain.
+step_incus_api() {
+	log "Incus API for brain (project targets only)"
+	local secrets=$CHAT_USES_ETC/secrets address="$INFRANET_GW:$INCUS_API_PORT"
+	local crt=$secrets/brain-incus.crt key=$secrets/brain-incus.key fingerprint trusted
+	install -d -m 0700 "$secrets"
+	if [[ $(incus config get core.https_address) != "$address" ]]; then
+		incus config set core.https_address="$address"
+		info "API listening on $address (infranet only)"
+	else
+		info "API already on $address"
+	fi
+	if [[ ! -s $crt || ! -s $key ]]; then
+		(
+			umask 077
+			openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -nodes -days 3650 \
+				-subj /CN=chat-brain -keyout "$key" -out "$crt" 2>/dev/null
+		)
+		info "made brain's client certificate ($crt)"
+	fi
+	fingerprint=$(openssl x509 -in "$crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f')
+	# What Incus trusts as "chat-brain": exactly this certificate, restricted to targets.
+	trusted=$(incus query /1.0/certificates?recursion=1 |
+		jq -r --arg fp "$fingerprint" '.[] | select(.name == "chat-brain" or .fingerprint == $fp)
+			| [.fingerprint, (.restricted | tostring), (.projects // [] | sort | join(","))] | join(" ")')
+	if [[ $trusted == "$fingerprint true targets" ]]; then
+		info "brain's certificate is trusted, for project targets only"
+	else
+		while read -r fp _; do
+			[[ -n $fp ]] && incus config trust remove "$fp"
+		done <<<"$trusted"
+		incus config trust add-certificate "$crt" --name chat-brain --restricted --projects targets
+		info "brain's certificate trusted, restricted to project targets"
+	fi
+	install -m 0644 /var/lib/incus/server.crt "$secrets/incus-server.crt"
+	info "host certificate copied for brain to pin ($secrets/incus-server.crt)"
 }
 
 step_summary() {

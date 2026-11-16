@@ -8,6 +8,10 @@
 // - Connects to brain's websocket for the command log, the grid flash and
 //   the name at the pointer (Phase 4), and shows "Controls offline" while
 //   it can't.
+// - Covers everything the moment brain's feed says "panic" (PLAN.md 7.5),
+//   and while brain is unreachable keeps to control/panic.json, which
+//   bcast's chat-bcast-panic keeps from the same feed: a panic ends only
+//   when brain says so.
 
 import RFB from "./novnc/core/rfb.js";
 
@@ -60,7 +64,13 @@ const SCENES = {
   brb: { title: "We'll be right back", subtitle: "" },
 };
 
-function applyScene(state) {
+let scene = { scene: "live" };
+let feedPanic = null; // what brain's feed says (null: no feed right now)
+let filePanic = false; // control/panic.json, for when there's no feed
+
+function applyScene() {
+  const panic = feedPanic ?? filePanic;
+  const state = panic ? { scene: "brb" } : scene; // a panic looks like any break
   const preset = SCENES[state.scene];
   if (!preset) {
     $("scene").hidden = true;
@@ -71,13 +81,20 @@ function applyScene(state) {
   $("scene").hidden = false;
 }
 
-async function pollScene() {
+async function readControl(name) {
   try {
-    const res = await fetch("control/scene.json", { cache: "no-store" });
-    if (res.ok) applyScene(await res.json());
+    const res = await fetch(`control/${name}`, { cache: "no-store" });
+    return res.ok ? await res.json() : null;
   } catch {
-    // Keep the current scene until the file is readable again.
+    return null; // keep the current state until the file is readable again
   }
+}
+
+async function pollScene() {
+  const [sceneFile, panicFile] = await Promise.all([readControl("scene.json"), readControl("panic.json")]);
+  if (sceneFile) scene = sceneFile;
+  if (panicFile) filePanic = panicFile.panic === true;
+  applyScene();
   setTimeout(pollScene, 1000);
 }
 
@@ -92,6 +109,10 @@ const STATE_MARK = { queued: "…", done: "✓", dropped: "dropped", busy: "busy
 const lines = new Map(); // id -> {line, el}
 let brainUp = false;
 let targetUp = false;
+
+function setLockdown(on) {
+  $("lockdown").hidden = !on;
+}
 
 function setControls() {
   const badge = $("controls");
@@ -173,11 +194,21 @@ function showPointer(x, y, user) {
 function onMessage(msg) {
   switch (msg.type) {
     case "hello":
+      feedPanic = msg.panic === true;
+      applyScene();
       lines.clear();
       $("log").replaceChildren(el("div", "log-line muted", "Waiting for chat…"));
       for (const line of msg.log) addLine(line);
       targetUp = msg.target;
       setControls();
+      setLockdown(msg.lockdown === true);
+      break;
+    case "panic":
+      feedPanic = msg.on === true;
+      applyScene();
+      break;
+    case "lockdown":
+      setLockdown(msg.on === true);
       break;
     case "log":
       addLine(msg);
@@ -220,6 +251,8 @@ function connectBrain(url) {
   });
   ws.addEventListener("close", () => {
     brainUp = false;
+    feedPanic = null; // back to panic.json until brain answers again
+    applyScene();
     setControls();
     setTimeout(() => connectBrain(url), 3000);
   });
