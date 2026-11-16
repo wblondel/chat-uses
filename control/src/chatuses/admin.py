@@ -27,6 +27,11 @@ Rulesets and laws (PLAN.md 6.12, rulesets/):
     chat-brain-admin laws                       laws changed over the ruleset's
     chat-brain-admin law NAME VALUE|default     change a law (within its bounds), or put it back
 
+Screen OCR verdicts (Phase 7): was each hit real? What decides enforcing.
+
+    chat-brain-admin ocr                        the hits of the last 90 days and their verdicts
+    chat-brain-admin ocr-verdict HIT real|false a hit's verdict (also: the buttons in #mod-alerts)
+
 Sessions (PLAN.md Phase 7): infra/host/session.py runs these and adds the
 encoder and CPU; the report is posted in #ops and kept (counts only).
 

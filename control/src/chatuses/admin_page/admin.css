@@ -68,6 +68,10 @@ button.danger {
   padding: 12px 28px;
 }
 button.ok { background: #10392f; border-color: var(--accent); color: var(--accent); padding: 12px 28px; }
+button.small { padding: 2px 8px; font-size: 13px; }
+.verdict { white-space: nowrap; }
+.verdict button + button { margin-left: 4px; }
+.verdict button.chosen { border-color: var(--accent); color: var(--accent); }
 
 #panic-card .state { font-size: 18px; font-weight: bold; margin-bottom: 12px; color: var(--accent); }
 #panic-card.panicking { border-color: var(--danger); background: #2a1215; }

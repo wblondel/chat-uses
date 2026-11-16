@@ -70,6 +70,7 @@ def numbers(**changes: Any) -> dict[str, Any]:
             ("time-travel", {}),
             ("power", {"action": "reboot"}),
         ],
+        "ocr_verdicts": {"real": 2, "false": 1},
     }
     return base | changes
 
@@ -94,7 +95,7 @@ def test_the_report_adds_up_the_session() -> None:
     }
     assert (report["panics"], report["holds"]) == (1, {"count": 2, "confirmed": 1, "resumed": 1})
     assert report["covered_minutes"] == 4.0  # 90 + 30 + 120 s
-    assert report["ocr_hits"] == {"count": 3, "enforce": 2, "shadow": 1}
+    assert report["ocr_hits"] == {"count": 3, "modes": {"enforce": 2, "shadow": 1}, "real": 2, "false": 1}
     assert (report["time_travel"], report["power"]) == (1, 1)
     assert render(report).split("\n") == [
         "📊 Session 'Beta 1': 50 min (2027-01-15, 08:00 UTC to 08:50 UTC)",
@@ -103,8 +104,8 @@ def test_the_report_adds_up_the_session() -> None:
         "People who sent commands: 10 (Discord 3, YouTube 7)",
         "Commands: 100 (2.0 a minute): 90 accepted, 10 refused (rate_limited 6, invalid 4)",
         "Votes: 4 proposed, 2 carried out (reboot 0 of 1, rewind 1 of 2, save 1 of 1); 1 failed, 1 vetoed",
-        "Panics: 1; content holds: 2 (1 confirmed as panics, 1 resumed as false alarms);"
-        " covered 4.0 min in all; screen OCR hits: 3",
+        "Panics: 1; content holds: 2 (1 confirmed as panics, 1 false alarm resumed); covered 4.0 min in all",
+        "Screen OCR hits: 3 (2 real, 1 false alarm, 0 not marked)",
         "Time travel: 1, reboots and resets: 1",
     ]
 

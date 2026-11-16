@@ -158,7 +158,12 @@ def build_report(
         "panics": panics,
         "holds": {"count": holds, "confirmed": confirmed, "resumed": resumed_holds},
         "covered_minutes": round(covered / 60, 1),
-        "ocr_hits": {"count": ocr, **dict(sorted(ocr_modes.items()))},
+        "ocr_hits": {
+            "count": ocr,
+            "modes": dict(sorted(ocr_modes.items())),
+            "real": int(numbers.get("ocr_verdicts", {}).get("real", 0)),
+            "false": int(numbers.get("ocr_verdicts", {}).get("false", 0)),
+        },
         "time_travel": time_travel,
         "power": power,
     }
@@ -175,6 +180,10 @@ def _duration(minutes: float) -> str:
 
 def _platforms(counts: dict[str, int]) -> str:
     return ", ".join(f"{PLATFORMS.get(p, p)} {n}" for p, n in counts.items() if n)
+
+
+def _alarms(n: int) -> str:
+    return f"{n} false alarm" + ("" if n == 1 else "s")
 
 
 def render(report: dict[str, Any]) -> str:
@@ -217,10 +226,12 @@ def render(report: dict[str, Any]) -> str:
     else:
         lines.append("Votes: none")
     ocr = report["ocr_hits"]
+    unmarked = ocr["count"] - ocr["real"] - ocr["false"]
+    marked = f" ({ocr['real']} real, {_alarms(ocr['false'])}, {unmarked} not marked)" if ocr["count"] else ""
     lines.append(
         f"Panics: {report['panics']}; content holds: {h['count']} ({h['confirmed']} confirmed as panics, "
-        f"{h['resumed']} resumed as false alarms); covered {report['covered_minutes']} min in all; "
-        f"screen OCR hits: {ocr['count']}"
+        f"{_alarms(h['resumed'])} resumed); covered {report['covered_minutes']} min in all"
     )
+    lines.append(f"Screen OCR hits: {ocr['count']}{marked}")
     lines.append(f"Time travel: {report['time_travel']}, reboots and resets: {report['power']}")
     return "\n".join(lines)
