@@ -80,6 +80,26 @@ write_file() {
 	return 0
 }
 
+# wait_booted NAME PROJECT: wait (up to 2 minutes) until systemd in the
+# container has finished booting. Right after a launch, systemctl can't reach
+# systemd yet ("Failed to connect to system scope bus"), so a deploy that
+# restarts a service must wait first. Returns 0 once it's running (or
+# degraded: a failed unit, still usable), 1 if the container runs no systemd
+# (the development sandbox) or never got there.
+wait_booted() {
+	local name=$1 project=$2 state=""
+	for _ in $(seq 1 120); do
+		state=$(incus exec "$name" --project "$project" -- systemctl is-system-running 2>/dev/null || true)
+		case $state in
+		running | degraded) return 0 ;;
+		offline) incus exec "$name" --project "$project" -- test -d /run/systemd/system 2>/dev/null || return 1 ;;
+		esac
+		sleep 1
+	done
+	warn "$project/$name: systemd still ${state:-unreachable} after 2 minutes"
+	return 1
+}
+
 # --- WireGuard -----------------------------------------------------------------
 
 wg_server_pubkey() { cat "$WG_DIR/chat-uses-server.pub"; }

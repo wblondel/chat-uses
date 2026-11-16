@@ -69,7 +69,7 @@ else
 fi
 
 log "Restarting the pipeline"
-if in_bcast test -d /run/systemd/system; then
+if wait_booted "$NAME" infra; then
 	in_bcast systemctl restart chat-bcast.target
 	sleep 5
 	in_bcast systemctl --no-pager --plain list-units 'chat-bcast-*' | sed -n '1,12p' | sed 's/^/    /'

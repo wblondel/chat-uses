@@ -49,7 +49,7 @@ if ((!exists)); then
 fi
 
 log "Restarting Squid"
-if in_egress test -d /run/systemd/system; then
+if wait_booted "$NAME" infra; then
 	in_egress systemctl restart squid.service
 	sleep 2
 	in_egress systemctl --no-pager --plain list-units squid.service | sed -n '1,2p' | sed 's/^/    /'

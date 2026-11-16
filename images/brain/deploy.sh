@@ -89,7 +89,7 @@ for secret in \
 done
 
 log "Restarting brain"
-if in_brain test -d /run/systemd/system; then
+if wait_booted "$NAME" infra; then
 	in_brain systemctl restart chat-brain.service
 	sleep 3
 	in_brain systemctl --no-pager --plain list-units 'chat-brain*' | sed -n '1,3p' | sed 's/^/    /'
