@@ -5,13 +5,14 @@ sends nothing that brain reads. Everything in them is already public (it is
 what the stream shows), so the feed needs no password. Messages:
 
     {"type": "hello", "log": [line...], "target": bool,     on connect
-     "panic": bool, "lockdown": bool}
+     "panic": bool, "panic_kind": str, "lockdown": bool}
     {"type": "log", ...line}                                a command, as chat sees it
     {"type": "log-state", "id": int, "state": str}          what became of it
     {"type": "pointer", "x": int, "y": int, "user": str}    who moved the pointer
     {"type": "grid"}                                        show the grid lines (!grid)
     {"type": "status", "target": bool}                      the target's input is up or down
-    {"type": "panic", "on": bool}                           cover the stream at once (PLAN.md 7.5)
+    {"type": "panic", "on": bool, "kind": str}              cover the stream at once (PLAN.md 7.5);
+                                                            kind "hold": a content hold
     {"type": "lockdown", "on": bool}                        only regulars may send commands
 
 bcast follows "panic" too (chat-bcast-panic), to mute the target's sound.
@@ -56,6 +57,7 @@ class OverlayHub:
     def __init__(self) -> None:
         self.target_online = False
         self.panic_on = False
+        self.panic_kind = "panic"
         self.lockdown_on = False
         self._clients: set[asyncio.Queue[str | None]] = set()
         self._sockets: set[web.WebSocketResponse] = set()
@@ -93,9 +95,9 @@ class OverlayHub:
         self.target_online = target_online
         self._send({"type": "status", "target": target_online})
 
-    def panic(self, on: bool) -> None:
-        self.panic_on = on
-        self._send({"type": "panic", "on": on})
+    def panic(self, on: bool, kind: str = "panic") -> None:
+        self.panic_on, self.panic_kind = on, kind
+        self._send({"type": "panic", "on": on, "kind": kind})
 
     def lockdown(self, on: bool) -> None:
         self.lockdown_on = on
@@ -132,6 +134,7 @@ class OverlayHub:
             "log": [asdict(line) for line in self._lines],
             "target": self.target_online,
             "panic": self.panic_on,
+            "panic_kind": self.panic_kind,
             "lockdown": self.lockdown_on,
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))

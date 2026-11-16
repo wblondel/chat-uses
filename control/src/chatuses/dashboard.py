@@ -18,6 +18,7 @@ other pages can't read the answers.
     GET  /api/users?q=                       find someone by name or ID
     GET  /api/commands?user=&before=&limit=  the audit: who sent what, and what became of it
     GET  /api/events?types=&before=&limit=   moderation's log (types=all: everything)
+    GET  /api/screens/<name>                 a screenshot screen OCR kept (PNG)
 
 Actions answer {"ok": bool, "text": "..."}, as Discord's slash commands do.
 `X-Moderator: <name>` (the page sends what you typed) goes in the log as
@@ -27,6 +28,7 @@ who did it; it is the moderator's word, not proven by the shared token.
 import hmac
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -44,7 +46,8 @@ log = logging.getLogger(__name__)
 PAGE_DIR = Path(__file__).parent / "admin_page"
 PAGE_FILES = {"": "index.html", "admin.js": "admin.js", "admin.css": "admin.css"}
 CONTENT_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
-MODERATION_EVENTS = ("panic", "resume", "ban", "timeout", "unban", "lockdown", "snapshot")
+MODERATION_EVENTS = ("panic", "hold", "resume", "ban", "timeout", "unban", "lockdown", "snapshot", "ocr_hit")
+SCREEN_NAME = re.compile(r"ocr-\d{8}-\d{6}\.png")
 PAGE_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
@@ -75,6 +78,7 @@ def add_routes(app: web.Application, brain: "Brain", token: str) -> None:
     app.router.add_get("/api/users", api.guard(api.users))
     app.router.add_get("/api/commands", api.guard(api.commands))
     app.router.add_get("/api/events", api.guard(api.events))
+    app.router.add_get("/api/screens/{name}", api.guard(api.screen))
 
 
 async def _redirect(_request: web.Request) -> web.StreamResponse:
@@ -165,6 +169,7 @@ class _Api:
                 "overlay_pages": brain.overlay.clients,
                 "chat": brain.adapters(),
                 "snapshots": brain.incus is not None,
+                "ocr": {"mode": brain.ocr_mode, **brain.watch.status()} if brain.watch else {"mode": "off"},
                 "status": brain.status_text(),
             }
         )
@@ -237,3 +242,10 @@ class _Api:
         return web.json_response(
             {"events": [{"id": i, "ts": ts, "type": t, **payload} for i, ts, t, payload in rows]}
         )
+
+    async def screen(self, request: web.Request) -> web.StreamResponse:
+        name = request.match_info["name"]
+        folder = self.brain.screens_dir
+        if folder is None or not SCREEN_NAME.fullmatch(name) or not (folder / name).is_file():
+            raise web.HTTPNotFound(text="no such screenshot\n")
+        return web.Response(body=(folder / name).read_bytes(), content_type="image/png")

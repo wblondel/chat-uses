@@ -20,8 +20,8 @@ class Effects:
 
     done: list[str] = field(default_factory=lambda: [])
 
-    def panic_changed(self, on: bool) -> None:
-        self.done.append(f"panic {on}")
+    def panic_changed(self, on: bool, kind: str = "panic") -> None:
+        self.done.append(f"panic {on}" if kind == "panic" else f"{kind} {on}")
 
     def lockdown_changed(self, on: bool) -> None:
         self.done.append(f"lockdown {on}")
@@ -104,11 +104,16 @@ def test_resume_and_a_panic_outlives_a_restart(store: Store) -> None:
     mod, _ = moderation(store)
     mod.panic("a", "why", now=100.0)
     again, effects = moderation(store)  # brain restarted
-    assert again.panicking and again.panic_state == {"since": 100.0, "by": "a", "reason": "why"}
+    assert again.panicking and again.panic_state == {
+        "since": 100.0,
+        "by": "a",
+        "reason": "why",
+        "kind": "panic",
+    }
     answer = again.resume("b", now=400.0)
     assert answer.ok and not again.panicking
     assert effects.done[0] == "panic False" and "after 5 minutes" in effects.done[1]
-    assert store.recent_events(("resume",))[0][3] == {"by": "b", "seconds": 300}
+    assert store.recent_events(("resume",))[0][3] == {"by": "b", "seconds": 300, "kind": "panic"}
     assert not moderation(store)[0].panicking
     assert not again.resume("c").ok  # nothing to end
 
@@ -229,3 +234,31 @@ def test_state_lists_bans(store: Store) -> None:
         {"user": "yt:a", "name": "Alice", "until": 3600.0},
     ]
     assert mod.state(now=4000.0)["banned"] == [{"user": "yt:b", "name": "", "until": None}]
+
+
+def test_a_content_hold_and_a_panic_on_top(store: Store) -> None:
+    mod, effects = moderation(store)
+    answer = mod.hold("screen OCR", ("x badword",) * 30, now=1_700_000_000.0)
+    assert answer.ok and mod.kind == "hold"
+    assert effects.done[0] == "hold True" and "**Content hold**" in effects.done[1]
+    assert effects.done[2] == "snapshot hold-20231114-221320"
+    assert mod.panic_state is not None and len(mod.panic_state["lines"]) == 20  # kept short
+    assert moderation(store)[0].kind == "hold"  # survives a restart
+    assert not mod.hold("screen OCR", ("y",)).ok
+    effects.done.clear()
+    assert "now a panic" in mod.panic("Mia", "confirmed").text
+    assert mod.kind == "panic" and effects.done[0] == "panic True"
+    assert not any(d.startswith("snapshot") for d in effects.done)
+    assert store.recent_events(("panic",))[0][3] == {"by": "Mia", "reason": "confirmed", "from_hold": True}
+    mod.resume("Mia")
+    assert mod.kind == "" and mod.last_panic is not None and mod.last_panic["kind"] == "panic"
+
+
+def test_resuming_a_hold_says_what_it_saw_is_cleared(store: Store) -> None:
+    mod, effects = moderation(store)
+    mod.hold("screen OCR", ("x",), now=0.0)
+    effects.done.clear()
+    mod.resume("Mia", now=30.0)
+    assert effects.done[0] == "hold False"
+    assert "won't hold the stream again" in effects.done[1]
+    assert store.recent_events(("resume",))[0][3]["kind"] == "hold"

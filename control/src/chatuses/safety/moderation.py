@@ -9,6 +9,9 @@ a ban, end a panic or end a lockdown.
 - **Panic** covers the stream, mutes the target and freezes input (brain's
   `Effects`), takes a forensic snapshot and alerts #mod-alerts. It lasts
   until someone resumes.
+- **A content hold** is a panic started by screen OCR (screen_ocr.py, in
+  enforce mode): the cover says "Content check". A moderator's /panic during
+  a hold turns it into a panic; /resume ends either.
 - **Bans and timeouts** are by unified ID (`yt:…`, `dc:…`), or by the name
   the overlay showed, for anyone who sent a command recently. Moderators and
   the owner can't be banned this way.
@@ -82,7 +85,8 @@ class Answer:
 class Effects(Protocol):
     """What moderation needs from brain."""
 
-    def panic_changed(self, on: bool) -> None: ...  # cover and mute the stream, freeze input (or undo)
+    # Cover and mute the stream, freeze input (or undo); kind: "panic" or "hold".
+    def panic_changed(self, on: bool, kind: str = "panic") -> None: ...
     def lockdown_changed(self, on: bool) -> None: ...  # the overlay says so
     def alert(self, text: str) -> None: ...  # a post in #mod-alerts
     def snapshot(self, name: str) -> None: ...  # a forensic snapshot of the target, in the background
@@ -102,6 +106,7 @@ class Moderation:
         self.safe_name = safe_name
         self.panic_state: dict[str, Any] | None = self._load("panic")
         self.lockdown_state: dict[str, Any] | None = self._load("lockdown")
+        self.last_panic: dict[str, Any] | None = None  # the one resume just ended
 
     def _load(self, key: str) -> dict[str, Any] | None:
         raw = self.store.setting(key)
@@ -128,27 +133,56 @@ class Moderation:
 
     # --- panic -----------------------------------------------------------------
 
+    @property
+    def kind(self) -> str:
+        """What covers the stream: "panic", "hold", or "" for nothing."""
+        return str(self.panic_state.get("kind", "panic")) if self.panic_state is not None else ""
+
     def panic(self, by: str, reason: str = "", now: float | None = None) -> Answer:
         now = time.time() if now is None else now
         self.effects.panic_changed(True)  # first: the stream is covered before anything else happens
+        reason = reason.strip()[:200]
+        if self.panic_state is not None and self.kind == "hold":  # a moderator confirms: it's a panic
+            self.panic_state = {**self.panic_state, "kind": "panic", "by": by, "reason": reason}
+            self._save("panic", self.panic_state)
+            self.store.event(now, "panic", {"by": by, "reason": reason, "from_hold": True})
+            self.effects.alert(
+                f"🚨 **Panic** by {by}{f': {reason}' if reason else ''}, after the content hold."
+            )
+            return Answer(True, "The content hold is now a panic. /resume to end it.")
         if self.panic_state is not None:
             since = self.panic_state.get("since", 0.0)
             return Answer(
                 True, f"Panic was already on (since {clock(since)}, by {self.panic_state.get('by')})."
             )
-        reason = reason.strip()[:200]
-        self.panic_state = {"since": now, "by": by, "reason": reason}
+        self.panic_state = {"since": now, "by": by, "reason": reason, "kind": "panic"}
         self._save("panic", self.panic_state)
         self.store.event(now, "panic", {"by": by, "reason": reason})
         self.effects.alert(
             f"🚨 **Panic** by {by}{f': {reason}' if reason else ''}. "
             "The stream is covered, the target's sound muted, input frozen. `/resume` when it's safe."
         )
-        name = "panic-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now))
-        self.effects.snapshot(name)
+        self.effects.snapshot("panic-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)))
         return Answer(
             True, "Panic on: the stream is covered, the sound muted, input frozen. /resume to end it."
         )
+
+    def hold(self, by: str, lines: tuple[str, ...], now: float | None = None) -> Answer:
+        """A content hold: screen OCR saw a listed word (enforce mode)."""
+        now = time.time() if now is None else now
+        if self.panic_state is not None:
+            return Answer(False, "The stream is already covered.")
+        self.effects.panic_changed(True, "hold")
+        kept = [line[:200] for line in lines[:20]]
+        self.panic_state = {"since": now, "by": by, "reason": "content check", "kind": "hold", "lines": kept}
+        self._save("panic", self.panic_state)
+        self.store.event(now, "hold", {"by": by, "lines": kept})
+        self.effects.alert(
+            f'🛑 **Content hold** by {by}: the stream says "Content check", the sound is muted, '
+            "input frozen. `/resume` if what's on screen is fine, `/panic` if it isn't."
+        )
+        self.effects.snapshot("hold-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)))
+        return Answer(True, "Content hold on.")
 
     def resume(self, by: str, now: float | None = None) -> Answer:
         now = time.time() if now is None else now
@@ -156,11 +190,15 @@ class Moderation:
             self.effects.panic_changed(False)  # make sure: nothing should be covered
             return Answer(False, "There's no panic to end.")
         lasted = now - float(self.panic_state.get("since", now))
-        self.panic_state = None
+        kind = self.kind
+        self.last_panic, self.panic_state = self.panic_state, None
         self._save("panic", None)
-        self.store.event(now, "resume", {"by": by, "seconds": round(lasted)})
-        self.effects.panic_changed(False)
-        self.effects.alert(f"✅ **Resumed** by {by} after {_minutes(lasted)}.")
+        self.store.event(now, "resume", {"by": by, "seconds": round(lasted), "kind": kind})
+        self.effects.panic_changed(False, kind)
+        cleared = (
+            " What it saw won't hold the stream again while it stays on screen." if kind == "hold" else ""
+        )
+        self.effects.alert(f"✅ **Resumed** by {by} after {_minutes(lasted)}.{cleared}")
         return Answer(True, "Resumed: the stream is live and chat has control again.")
 
     # --- bans and timeouts ---------------------------------------------------------

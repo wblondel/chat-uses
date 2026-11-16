@@ -158,14 +158,42 @@ function eventDetails(e) {
   let text = parts.join(" ");
   if (e.reason) text += `: ${e.reason}`;
   if (e.error) text += `: ${e.error}`;
+  if (e.mode) text += `${text ? " " : ""}(${e.mode})`;
   return text;
+}
+
+// What screen OCR saw holds a slur: blurred until hovered, and the screenshot on demand.
+function seenOnScreen(e) {
+  const cell = el("span");
+  const lines = e.found || e.lines || [];
+  if (lines.length) cell.append(el("span", lines.join(" · "), "spoiler"));
+  if (e.screenshot) {
+    const link = el("a", "screenshot");
+    link.href = "#";
+    link.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      try {
+        const res = await fetch(`/api/screens/${encodeURIComponent(e.screenshot)}`, {
+          headers: { Authorization: `Bearer ${stored(TOKEN)}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        window.open(URL.createObjectURL(await res.blob()), "_blank", "noopener");
+      } catch (err) {
+        toast(`Screenshot: ${err.message}`, false);
+      }
+    });
+    cell.append(" ", link);
+  }
+  return cell;
 }
 
 async function loadEvents() {
   const { events } = await api("/api/events?limit=50");
   $("events").tBodies[0].replaceChildren(...events.map((e) => {
     const tr = el("tr", null, `event-${e.type}`);
-    tr.append(el("td", when(e.ts)), el("td", e.type), el("td", eventDetails(e)));
+    const details = el("td", eventDetails(e));
+    if (e.type === "ocr_hit" || e.type === "hold") details.append(" ", seenOnScreen(e));
+    tr.append(el("td", when(e.ts)), el("td", e.type), details);
     return tr;
   }));
 }

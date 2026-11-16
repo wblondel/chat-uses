@@ -34,6 +34,13 @@ class FakeVnc:
     height: int = 900
     script: bytes | None = None  # hostile: send exactly this, then only listen
     after_init: bytes = b""  # sent after a good handshake
+    # Screen reads: what to answer a FramebufferUpdateRequest with. None: the
+    # whole screen as one raw rectangle of `fill` (4 bytes a pixel, as asked).
+    update: bytes | None = None
+    fill: bytes = b"\x10\x20\x30\x00"
+    requests: list[tuple[int, int, int, int, int]] = field(default_factory=lambda: [])
+    pixel_format: bytes = b""
+    encodings: list[int] = field(default_factory=lambda: [])
     events: list[Key | Pointer] = field(default_factory=lambda: [])
     client_replies: list[bytes] = field(default_factory=lambda: [])  # version, security, shared flag
     unknown: list[int] = field(default_factory=lambda: [])  # message types we didn't expect
@@ -97,7 +104,7 @@ class FakeVnc:
             self.client_replies.append(await reader.readexactly(1))  # ClientInit
             writer.write(server_init(self.width, self.height) + self.after_init)
             await writer.drain()
-            await self._read_input(reader)
+            await self._read_input(reader, writer)
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
@@ -107,10 +114,23 @@ class FakeVnc:
             with contextlib.suppress(ConnectionError):
                 await writer.wait_closed()
 
-    async def _read_input(self, reader: asyncio.StreamReader) -> None:
+    def screen_update(self) -> bytes:
+        rect = struct.pack(">HHHHi", 0, 0, self.width, self.height, 0)
+        return b"\x00\x00" + struct.pack(">H", 1) + rect + self.fill * (self.width * self.height)
+
+    async def _read_input(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         while True:
             (kind,) = await reader.readexactly(1)
-            if kind == 4:
+            if kind == 0:  # SetPixelFormat
+                self.pixel_format = (await reader.readexactly(19))[3:]
+            elif kind == 2:  # SetEncodings
+                (count,) = struct.unpack(">xH", await reader.readexactly(3))
+                self.encodings = list(struct.unpack(f">{count}i", await reader.readexactly(4 * count)))
+            elif kind == 3:  # FramebufferUpdateRequest
+                self.requests.append(struct.unpack(">BHHHH", await reader.readexactly(9)))
+                writer.write(self.update if self.update is not None else self.screen_update())
+                await writer.drain()
+            elif kind == 4:
                 down, keysym = struct.unpack(">BxxI", await reader.readexactly(7))
                 self.events.append(("key", bool(down), keysym))
             elif kind == 5:

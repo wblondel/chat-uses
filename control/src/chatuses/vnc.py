@@ -4,7 +4,8 @@ The VNC server runs inside the target, where chat is root, so it is treated
 as hostile (PLAN.md 5.4): every step has a timeout, every length the server
 sends is capped, and after the handshake nothing it sends is parsed, only
 read and thrown away (which also notices a disconnect). The client never
-asks for screen updates. It joins as a shared client, so bcast's view stays
+asks for screen updates: screen.py reads the screen, on a connection of its
+own. It joins as a shared client, so bcast's view stays
 connected.
 
 Security type "None" only: VNC is reachable only from brain, bcast and the
@@ -31,6 +32,41 @@ SCROLL_GAP = 0.03  # seconds between wheel notches
 
 class VncError(Exception):
     """The server broke the protocol, refused us, or went away."""
+
+
+async def _reason(reader: asyncio.StreamReader) -> str:
+    (length,) = struct.unpack(">I", await reader.readexactly(4))
+    if length > MAX_REASON:
+        return "(reason too long)"
+    return (await reader.readexactly(length)).decode("utf-8", "replace")[:200]
+
+
+async def handshake(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> tuple[int, int, str]:
+    """RFB 3.8, security None, shared: the screen's width, height and name."""
+    version = await reader.readexactly(12)
+    if version != b"RFB 003.008\n":
+        raise VncError("server doesn't speak RFB 3.8")
+    writer.write(b"RFB 003.008\n")
+    (count,) = await reader.readexactly(1)
+    if count == 0:
+        raise VncError(f"server refused: {await _reason(reader)}")
+    types = await reader.readexactly(count)
+    if 1 not in types:
+        raise VncError("server wants authentication (security type None not offered)")
+    writer.write(b"\x01")
+    (result,) = struct.unpack(">I", await reader.readexactly(4))
+    if result != 0:
+        raise VncError(f"server refused: {await _reason(reader)}")
+    writer.write(b"\x01")  # ClientInit: shared
+    width, height = struct.unpack(">HH", await reader.readexactly(4))
+    await reader.readexactly(16)  # the server's pixel format
+    (name_len,) = struct.unpack(">I", await reader.readexactly(4))
+    if name_len > MAX_NAME:
+        raise VncError("desktop name too long")
+    name = (await reader.readexactly(name_len)).decode("utf-8", "replace")
+    if not (width and height):
+        raise VncError("server reports an empty screen")
+    return width, height, name
 
 
 class VncInput:
@@ -82,38 +118,8 @@ class VncInput:
         self._reader = self._writer = None
 
     async def _handshake(self) -> None:
-        reader, writer = self._reader, self._writer
-        assert reader and writer
-        version = await reader.readexactly(12)
-        if version != b"RFB 003.008\n":
-            raise VncError("server doesn't speak RFB 3.8")
-        writer.write(b"RFB 003.008\n")
-        (count,) = await reader.readexactly(1)
-        if count == 0:
-            raise VncError(f"server refused: {await self._reason()}")
-        types = await reader.readexactly(count)
-        if 1 not in types:
-            raise VncError("server wants authentication (security type None not offered)")
-        writer.write(b"\x01")
-        (result,) = struct.unpack(">I", await reader.readexactly(4))
-        if result != 0:
-            raise VncError(f"server refused: {await self._reason()}")
-        writer.write(b"\x01")  # ClientInit: shared
-        self.width, self.height = struct.unpack(">HH", await reader.readexactly(4))
-        await reader.readexactly(16)  # pixel format: unused, nothing is drawn
-        (name_len,) = struct.unpack(">I", await reader.readexactly(4))
-        if name_len > MAX_NAME:
-            raise VncError("desktop name too long")
-        self.name = (await reader.readexactly(name_len)).decode("utf-8", "replace")
-        if not (self.width and self.height):
-            raise VncError("server reports an empty screen")
-
-    async def _reason(self) -> str:
-        assert self._reader
-        (length,) = struct.unpack(">I", await self._reader.readexactly(4))
-        if length > MAX_REASON:
-            return "(reason too long)"
-        return (await self._reader.readexactly(length)).decode("utf-8", "replace")[:200]
+        assert self._reader and self._writer
+        self.width, self.height, self.name = await handshake(self._reader, self._writer)
 
     async def release(self) -> None:
         """Let go of every key and button held down (a command was stopped half-way)."""

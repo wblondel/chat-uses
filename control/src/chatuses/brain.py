@@ -21,6 +21,9 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
                              off without it or without the certificates (INCUS_*)
     TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
     ADMIN_TOKEN_FILE         the admin dashboard's and API's token; both are off without it
+    OCR_MODE                 screen OCR: shadow (report only, the default), enforce (hold), off
+    OCR_INTERVAL, OCR_LANGS  seconds between reads (5); tesseract's languages (eng+ara)
+    SCREENS_DIR              where OCR hits' screenshots are kept (/var/lib/chat-brain/screens)
 
 Which YouTube video's chat to read is set with chat-brain-admin, and kept in
 the store across restarts. Moderation (panic, bans, lockdown) is
@@ -31,6 +34,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
 import signal
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -51,6 +55,7 @@ from chatuses.incus import Incus, IncusError
 from chatuses.overlay import OverlayHub
 from chatuses.pipeline import ChatMessage, Pipeline
 from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
+from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
 from chatuses.store import Store, to_json
@@ -62,6 +67,8 @@ REFUSAL_GAP = 10.0  # seconds: at most one refusal per user on stream in this ti
 BUSY = "the machine isn't taking input right now"
 PLATFORM_NAMES = {"youtube": "YouTube", "discord": "Discord"}
 CHAT_PLATFORMS = {"yt": "YouTube", "dc": "Discord", "console": "console"}
+OCR_MODES = ("shadow", "enforce", "off")
+KEEP_SCREENS = 200  # OCR hits' screenshots kept on disk
 SECRETS = "/etc/chat-uses/secrets"
 ADMIN_USAGE = (
     "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off\n"
@@ -90,6 +97,10 @@ class Config:
     incus_server_cert: str = f"{SECRETS}/incus-server.crt"
     target_instance: str = ""
     admin_token_file: str = f"{SECRETS}/admin-token"
+    ocr_mode: str = "shadow"
+    ocr_interval: float = 5.0
+    ocr_langs: str = "eng+ara"
+    screens_dir: str = "/var/lib/chat-brain/screens"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -99,6 +110,9 @@ class Config:
         guild = env.get("DISCORD_GUILD_ID", "").strip()
         if guild and not guild.isdigit():
             raise SystemExit("DISCORD_GUILD_ID must be the server's numeric ID")
+        ocr_mode = env.get("OCR_MODE", "").strip() or cls.ocr_mode
+        if ocr_mode not in OCR_MODES:
+            raise SystemExit(f"OCR_MODE must be one of {', '.join(OCR_MODES)}")
         return cls(
             target_host=target,
             vnc_port=int(env.get("VNC_PORT", cls.vnc_port)),
@@ -118,6 +132,10 @@ class Config:
             incus_server_cert=env.get("INCUS_SERVER_CERT", cls.incus_server_cert),
             target_instance=env.get("TARGET_INSTANCE", cls.target_instance),
             admin_token_file=env.get("ADMIN_TOKEN_FILE", cls.admin_token_file),
+            ocr_mode=ocr_mode,
+            ocr_interval=max(1.0, float(env.get("OCR_INTERVAL", "") or cls.ocr_interval)),
+            ocr_langs=env.get("OCR_LANGS", "").strip() or cls.ocr_langs,
+            screens_dir=env.get("SCREENS_DIR", "") or cls.screens_dir,
         )
 
     def incus(self) -> tuple[Incus | None, str]:
@@ -179,8 +197,11 @@ class Brain:
         self._background: set[asyncio.Task[None]] = set()
         self.youtube: YouTubeChat | None = None
         self.discord: DiscordChat | None = None
+        self.watch: ScreenWatch | None = None  # screen OCR (start_ocr)
+        self.ocr_mode = "off"
+        self.screens_dir: Path | None = None
         if self.moderation.panicking:  # a panic outlives a restart
-            self.panic_changed(True)
+            self.panic_changed(True, self.moderation.kind)
         if self.moderation.locked:
             self.overlay.lockdown(True)
 
@@ -231,20 +252,23 @@ class Brain:
 
     # --- what moderation does to the stream (safety/moderation.Effects) --------------
 
-    def panic_changed(self, on: bool) -> None:
-        self.overlay.panic(on)  # the page covers the screen, bcast mutes the target
+    def panic_changed(self, on: bool, kind: str = "panic") -> None:
+        self.overlay.panic(on, kind)  # the page covers the screen, bcast mutes the target
         if on:
             self.executor.freeze()
-        else:
-            self.executor.thaw()
+            return
+        self.executor.thaw()
+        ended = self.moderation.last_panic or {}
+        if kind == "hold" and self.watch:  # a moderator said what OCR saw is fine
+            self.watch.clear(ended.get("lines") or [])
 
     def lockdown_changed(self, on: bool) -> None:
         self.overlay.lockdown(on)
 
-    def alert(self, text: str) -> None:
+    def alert(self, text: str, image: bytes | None = None) -> None:
         log.warning("moderation: %s", text)
         if self.discord:
-            self.discord.alert(text)
+            self.discord.alert(text, image)
 
     def snapshot(self, name: str) -> None:
         if self.incus is None:
@@ -269,6 +293,55 @@ class Brain:
             time.time(), "snapshot", {"name": name, "instance": instance, "result": "ok", "ms": ms}
         )
         self.alert(f"📸 Forensic snapshot `{instance}/{name}` taken (kept private: chat can't rewind to it).")
+
+    # --- screen OCR (safety/screen_ocr.py) --------------------------------------------
+
+    def start_ocr(self, config: Config) -> None:
+        if config.ocr_mode == "off":
+            log.info("screen OCR off (OCR_MODE=off)")
+            return
+        if not shutil.which("tesseract"):
+            log.error("screen OCR off: tesseract isn't installed")
+            return
+        self.ocr_mode = config.ocr_mode
+        self.screens_dir = Path(config.screens_dir)
+        langs = config.ocr_langs
+        self.watch = ScreenWatch(
+            connect=lambda: read_screen(config.target_host, config.vnc_port),
+            ocr=lambda frame: tesseract(frame, langs),
+            matches=lambda text: bool(self.filter.lists.count(text)),
+            on_hit=self.ocr_hit,
+            paused=lambda: self.moderation.panicking,
+            interval=config.ocr_interval,
+        )
+        log.info("screen OCR: %s mode, every %.0f s (%s)", self.ocr_mode, config.ocr_interval, langs)
+
+    def ocr_hit(self, hit: Hit) -> None:
+        """Screen OCR saw a listed word: report it (shadow), or hold the stream (enforce)."""
+        shot = self._keep_screenshot(hit)
+        enforce = self.ocr_mode == "enforce"
+        self.store.event(
+            hit.ts, "ocr_hit", {"mode": self.ocr_mode, "found": list(hit.found), "screenshot": shot}
+        )
+        if enforce:
+            self.moderation.hold("screen OCR", hit.lines, now=hit.ts)
+        seen = "\n".join(f"||{line[:300]}||" for line in hit.found[:5])
+        what = "held the stream" if enforce else "shadow mode, nothing was done on stream"
+        self.alert(f"👁️ Screen OCR saw a listed word ({what}):\n{seen}", hit.frame.png())
+
+    def _keep_screenshot(self, hit: Hit) -> str | None:
+        if self.screens_dir is None:
+            return None
+        name = "ocr-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(hit.ts)) + ".png"
+        try:
+            self.screens_dir.mkdir(parents=True, exist_ok=True)
+            (self.screens_dir / name).write_bytes(hit.frame.png())
+            for old in sorted(self.screens_dir.glob("ocr-*.png"))[:-KEEP_SCREENS]:
+                old.unlink()
+        except OSError as err:
+            log.error("screen OCR: can't keep the screenshot: %s", err)
+            return None
+        return name
 
     def _may_show_refusal(self, msg: ChatMessage) -> bool:
         last = self._last_refusal.get(msg.user_id)
@@ -349,11 +422,19 @@ class Brain:
             machine = "input frozen by the panic"
         lines = [f"Machine: {machine} ({self.executor.queue.qsize()} waiting)"]
         if panic := self.moderation.panic_state:
+            what = "CONTENT HOLD" if self.moderation.kind == "hold" else "PANIC"
             lines.append(
-                f"PANIC since {_clock(panic.get('since', 0))}, by {panic.get('by')}: /resume ends it"
+                f"{what} since {_clock(panic.get('since', 0))}, by {panic.get('by')}: /resume ends it"
             )
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
+        if self.watch is None:
+            lines.append("Screen OCR: off")
+        else:
+            ocr = self.watch.status()
+            last = f", last read {_clock(ocr['last_read'])} in {ocr['last_ms']} ms" if ocr["reads"] else ""
+            error = f", last error: {ocr['last_error']}" if ocr["last_error"] else ""
+            lines.append(f"Screen OCR: {self.ocr_mode}, {ocr['state']}, {ocr['hits']} hits{last}{error}")
         for name, status in self.adapters().items():
             errors: list[str] = status.get("recent_errors") or []
             reason = status.get("reason") or (f"last error: {errors[-1]}" if errors else "")
@@ -427,6 +508,7 @@ class Brain:
                     "target": self.executor.online.is_set(),
                     "overlay_pages": self.overlay.clients,
                     "chat": self.adapters(),
+                    "ocr": {"mode": self.ocr_mode, **self.watch.status()} if self.watch else {"mode": "off"},
                 }
             )
 
@@ -453,6 +535,11 @@ class Brain:
         console_server = await console.serve(Path(config.console), self.console_message, self.admin)
         executor = asyncio.create_task(self.executor.run())
         self.start_adapters(config)
+        self.start_ocr(config)
+        if self.watch:
+            watch = asyncio.create_task(self.watch.run())
+            self._background.add(watch)
+            watch.add_done_callback(self._background.discard)
         log.info(
             "up: overlay feed on %s:%d, target %s:%d",
             config.bind,

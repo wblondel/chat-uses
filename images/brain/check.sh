@@ -142,6 +142,31 @@ while IFS='|' read -r kind text; do
 	esac
 done <<<"$verdicts"
 
+log "Screen OCR"
+ocr_verdict() {
+	python3 -c '
+import json, sys
+o = json.loads(sys.argv[1] or "{}").get("ocr", {})
+if o.get("mode", "off") == "off":
+    print("INFO|screen OCR is off (OCR_MODE=off, or no tesseract: see the log)")
+elif o.get("reads"):
+    print("PASS|screen OCR (%s): reading the screen, %s ms a read, %s hits so far" % (o["mode"], o["last_ms"], o["hits"]))
+else:
+    print("WAIT|screen OCR (%s) has not read the screen: %s, %s" % (o["mode"], o.get("state"), o.get("last_error") or "no read yet"))
+' "$(health)"
+}
+# The first read comes OCR_INTERVAL seconds after brain connects.
+for _ in $(seq 1 15); do
+	ocr=$(ocr_verdict)
+	[[ $ocr != WAIT* ]] && break
+	sleep 1
+done
+case $ocr in
+PASS*) pass "${ocr#*|}" ;;
+INFO*) info "${ocr#*|}" ;;
+*) fail "${ocr#*|}" ;;
+esac
+
 log "Moderation"
 api() { # PATH [TOKEN]: the admin API's HTTP status, then its body
 	python3 - "http://$BRAIN_IP:$BRAIN_PORT$1" "${2:-}" <<'PY'

@@ -2,6 +2,7 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from aiohttp import test_utils
@@ -148,5 +149,27 @@ def test_the_audit_and_the_moderation_log() -> None:
             found = await (await client.get("/api/users?q=ALI", headers=AUTH)).json()
             assert [u["id"] for u in found["users"]] == ["console:alice"]
             assert found["users"][0]["shown_as"] == "alice" and found["users"][0]["banned"] is False
+
+    run(test)
+
+
+def test_screenshots_need_the_token_and_a_proper_name(tmp_path: Path) -> None:
+    async def test() -> None:
+        async with dashboard() as (brain, client):
+            assert (await client.get("/api/screens/ocr-20261116-101010.png", headers=AUTH)).status == 404
+            brain.screens_dir = tmp_path
+            (tmp_path / "ocr-20261116-101010.png").write_bytes(b"\x89PNG fake")
+            (tmp_path / "secret.txt").write_text("no")
+            assert (await client.get("/api/screens/ocr-20261116-101010.png")).status == 401
+            resp = await client.get("/api/screens/ocr-20261116-101010.png", headers=AUTH)
+            assert resp.status == 200 and resp.content_type == "image/png"
+            assert await resp.read() == b"\x89PNG fake"
+            for bad in ["secret.txt", "..%2Fsecret.txt", "ocr-1.png", "ocr-20261116-101011.png"]:
+                assert (await client.get(f"/api/screens/{bad}", headers=AUTH)).status == 404, bad
+            brain.store.event(1.0, "ocr_hit", {"mode": "shadow", "found": ["x"], "screenshot": "ocr-x.png"})
+            events = (await (await client.get("/api/events", headers=AUTH)).json())["events"]
+            assert events[0]["type"] == "ocr_hit"
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert state["ocr"] == {"mode": "off"}
 
     run(test)

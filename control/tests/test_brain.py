@@ -5,7 +5,8 @@ import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import aiohttp
 import discord
@@ -21,7 +22,9 @@ from chatuses.brain import Brain, Config
 from chatuses.executor import connect_to
 from chatuses.incus import Incus, IncusError
 from chatuses.pipeline import PAUSED, ChatMessage
+from chatuses.safety.screen_ocr import Hit
 from chatuses.safety.textfilter import HATE, LISTS
+from chatuses.screen import Frame
 from chatuses.store import Store
 
 
@@ -499,7 +502,7 @@ def test_panic_covers_the_stream_freezes_input_and_resume_lifts_it() -> None:
             brain.discord = quiet_discord()
             answer = brain.moderation.panic("Mia (dc:1) on Discord", "nsfw")
             assert answer.ok
-            assert await feed.next() == {"type": "panic", "on": True}  # the first thing on the feed
+            assert await feed.next() == {"type": "panic", "on": True, "kind": "panic"}  # the first thing
             assert brain.executor.frozen
             assert await brain.console_message("alice", "!enter") == ("paused", PAUSED)
             await brain.console_message("bob", "!click A1")  # paused input stays off the overlay
@@ -513,7 +516,7 @@ def test_panic_covers_the_stream_freezes_input_and_resume_lifts_it() -> None:
             assert "PANIC since" in brain.status_text()
             assert "Machine: input frozen by the panic" in brain.status_text()
             assert brain.moderation.resume("Mia").ok
-            assert await feed.next("panic") == {"type": "panic", "on": False}
+            assert await feed.next("panic") == {"type": "panic", "on": False, "kind": "panic"}
             assert await brain.console_message("alice", "!enter") == ("accepted", None)
             assert (await feed.next("log-state"))["state"] == "done"
         await server.stop()
@@ -645,3 +648,110 @@ def test_incus_settings(tmp_path: Path) -> None:
         path.write_text("not a certificate")
     incus, why = Config.from_env(env).incus()
     assert incus is None and why.startswith("can't load the certificates")
+
+
+# --- screen OCR (Phase 5 step 4) -------------------------------------------------
+
+
+def ocr_hit(found: tuple[str, ...] = ("x badword",)) -> Hit:
+    return Hit(1_700_000_000.0, found, found, Frame(2, 1, b"\x10\x20\x30\x00" * 2))
+
+
+def test_an_ocr_hit_in_shadow_mode_is_only_reported(tmp_path: Path) -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.discord = quiet_discord()
+            brain.ocr_mode, brain.screens_dir = "shadow", tmp_path / "screens"
+            brain.ocr_hit(ocr_hit())
+            [event] = brain.store.recent_events(("ocr_hit",))
+            assert event[3] == {
+                "mode": "shadow",
+                "found": ["x badword"],
+                "screenshot": "ocr-20231114-221320.png",
+            }
+            assert (tmp_path / "screens" / "ocr-20231114-221320.png").read_bytes().startswith(b"\x89PNG")
+            [alert] = brain.discord.pending_alerts()
+            assert "shadow mode, nothing was done on stream" in alert and "||x badword||" in alert
+            assert brain.discord._alerts[0][1] is not None  # pyright: ignore[reportPrivateUsage]  # the screenshot
+            assert not brain.moderation.panicking and not brain.executor.frozen
+            await brain.console_message("alice", "!grid")
+            assert (await feed.next("log"))["text"] == "!grid"  # the feed carried no panic
+
+    run(test)
+
+
+def test_an_ocr_hit_in_enforce_mode_holds_until_a_moderator_resumes(tmp_path: Path) -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.discord = quiet_discord()
+            brain.ocr_mode, brain.screens_dir = "enforce", tmp_path
+            cleared: list[str] = []
+            brain.watch = cast(
+                Any,
+                SimpleNamespace(
+                    clear=cleared.extend,
+                    status=lambda: {"state": "reading", "reads": 0, "hits": 1, "last_error": ""},
+                ),
+            )
+            brain.ocr_hit(ocr_hit(("x badword", "more")))
+            assert await feed.next("panic") == {"type": "panic", "on": True, "kind": "hold"}
+            assert brain.moderation.kind == "hold" and brain.executor.frozen
+            assert "CONTENT HOLD since" in brain.status_text()
+            assert brain.store.recent_events(("hold",))[0][3]["lines"] == ["x badword", "more"]
+            assert brain.store.recent_events(("snapshot",))[0][3]["name"].startswith("hold-")
+            alerts = brain.discord.pending_alerts()
+            assert any("**Content hold** by screen OCR" in a for a in alerts)
+            assert any("held the stream" in a for a in alerts)
+            assert not brain.moderation.hold("screen OCR", ("again",)).ok  # one at a time
+            assert brain.moderation.resume("Mia").ok
+            assert await feed.next("panic") == {"type": "panic", "on": False, "kind": "hold"}
+            assert cleared == ["x badword", "more"]  # what it saw is fine now
+            assert not brain.executor.frozen
+
+    run(test)
+
+
+def test_a_panic_during_a_hold_becomes_a_panic() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.moderation.hold("screen OCR", ("x",))
+            await feed.next("panic")
+            answer = brain.moderation.panic("Mia", "it's bad")
+            assert answer.ok and "now a panic" in answer.text
+            assert await feed.next("panic") == {"type": "panic", "on": True, "kind": "panic"}
+            assert brain.moderation.kind == "panic"
+            assert len(brain.store.recent_events(("snapshot",))) == 1  # the hold's snapshot is enough
+            assert not brain.moderation.hold("screen OCR", ("y",)).ok  # already covered
+            async with test_utils.TestClient(test_utils.TestServer(brain.web_app())) as client:
+                ws = await client.ws_connect("/ws/overlay")
+                hello = await Feed(ws).next("hello")
+                assert hello["panic"] is True and hello["panic_kind"] == "panic"
+                await ws.close()
+
+    run(test)
+
+
+def test_ocr_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = Config.from_env({"TARGET_HOST": "x"})
+    assert (config.ocr_mode, config.ocr_interval, config.ocr_langs) == ("shadow", 5.0, "eng+ara")
+    config = Config.from_env(
+        {"TARGET_HOST": "x", "OCR_MODE": "enforce", "OCR_INTERVAL": "0.1", "OCR_LANGS": "eng+ara"}
+    )
+    assert (config.ocr_mode, config.ocr_interval, config.ocr_langs) == ("enforce", 1.0, "eng+ara")
+    with pytest.raises(SystemExit, match="OCR_MODE"):
+        Config.from_env({"TARGET_HOST": "x", "OCR_MODE": "loud"})
+    with Store(":memory:") as store:
+        brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+        brain.start_ocr(Config.from_env({"TARGET_HOST": "x", "OCR_MODE": "off"}))
+        assert brain.watch is None and "Screen OCR: off" in brain.status_text()
+
+        def which(found: str | None) -> Callable[[str], str | None]:
+            return lambda _name: found
+
+        monkeypatch.setattr(brain_module.shutil, "which", which(None))
+        brain.start_ocr(Config.from_env({"TARGET_HOST": "x"}))
+        assert brain.watch is None  # no tesseract
+        monkeypatch.setattr(brain_module.shutil, "which", which("/usr/bin/tesseract"))
+        brain.start_ocr(Config.from_env({"TARGET_HOST": "x", "SCREENS_DIR": str(tmp_path)}))
+        assert brain.watch is not None and brain.ocr_mode == "shadow" and brain.screens_dir == tmp_path
+        assert "Screen OCR: shadow, starting, 0 hits" in brain.status_text()

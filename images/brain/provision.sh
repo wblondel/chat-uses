@@ -19,7 +19,9 @@ export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
-PACKAGES=(python3 python3-venv ca-certificates tzdata procps systemd)
+PACKAGES=(python3 python3-venv ca-certificates tzdata procps systemd
+	# Screen OCR (PLAN.md 7.4): the word lists' languages.
+	tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra tesseract-ocr-spa tesseract-ocr-ita tesseract-ocr-ara)
 
 proxy=()
 if [[ -n ${BUILD_PROXY:-} ]]; then
@@ -56,8 +58,9 @@ log "Copying the chat-uses files"
 cp -a "$STAGE/rootfs/." /
 find /usr/lib/chat-brain -name __pycache__ -prune -exec rm -rf {} +
 "$VENV/bin/python" -m compileall -q /usr/lib/chat-brain/chatuses
-# Smoke test: the code imports with the installed dependencies.
+# Smoke test: the code imports with the installed dependencies, tesseract runs.
 PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'import chatuses.brain, chatuses.console, chatuses.admin'
+tesseract --list-langs 2>/dev/null | sed -n '2,$p' | tr '\n' ' ' | sed 's/^/    tesseract languages: /; s/$/\n/'
 
 log "Services"
 systemctl enable chat-brain.service >/dev/null 2>&1
