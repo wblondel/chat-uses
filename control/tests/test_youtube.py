@@ -536,3 +536,29 @@ def test_a_google_server_error_is_retried() -> None:
         await fake.stop()
 
     run(test)
+
+
+def test_viewers_are_asked_of_youtube_while_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
+    watching = (
+        200,
+        {"items": [{"liveStreamingDetails": {"activeLiveChatId": "chat-1", "concurrentViewers": "42"}}]},
+    )
+    hidden = (200, {"items": [{"liveStreamingDetails": {"activeLiveChatId": "chat-1"}}]})
+
+    async def test() -> None:
+        fake = await FakeYouTube([Session(hang=True)]).start()
+        seen: list[dict[str, str]] = []
+        async with test_utils.TestServer(videos_api([watching, watching, hidden], seen)) as api:
+            chat = adapter(fake, str(api.make_url("")).rstrip("/"), [])
+            assert await chat.viewers() is None  # no video followed: YouTube isn't asked
+            chat.follow(VIDEO)
+            await until(lambda: chat.state == "streaming")
+            assert await chat.viewers() == 42
+            assert await chat.viewers() is None  # the channel hides its count
+            assert len(seen) == 3 and chat.status()["quota_used_today"] == 1 + 5 + 1 + 1
+            monkeypatch.setattr(youtube, "QUOTA_STOP", 8)
+            assert await chat.viewers() is None and len(seen) == 3  # no quota left for it
+            await chat.close()
+        await fake.stop()
+
+    run(test)

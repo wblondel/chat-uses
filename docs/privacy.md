@@ -28,6 +28,9 @@ server's `#control` channel.
   the moderation log (panics, lockdowns).
 - **Screenshots of the stream's computer** when its text matched our list of
   slurs (screen OCR), for moderators to check.
+- **Session statistics:** for each stream session, counts only (how many
+  watched, how many were active in chat, how many commands and votes),
+  never who. These are kept after the 90 days.
 
 We don't collect anything the platforms don't already show in chat: no
 email, no IP address, no payment data.

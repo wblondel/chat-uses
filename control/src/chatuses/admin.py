@@ -27,6 +27,14 @@ Rulesets and laws (PLAN.md 6.12, rulesets/):
     chat-brain-admin laws                       laws changed over the ruleset's
     chat-brain-admin law NAME VALUE|default     change a law (within its bounds), or put it back
 
+Sessions (PLAN.md Phase 7): infra/host/session.py runs these and adds the
+encoder and CPU; the report is posted in #ops and kept (counts only).
+
+    chat-brain-admin session                    the session running, if any
+    chat-brain-admin session start NAME         brain notes viewers and chat every minute
+    chat-brain-admin session end                the report: viewers, chat, commands, votes, panics, holds
+    chat-brain-admin sessions                   the last 10 sessions
+
 Privacy (PLAN.md 11, docs/privacy.md): commands and logs are deleted after 90 days.
 
     chat-brain-admin forget WHO                 a deletion request: their commands and log entries

@@ -255,6 +255,30 @@ class YouTubeChat:
             "recent_errors": list(c.errors),
         }
 
+    async def viewers(self) -> int | None:
+        """How many watch the followed video now (videos.list, 1 unit): None if not known."""
+        if self.video_id is None or self.state != "streaming":
+            return None
+        try:
+            self.quota.spend(COST_VIDEOS_LIST)
+        except QuotaOut:
+            return None
+        params = {"part": "liveStreamingDetails", "id": self.video_id, "key": self.api_key}
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session,
+                session.get(f"{self.api}/videos", params=params) as response,
+            ):
+                data: dict[str, Any] = await response.json(content_type=None)
+                if response.status != 200:
+                    return None
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            return None
+        items: list[dict[str, Any]] = data.get("items") or []
+        details: dict[str, Any] = (items[0].get("liveStreamingDetails") or {}) if items else {}
+        count = details.get("concurrentViewers")  # a string; absent when YouTube hides it
+        return int(count) if isinstance(count, str) and count.isdigit() else None
+
     # --- the work ---------------------------------------------------------------
 
     async def _run(self, video_id: str) -> None:

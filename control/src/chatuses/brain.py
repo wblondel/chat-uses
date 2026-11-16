@@ -72,6 +72,7 @@ from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
 from chatuses.safety.watchdog import Watchdog
 from chatuses.screen import Frame
+from chatuses.sessions import SAMPLE_EVERY, Sessions, active_by_platform
 from chatuses.snapshots import Snap, Snapshots
 from chatuses.store import RETENTION, Store, to_json
 from chatuses.vnc import VncInput
@@ -90,7 +91,8 @@ ADMIN_USAGE = (
     "       | panic [REASON] | resume | lockdown on|off | bans\n"
     "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
-    "       | snapshots | snapshot | rewind-to NUMBER|SAVE"
+    "       | snapshots | snapshot | rewind-to NUMBER|SAVE\n"
+    "       | session | session start NAME | session end | sessions"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
@@ -255,6 +257,7 @@ class Brain:
                 store, incus, self._instance, lambda: self.referee.laws, thumbs, grab, self._timeline_changed
             )
             self._timeline_changed()
+        self.sessions = Sessions(store)  # Phase 7: what each session was like
         self._found_instance = ""
         self._travelling = False  # a rewind, load, reboot or reset under way
         self._started = time.time()
@@ -754,6 +757,7 @@ class Brain:
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
         lines.append(self.referee.status_line())
+        lines.append(self.sessions.status())
         if self.snapshots is None:
             lines.append(f"Snapshots: off ({self.incus_off_reason})")
         else:
@@ -871,6 +875,18 @@ class Brain:
                     return "ok", self.referee.set_law(key, value, "console")
                 except RulesetError as err:
                     return "error", f"Law unchanged: {err}"
+            case ["session"]:
+                return "ok", self.sessions.status()
+            case ["session", "start", *name]:
+                ok, text = self.sessions.start(" ".join(name))
+                return ("ok" if ok else "error"), text
+            case ["session", "end"]:
+                return self.end_session()
+            case ["sessions"]:
+                rows = self.store.sessions(limit=10)
+                if not rows:
+                    return "ok", "No sessions yet."
+                return "ok", "\n".join(_session_line(row) for row in rows)
             case ["bans"]:
                 rows = self.moderation.state()["banned"]
                 if not rows:
@@ -921,6 +937,21 @@ class Brain:
             raise web.HTTPNotFound()
         return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/png"})
 
+    async def _session_samples(self) -> None:
+        """While a session runs: viewers and people active in chat, every minute. Never returns."""
+        while True:
+            await asyncio.sleep(SAMPLE_EVERY)
+            if self.sessions.current is None:
+                continue
+            viewers = await self.youtube.viewers() if self.youtube else None
+            self.sessions.sample(viewers, active_by_platform(self.pipeline.presence, time.time()))
+
+    def end_session(self) -> tuple[str, str]:
+        ok, text, _report = self.sessions.end()
+        if ok:
+            self.ops(text)
+        return ("ok" if ok else "error"), text
+
     async def _referee_ticks(self) -> None:
         """Close vote windows and veto countdowns on time. Never returns."""
         while True:
@@ -950,7 +981,8 @@ class Brain:
                 await self.snapshots.reconcile()
             except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
                 log.warning("snapshots: can't list the target's: %s", err)
-        for job in (self.keep_tidy(), self.watchdog.run(), self._referee_ticks(), self._auto_snapshots()):
+        jobs = (self.keep_tidy(), self.watchdog.run(), self._referee_ticks(), self._auto_snapshots())
+        for job in (*jobs, self._session_samples()):
             task = asyncio.create_task(job)
             self._background.add(task)
             task.add_done_callback(self._background.discard)
@@ -1019,6 +1051,19 @@ async def amain(config: Config) -> None:
         )
         brain.incus_off_reason = why_not
         await brain.serve(config, stop)
+
+
+def _session_line(row: dict[str, Any]) -> str:
+    day = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(row["started"]))
+    report = row["report"]
+    if report is None:
+        return f"#{row['id']} {row['name']!r}, {day}: running"
+    viewers = report["viewers"]["peak"]
+    return (
+        f"#{row['id']} {row['name']!r}, {day}: {round(report['minutes'])} min,"
+        f" peak {viewers if viewers is not None else '?'} viewers, {report['active']['peak']} active,"
+        f" {report['commands']['total']} commands, {report['votes']['proposed']} votes"
+    )
 
 
 def _answer(answer: Answer) -> tuple[str, str]:

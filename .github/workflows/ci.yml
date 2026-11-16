@@ -44,6 +44,8 @@ jobs:
           echo "compiled ${#files[@]} files"
       - name: Discord setup tests
         run: python3 -W error::ResourceWarning -m unittest discover -s infra/discord -v
+      - name: Host tool tests (session reports)
+        run: python3 -W error::ResourceWarning -m unittest discover -s infra/host -v
       - name: No invisible or bidi characters in the sources
         run: python3 .github/no-invisible-chars.py
 

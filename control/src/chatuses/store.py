@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS laws (
     amended_by TEXT NOT NULL,
     amendment_vote_id INTEGER REFERENCES votes(id)
 );
+CREATE TABLE IF NOT EXISTS sessions (  -- Phase 7: counts only, never who
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    ended_at REAL,                    -- null while it runs
+    samples_json TEXT NOT NULL DEFAULT '[]',  -- [[ts, viewers or null, {"yt": n, "dc": n}], ...]
+    report_json TEXT                  -- the numbers, once it ended (sessions.py)
+);
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
     BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
@@ -415,6 +423,78 @@ class Store:
                 self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
             self._event(ts, "forget", {"commands": commands, "events": len(ids)})
         return commands, len(ids)
+
+    # --- sessions (sessions.py) ------------------------------------------------------------
+
+    def open_session(self, name: str, ts: float) -> int:
+        with self.db:
+            self.db.execute("BEGIN")
+            cursor = self.db.execute("INSERT INTO sessions (name, started_at) VALUES (?, ?)", (name, ts))
+            session_id = int(cursor.lastrowid or 0)
+            self._event(ts, "session", {"id": session_id, "name": name, "phase": "start"})
+        return session_id
+
+    def running_session(self) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT id, name, started_at, samples_json FROM sessions WHERE ended_at IS NULL ORDER BY id DESC"
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "name": row[1], "started": row[2], "samples": json.loads(row[3])}
+
+    def add_session_sample(self, session_id: int, sample: list[Any]) -> None:
+        self.db.execute(
+            "UPDATE sessions SET samples_json = json_insert(samples_json, '$[#]', json(?)) WHERE id = ?",
+            (json.dumps(sample), session_id),
+        )
+
+    def close_session(self, session_id: int, ts: float, report: dict[str, Any]) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "UPDATE sessions SET ended_at = ?, report_json = ? WHERE id = ?",
+                (ts, json.dumps(report), session_id),
+            )
+            self._event(ts, "session", {"id": session_id, "phase": "end"})
+
+    def sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+        """The latest sessions, newest first, with their reports (None while running)."""
+        rows = self.db.execute(
+            "SELECT id, name, started_at, ended_at, report_json FROM sessions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        keys = ("id", "name", "started", "ended", "report")
+        return [dict(zip(keys, (*r[:4], json.loads(r[4]) if r[4] else None), strict=True)) for r in rows]
+
+    def session_numbers(self, start: float, end: float) -> dict[str, Any]:
+        """What happened between start and end: commands, votes and the events a report counts."""
+        window = (start, end)
+        outcomes = dict(
+            self.db.execute(
+                "SELECT outcome, COUNT(*) FROM commands WHERE ts >= ? AND ts < ? GROUP BY outcome", window
+            ).fetchall()
+        )
+        people = dict(
+            self.db.execute(
+                "SELECT substr(user_id, 1, instr(user_id, ':') - 1), COUNT(DISTINCT user_id)"
+                " FROM commands WHERE ts >= ? AND ts < ? GROUP BY 1",
+                window,
+            ).fetchall()
+        )
+        votes = self.db.execute(
+            "SELECT kind, result FROM votes WHERE opened_at >= ? AND opened_at < ?", window
+        ).fetchall()
+        events = self.db.execute(
+            "SELECT type, payload_json FROM events WHERE ts >= ? AND ts < ?"
+            " AND type IN ('panic', 'resume', 'hold', 'ocr_hit', 'time-travel', 'power')",
+            window,
+        ).fetchall()
+        return {
+            "outcomes": outcomes,
+            "people": people,
+            "votes": [(kind, result) for kind, result in votes],
+            "events": [(kind, json.loads(payload)) for kind, payload in events],
+        }
 
     def outcome_counts(self) -> dict[str, int]:
         return dict(self.db.execute("SELECT outcome, COUNT(*) FROM commands GROUP BY outcome").fetchall())
