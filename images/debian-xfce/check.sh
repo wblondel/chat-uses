@@ -15,6 +15,10 @@
 #   --screenshot FILE where to save the desktop screenshot (default ./desktop.png)
 #   --keep            leave the test target running
 #
+# Its test target, phase2-check at .251 on chatnet, is a throwaway: each run
+# replaces it. The target on stream is chatpc (images/debian-xfce/deploy.sh);
+# check it with --instance chatpc.
+#
 # Only point it at images you just built or targets you trust: the probes
 # run on the host and read data from the target (they bound every read).
 
@@ -65,6 +69,16 @@ expected_geometry=$(sed -n 's/^GEOMETRY=//p' "$(dirname "${BASH_SOURCE[0]}")/roo
 if [[ -z $INSTANCE ]]; then
 	INSTANCE=phase2-check
 	ip=${CHATNET_GW%.*}.251
+	# Phase 3 and 4 had bcast and brain show this test target until the real one
+	# existed (deploy.sh, D59): replacing it then would wipe what's on stream.
+	if incus info "$INSTANCE" --project targets >/dev/null 2>&1; then
+		for service in bcast brain; do
+			if grep -qsx "TARGET_HOST=$ip" "$CHAT_USES_ETC/$service.local.env"; then
+				die "$INSTANCE is on stream ($service.local.env: TARGET_HOST=$ip) and this check would replace it:" \
+					"deploy the real target first (images/debian-xfce/deploy.sh), or check this one with --instance $INSTANCE"
+			fi
+		done
+	fi
 	log "Launching $INSTANCE from $IMAGE at $ip"
 	incus delete --force "$INSTANCE" --project targets >/dev/null 2>&1 || true
 	t0=$(now)

@@ -38,13 +38,15 @@ letters typed by chat (é, à, ç) are dropped by the terminal's shell.
 ```bash
 cd /opt/chat-uses && git pull
 sudo images/build.sh debian-xfce
-sudo images/debian-xfce/check.sh --keep --screenshot /root/desktop.png
+sudo images/debian-xfce/check.sh --screenshot /root/desktop.png
+sudo images/debian-xfce/deploy.sh --replace
 ```
 
-The check replaces `phase2-check` with a fresh desktop from the new image and
-should end with every line passing, including `session locale is en_US.UTF-8`.
-bcast reconnects to it on its own; if the stream is live, you'll see the
-desktop come back.
+The check tests the new image on its own throwaway target and should end with
+every line passing, including `session locale is en_US.UTF-8`. `deploy.sh
+--replace` then gives the target on stream, `chatpc`, a fresh desktop from it
+(what chat did on the old one, and its snapshots, go). bcast reconnects on its
+own; if the stream is live, you'll see the desktop come back.
 
 ### 2. Drive it
 
@@ -109,11 +111,10 @@ Until brain runs, the corner badge says "Controls offline".
 
 ### 3. Build and deploy brain
 
-Point brain at the test desktop first (the image default is the future real
-target, 10.30.0.10):
+brain drives the target on stream, `chatpc` at 10.30.0.10, the image's default
+(`images/debian-xfce/deploy.sh` launches it):
 
 ```bash
-echo 'TARGET_HOST=10.30.0.251' | sudo tee /etc/chat-uses/brain.local.env
 sudo images/build.sh brain          # about 2 minutes
 sudo images/brain/deploy.sh
 sudo images/brain/check.sh
@@ -182,7 +183,7 @@ right-click the server icon → Copy Server ID):
 
 ```bash
 sudo tee -a /etc/chat-uses/brain.local.env <<<'DISCORD_GUILD_ID=<SERVER_ID>'
-cat /etc/chat-uses/brain.local.env    # TARGET_HOST=10.30.0.251 and DISCORD_GUILD_ID=...
+cat /etc/chat-uses/brain.local.env    # DISCORD_GUILD_ID=...
 ```
 
 Commands are read in `#control` only (`DISCORD_CHANNEL` to change it). The

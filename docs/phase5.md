@@ -289,8 +289,8 @@ The drill's snapshot is deleted afterwards (`--keep-snapshot` keeps it).
 Forensic snapshots stay until you delete them:
 
 ```bash
-sudo incus snapshot list phase2-check --project targets
-sudo incus snapshot delete phase2-check panic-20261116-201500 --project targets
+sudo incus snapshot list chatpc --project targets
+sudo incus snapshot delete chatpc panic-20261116-201500 --project targets
 ```
 
 ### Not covered yet

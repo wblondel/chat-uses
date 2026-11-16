@@ -82,6 +82,10 @@ open a VNC viewer on `10.30.0.251:5900`. It's the same shared screen chat will
 see; anything you type goes to the desktop. Delete the test target afterwards:
 `sudo incus delete -f phase2-check --project targets`.
 
+The test target is a throwaway: each check replaces it. The target on stream
+is `chatpc` at `10.30.0.10`, launched by `sudo images/debian-xfce/deploy.sh`
+(D59); `check.sh --instance chatpc` checks it without replacing it.
+
 ### 5. Record the timings
 
 Put the boot, snapshot and restore times from the check into PLAN.md section 15,
