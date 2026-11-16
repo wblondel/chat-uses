@@ -156,9 +156,9 @@ restart_rt() {
 
 # The stream keeps up while something hogs the target: frames delivered and
 # brain answering, measured while it happens.
-stream_holds() { # NUMBER WHAT
-	local n=$1 what=$2 delivered status
-	delivered=$(frames)
+stream_holds() { # NUMBER WHAT [FRAMES, when counted already]
+	local n=$1 what=$2 delivered=${3:-} status
+	[[ -n $delivered ]] || delivered=$(frames)
 	status=$(health)
 	local brain=silent
 	[[ $status == *'"ok": true'* ]] && brain=answered
@@ -176,16 +176,38 @@ t1() {
 		result 1 FAIL "the target has no limits.processes: fork bomb not run (bootstrap.sh profiles)"
 		return
 	fi
-	in_rt su chat -c 'setsid sh -c '"'"'f() { f | f & }; f'"'"' >/dev/null 2>&1 &' || true
-	sleep 5
-	procs=$(incus info "$RT" --project targets | awk '/^ *Processes:/ {print $2}')
-	stream_holds 1 "fork bomb ($procs processes, cap $limit)"
-	if [[ -n $procs && -n $limit ]] && ((procs <= limit + 50)); then
-		result 1 PASS "the fork bomb stayed under limits.processes ($procs of $limit)"
+	local refused_before refused_after peak=0 n
+	refused_before=$(pids_refused)
+	in_rt su chat -c "setsid bash -c ':(){ :|:& };:' >/dev/null 2>&1 &" || true
+	local counted
+	counted=$(mktemp)
+	frames >"$counted" &
+	local counting=$!
+	for _ in $(seq 1 10); do # the busiest moment of 10 s
+		n=$(incus info "$RT" --project targets | awk '/^ *Processes:/ {print $2}')
+		[[ $n =~ ^[0-9]+$ ]] && ((n > peak)) && peak=$n
+		sleep 1
+	done
+	wait "$counting" || true
+	stream_holds 1 "fork bomb running" "$(cat "$counted")"
+	rm -f "$counted"
+	refused_after=$(pids_refused)
+	procs=$peak
+	if [[ $refused_before =~ ^[0-9]+$ && $refused_after =~ ^[0-9]+$ ]] && ((refused_after > refused_before)) && ((procs <= limit + 50)); then
+		result 1 PASS "the fork bomb hit limits.processes and was held there ($((refused_after - refused_before)) forks refused, at most $procs processes of $limit)"
+	elif ((procs > limit + 50)); then
+		result 1 FAIL "fork bomb: $procs processes, cap $limit"
 	else
-		result 1 FAIL "fork bomb: ${procs:-?} processes, cap ${limit:-?}"
+		result 1 FAIL "inconclusive: the fork bomb never reached the cap (at most $procs processes of $limit, forks refused: ${refused_before:-?} -> ${refused_after:-?})"
 	fi
 	restart_rt
+}
+
+# How many forks the target's process cap has refused so far (cgroup v2
+# pids.events, read from inside the target, else from the host).
+pids_refused() {
+	{ in_rt cat /sys/fs/cgroup/pids.events 2>/dev/null ||
+		cat "/sys/fs/cgroup/lxc.payload.targets_$RT/pids.events" 2>/dev/null; } | awk '$1 == "max" {print $2}'
 }
 
 t2() {
@@ -210,7 +232,10 @@ t3() {
 	if [[ $written =~ ^[0-9]+$ ]] && ((written <= quota_mib)); then
 		result 3 PASS "disk fill stopped at the target's quota ($written MiB of $TEST_TARGET_DISK); pool: $pool_free"
 	else
-		result 3 FAIL "disk fill: ${written:-?} MiB written, quota $TEST_TARGET_DISK"
+		local size qgroups
+		size=$(incus config device get "$RT" root size --project targets 2>/dev/null || echo "?")
+		qgroups=$(btrfs qgroup show -reF "/var/lib/incus/storage-pools/$POOL_NAME/containers/targets_$RT" 2>&1 | tail -1 | tr -s ' ' || true)
+		result 3 FAIL "disk fill: ${written:-?} MiB written, quota $TEST_TARGET_DISK (root size: $size; btrfs qgroup: ${qgroups:-none})"
 	fi
 }
 
@@ -259,11 +284,19 @@ t21() {
 
 t5to7() {
 	local out summary
-	if out=$("$HERE/net-isolation.sh" "${NET_IMAGE[@]}" 2>&1); then
+	# net-isolation.sh launches its own target at TEST_TARGET_IP: the throwaway
+	# must be gone by then, or kept at another address.
+	local net_env=()
+	if ((KEEP)) && incus info "$RT" --project targets >/dev/null 2>&1; then
+		net_env=(env "TEST_TARGET_IP=${CHATNET_SUBNET%.*}.249")
+	else
+		cleanup
+	fi
+	if out=$("${net_env[@]}" "$HERE/net-isolation.sh" "${NET_IMAGE[@]}" 2>&1); then
 		result 5-7 PASS "network isolation: $(grep -oE 'Result: .*' <<<"$out" | tail -1)"
 	else
-		summary=$(grep -oE 'Result: .*' <<<"$out" | tail -1)
-		summary=${summary:-$(grep -iE 'error|die' <<<"$out" | sed 's/\x1b\[[0-9;]*m//g' | tail -1)}
+		summary=$(grep -oE 'Result: .*' <<<"$out" | tail -1 || true)
+		summary=${summary:-$(grep -iE 'error|die' <<<"$out" | sed 's/\x1b\[[0-9;]*m//g' | tail -1 || true)}
 		result 5-7 FAIL "network isolation: ${summary:-no result} (run infra/tests/net-isolation.sh to see which)"
 	fi
 }
@@ -515,12 +548,15 @@ if wanted 1 || wanted 2 || wanted 3 || wanted 4 || wanted 21; then
 	log "Throwaway target"
 	throwaway
 	for n in 1 2 3 4 21; do
-		if wanted "$n"; then log "Test $n"; "t$n"; fi
+		if wanted "$n"; then log "Test $n"; "t$n" || result "$n" FAIL "the test stopped half-way (a bug in redteam.sh)"; fi
 	done
 fi
-if wanted 5 || wanted 6 || wanted 7; then log "Tests 5-7"; t5to7; fi
+if wanted 5 || wanted 6 || wanted 7; then
+	log "Tests 5-7"
+	t5to7 || result 5-7 FAIL "the test stopped half-way (a bug in redteam.sh)"
+fi
 for n in 8 9 11 13 14 16 17 18; do
-	if wanted "$n"; then log "Test $n"; "t$n"; fi
+	if wanted "$n"; then log "Test $n"; "t$n" || result "$n" FAIL "the test stopped half-way (a bug in redteam.sh)"; fi
 done
 for skipped in "10|sudo rm -rf / in the target: the watchdog sees it today; the death vote and revive come with Phase 6" \
 	"12|xrandr: by hand (docs/redteam.md); resetting the resolution comes with Phase 6" \

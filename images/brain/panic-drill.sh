@@ -56,13 +56,25 @@ fi
 WATCH=$(
 	cat <<'PY'
 import json, os, subprocess, sys, threading, time
+# Records until /tmp/drill-stop appears (or the time limit); touches
+# /tmp/drill-ready once both pictures are coming in: reading the stream can
+# take several seconds to start (it waits for a keyframe, then probes).
 seconds = float(sys.argv[1])
 end = time.time() + seconds
 frames, mutes = {"screen": [], "stream": []}, []
+def going():
+    return time.time() < end and not os.path.exists("/tmp/drill-stop")
+
+def ready():
+    while going():
+        if len(frames["screen"]) >= 15 and len(frames["stream"]) >= 15:
+            open("/tmp/drill-ready", "w").close()
+            return
+        time.sleep(0.1)
 
 def watch_mute():
     env = {**os.environ, "PULSE_SERVER": "unix:/run/chat-bcast-audio/native"}
-    while time.time() < end:
+    while going():
         out = subprocess.run(["pactl", "get-sink-mute", "target"], capture_output=True, text=True, env=env).stdout
         mutes.append((time.time(), "yes" in out))
         time.sleep(0.02)
@@ -72,7 +84,7 @@ def watch(kind, source):
         ["ffmpeg", "-nostdin", "-loglevel", "fatal", "-fflags", "nobuffer", "-flags", "low_delay",
          *source, "-an", "-vf", "scale=32:18", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
         stdout=subprocess.PIPE)
-    while time.time() < end:
+    while going():
         frame = ff.stdout.read(32 * 18)
         if len(frame) < 32 * 18:
             break
@@ -80,6 +92,7 @@ def watch(kind, source):
     ff.kill()
 
 threads = [
+    threading.Thread(target=ready),
     threading.Thread(target=watch_mute),
     threading.Thread(target=watch, args=("screen", ["-f", "x11grab", "-framerate", "30", "-video_size", "1600x900", "-i", ":99+0,0"])),
     threading.Thread(target=watch, args=("stream", ["-i", "rtmp://127.0.0.1:1935/live", "-vf", "crop=1600:900:0:0"])),
@@ -95,9 +108,15 @@ record=$(mktemp)
 trap 'rm -f "$record"' EXIT
 
 log "Panic drill"
-in_bcast python3 -c "$WATCH" 12 >"$record" &
+in_bcast rm -f /tmp/drill-ready /tmp/drill-stop
+in_bcast python3 -c "$WATCH" 90 >"$record" &
 watcher=$!
-sleep 4 # the decoder is up and a few normal frames are in
+for _ in $(seq 1 60); do # both pictures coming in, half a second of each
+	in_bcast test -f /tmp/drill-ready 2>/dev/null && break
+	sleep 0.5
+done
+in_bcast test -f /tmp/drill-ready 2>/dev/null || info "the stream's picture didn't start in 30 s: only the screen will be timed"
+sleep 1
 t_panic=$(date +%s.%N)
 reply=$(in_brain chat-brain-admin panic "drill (images/brain/panic-drill.sh)" 2>&1 || true)
 if [[ $reply == "Panic on:"* ]]; then pass "panic on: $reply"; else fail "panic: $reply"; fi
@@ -108,6 +127,8 @@ sleep 3
 t_resume=$(date +%s.%N)
 reply=$(in_brain chat-brain-admin resume 2>&1 || true)
 if [[ $reply == "Resumed:"* ]]; then pass "resumed"; else fail "resume: $reply"; fi
+sleep 3 # the uncovered picture reaches the stream too
+in_bcast touch /tmp/drill-stop
 wait "$watcher" || true
 
 verdicts=$(python3 - "$record" "$t_panic" "$t_resume" "$LIMIT" <<'PY'
