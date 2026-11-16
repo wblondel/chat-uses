@@ -46,6 +46,7 @@ done
 
 [[ $EUID -eq 0 ]] || die "run as root"
 command -v tcpdump >/dev/null || die "tcpdump is required: apt-get install tcpdump"
+command -v dhcp_release >/dev/null || die "dhcp_release is required: apt-get install dnsmasq-utils"
 load_config
 INTERNET_PROBE=${INTERNET_PROBE:-1.1.1.1:443}
 TEST_TARGET_IP=${TEST_TARGET_IP:-${CHATNET_GW%.*}.250}
@@ -75,7 +76,18 @@ give_back() {
 		fi
 	done
 	for name in "${PAUSED[@]}"; do
-		if incus start "$name" --project infra >/dev/null 2>&1; then info "started $name again"; else warn "could not start $name"; fi
+		if ! incus start "$name" --project infra >/dev/null 2>&1; then
+			warn "could not start $name"
+			continue
+		fi
+		entry=$(printf '%s\n' "${LENT[@]}" | grep "^$name=" || true)
+		[[ -n $entry ]] || { info "started $name again"; continue; }
+		local back=0
+		for _ in $(seq 1 60); do
+			incus list "$name" --project infra --format csv -c 4 | grep -qF "${entry#*=} (" && { back=1; break; }
+			sleep 1
+		done
+		if ((back)); then info "started $name again, at ${entry#*=}"; else warn "$name started without its address ${entry#*=}: incus restart $name --project infra"; fi
 	done
 }
 
@@ -103,10 +115,12 @@ ip_in_use() {
 
 # The real egress or intranet at its own address: stop it for the test, and
 # lend its address to the test's copy. Incus keeps a stopped container's
-# address for it (no other NIC may start with it), so the test's copy could
-# not start otherwise. Both are given back afterwards.
+# address for it (no other NIC may start with it), and dnsmasq its lease (it
+# gives a leased address to no other MAC, even one configured for it): the
+# test's copy would get neither. Both are given back afterwards; deleting
+# the copy frees its own lease.
 pause_real() {
-	local name=$1 ip=$2
+	local name=$1 ip=$2 network mac
 	incus info "$name" --project infra >/dev/null 2>&1 || return 0
 	if [[ $(incus list "$name" --project infra --format csv -c s) == RUNNING ]] &&
 		incus list "$name" --project infra --format csv -c 4 | grep -qF "$ip ("; then
@@ -116,8 +130,15 @@ pause_real() {
 	fi
 	# An address set in the profile can't be read or lent per container.
 	[[ $(incus config device get "$name" eth0 ipv4.address --project infra 2>/dev/null) == "$ip" ]] || return 0
+	network=$(incus config device get "$name" eth0 network --project infra)
+	mac=$(incus config get "$name" volatile.eth0.hwaddr --project infra)
 	incus config device unset "$name" eth0 ipv4.address --project infra
 	LENT+=("$name=$ip")
+	# Unsetting the address keeps its IPv4 lease: release it as the container
+	# would (dnsmasq matches the MAC). A managed bridge is named after its network.
+	if [[ -z $network || -z $mac ]] || ! dhcp_release "$network" "$ip" "$mac"; then
+		warn "could not release $name's lease on $ip: the test's copy may not get it"
+	fi
 }
 
 wait_for_ip() {
