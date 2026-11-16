@@ -87,9 +87,11 @@ the intranet. `!key ctrl+alt+t`, then `!type sudo apt install cowsay` and
 its own stand-ins. It now stops the real containers for the test and starts
 them again afterwards (outside stream hours: the desktop loses its proxy and
 intranet for a minute). Incus keeps a stopped container's address for it,
-and dnsmasq its lease, so the real ones also lend the test their
-`ipv4.address`: the script unsets it and releases the lease (`dhcp_release`,
-from dnsmasq-utils), and gives it back before they start again. With
+and dnsmasq its entry and lease, so the real ones also lend the test their
+`ipv4.address`. The script moves each to a spare address (.254 and .253 on
+infranet), because with `security.ipv4_filtering` unsetting it would leave
+it in dnsmasq's entry. It also releases the lease (`dhcp_release`, from
+dnsmasq-utils), and gives the address back before they start again. With
 `--keep`, the script prints how to give it back by hand.
 
 ### Changing what targets can reach

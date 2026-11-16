@@ -114,13 +114,17 @@ ip_in_use() {
 }
 
 # The real egress or intranet at its own address: stop it for the test, and
-# lend its address to the test's copy. Incus keeps a stopped container's
-# address for it (no other NIC may start with it), and dnsmasq its lease (it
-# gives a leased address to no other MAC, even one configured for it): the
-# test's copy would get neither. Both are given back afterwards; deleting
-# the copy frees its own lease.
+# lend its address to the test's copy, which would get it otherwise:
+#   - Incus keeps a stopped container's address for it: no other NIC may
+#     start with it;
+#   - dnsmasq keeps its entry: with security.ipv4_filtering (our infra
+#     profiles), unsetting the address leaves it in the entry, and dnsmasq
+#     refuses the copy's as a duplicate. So the container is moved to a
+#     spare address (PARK) instead, which rewrites the entry;
+#   - dnsmasq keeps its lease, and gives a leased address to no other MAC.
+# Both are given back afterwards; deleting the copy frees its own lease.
 pause_real() {
-	local name=$1 ip=$2 network mac
+	local name=$1 ip=$2 park=$3 network mac
 	incus info "$name" --project infra >/dev/null 2>&1 || return 0
 	if [[ $(incus list "$name" --project infra --format csv -c s) == RUNNING ]] &&
 		incus list "$name" --project infra --format csv -c 4 | grep -qF "$ip ("; then
@@ -130,12 +134,13 @@ pause_real() {
 	fi
 	# An address set in the profile can't be read or lent per container.
 	[[ $(incus config device get "$name" eth0 ipv4.address --project infra 2>/dev/null) == "$ip" ]] || return 0
+	! ip_in_use "$park" || die "$park, where $name waits during the test, is in use"
 	network=$(incus config device get "$name" eth0 network --project infra)
 	mac=$(incus config get "$name" volatile.eth0.hwaddr --project infra)
-	incus config device unset "$name" eth0 ipv4.address --project infra
+	incus config device set "$name" eth0 "ipv4.address=$park" --project infra
 	LENT+=("$name=$ip")
-	# Unsetting the address keeps its IPv4 lease: release it as the container
-	# would (dnsmasq matches the MAC). A managed bridge is named after its network.
+	# Release its lease as the container would (dnsmasq matches the MAC).
+	# A managed bridge is named after its network.
 	if [[ -z $network || -z $mac ]] || ! dhcp_release "$network" "$ip" "$mac"; then
 		warn "could not release $name's lease on $ip: the test's copy may not get it"
 	fi
@@ -147,7 +152,7 @@ wait_for_ip() {
 		incus list "$name" --project "$project" --format csv -c 4 | grep -qF "$ip (" && return 0
 		sleep 1
 	done
-	die "$project/$name did not get $ip"
+	die "$project/$name did not get $ip (it has: $(incus list "$name" --project "$project" --format csv -c 4 | tr '\n' ' '))"
 }
 
 # Every command in a container runs without a terminal (-T) or stdin (-n).
@@ -229,8 +234,9 @@ launch() {
 # --- setup ---------------------------------------------------------------------
 
 log "Preparing test containers (image $IMAGE)"
-pause_real egress "$EGRESS_IP"
-pause_real intranet "$INTRANET_IP"
+# Spare infranet addresses (outside the DHCP range) where they wait.
+pause_real egress "$EGRESS_IP" "${INFRANET_GW%.*}.254"
+pause_real intranet "$INTRANET_IP" "${INFRANET_GW%.*}.253"
 for ip in "$EGRESS_IP" "$INTRANET_IP" "$TEST_TARGET_IP"; do
 	! ip_in_use "$ip" || die "$ip is already used by an instance; this test needs it free (stop it or change the config)"
 done
