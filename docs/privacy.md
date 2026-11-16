@@ -51,7 +51,7 @@ keeping it safe (GDPR art. 6(1)(f)).
 Our moderators, through private tools. What is public is what was public
 already: the stream shows commands and display names as chat sent them
 (names with slurs or personal details are shown as `viewer#1234`). Our
-server runs at netcup GmbH (Germany). YouTube and Discord process your data
+server runs at netcup GmbH (data centre: [LOCATION]). YouTube and Discord process your data
 under their own policies.
 
 ### Your rights
