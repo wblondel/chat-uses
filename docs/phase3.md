@@ -191,7 +191,8 @@ deploy again afterwards.
    health, and the delay between doing something on the target and seeing it
    on YouTube.
 4. Put the numbers in PLAN.md section 15, decide bitrate and preset there, and
-   tick Phase 3.
+   tick Phase 3. *Done 2026-11-16: 14.5 h, 73 frames dropped (P3b); settings
+   kept (D50).*
 
 To stop sending to YouTube, delete the key file on the host and run
 `deploy.sh` again (it removes bcast's copy).
