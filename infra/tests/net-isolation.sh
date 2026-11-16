@@ -5,8 +5,9 @@
 # reach, and deletes them again. Every "blocked" check aims at a port that is
 # really listening, so a pass means the firewall dropped it, not that nothing
 # was there. If the real egress and intranet containers (Phase 5) hold the
-# addresses the test needs, they're stopped for the test and started again
-# after it. Because chatnet has no NAT, a leaked packet to the internet would
+# addresses the test needs, they're stopped for the test and lend it their
+# address (Incus keeps a stopped container's address for it); both are given
+# back after it. Because chatnet has no NAT, a leaked packet to the internet would
 # never get a reply, so the internet checks also watch the public interface
 # for any packet coming from a target address.
 #
@@ -62,19 +63,37 @@ pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; PASS=$((PASS + 1)); }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=$((FAIL + 1)); }
 
 PAUSED=() # real infra containers stopped for the test
+LENT=()   # NAME=IP: real infra containers whose address the test borrows
+
+give_back() {
+	local entry
+	for entry in "${LENT[@]}"; do
+		if incus config device set "${entry%%=*}" eth0 "ipv4.address=${entry#*=}" --project infra; then
+			info "gave ${entry#*=} back to ${entry%%=*}"
+		else
+			warn "could not give ${entry#*=} back to ${entry%%=*}: incus config device set ${entry%%=*} eth0 ipv4.address=${entry#*=} --project infra"
+		fi
+	done
+	for name in "${PAUSED[@]}"; do
+		if incus start "$name" --project infra >/dev/null 2>&1; then info "started $name again"; else warn "could not start $name"; fi
+	done
+}
 
 cleanup() {
 	if ((KEEP)); then
 		info "kept: $TARGET (targets), $EGRESS, $INTRANET (infra)"
-		((${#PAUSED[@]})) && warn "still stopped: ${PAUSED[*]} (start them when done: incus start NAME --project infra)"
+		local entry
+		for entry in "${LENT[@]}"; do
+			warn "${entry%%=*} lent ${entry#*=} to the test: when done, delete the nettest containers, then:" \
+				"incus config device set ${entry%%=*} eth0 ipv4.address=${entry#*=} --project infra"
+		done
+		((${#PAUSED[@]})) && warn "still stopped: ${PAUSED[*]} (then start them: incus start NAME --project infra)"
 		return
 	fi
 	incus delete --force "$TARGET" --project targets >/dev/null 2>&1 || true
 	incus delete --force "$EGRESS" --project infra >/dev/null 2>&1 || true
 	incus delete --force "$INTRANET" --project infra >/dev/null 2>&1 || true
-	for name in "${PAUSED[@]}"; do
-		if incus start "$name" --project infra >/dev/null 2>&1; then info "started $name again"; else warn "could not start $name"; fi
-	done
+	give_back
 }
 trap cleanup EXIT
 
@@ -82,14 +101,23 @@ ip_in_use() {
 	incus list --all-projects --format csv -c 4 | grep -qE "(^|[^0-9.])${1//./\\.} \("
 }
 
-# The real egress or intranet at its own address: stop it for the test.
+# The real egress or intranet at its own address: stop it for the test, and
+# lend its address to the test's copy. Incus keeps a stopped container's
+# address for it (no other NIC may start with it), so the test's copy could
+# not start otherwise. Both are given back afterwards.
 pause_real() {
 	local name=$1 ip=$2
-	[[ $(incus list "$name" --project infra --format csv -c s 2>/dev/null) == RUNNING ]] || return 0
-	incus list "$name" --project infra --format csv -c 4 | grep -qF "$ip (" || return 0
-	info "stopping $name for the test (it holds $ip; started again afterwards)"
-	incus stop "$name" --project infra --timeout 30 >/dev/null 2>&1 || incus stop "$name" --project infra --force
-	PAUSED+=("$name")
+	incus info "$name" --project infra >/dev/null 2>&1 || return 0
+	if [[ $(incus list "$name" --project infra --format csv -c s) == RUNNING ]] &&
+		incus list "$name" --project infra --format csv -c 4 | grep -qF "$ip ("; then
+		info "stopping $name for the test (it holds $ip; started again afterwards)"
+		incus stop "$name" --project infra --timeout 30 >/dev/null 2>&1 || incus stop "$name" --project infra --force
+		PAUSED+=("$name")
+	fi
+	# An address set in the profile can't be read or lent per container.
+	[[ $(incus config device get "$name" eth0 ipv4.address --project infra 2>/dev/null) == "$ip" ]] || return 0
+	incus config device unset "$name" eth0 ipv4.address --project infra
+	LENT+=("$name=$ip")
 }
 
 wait_for_ip() {

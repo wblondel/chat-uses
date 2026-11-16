@@ -28,7 +28,9 @@ What it does to the real stream:
 - **13:** 8 s of full-scale white noise on stream.
 - **14:** 50 console users flood brain for 20 s (the pointer moves).
 - **16:** a real panic for a few seconds (`images/brain/panic-drill.sh`).
-- **17, 18:** brain and the forwarder killed (systemd restarts them).
+- **17, 18:** brain and the forwarder killed (systemd restarts them). 18
+  runs only while the forwarder sends to YouTube (a stream key is set):
+  YouTube sees a few seconds' gap.
 - **5-7:** the isolation test stops egress and intranet for a minute.
 
 1-4 and 21 run on a throwaway target (`redteam-target`, chatnet `.250`,
