@@ -43,7 +43,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
 | 3 | Broadcast pipeline | M | ◐ pipeline and 1 h YouTube stream done on the server (section 15, P3); 6 h with the target at its CPU cap left |
 | 4 | Control plane MVP | L | ◐ code done: brain with YouTube and Discord chat, console chat, VNC injector and executor, overlay feed (runbook `docs/phase4.md`); left: on the server, control from both platforms on an unlisted stream and measure the latency |
-| 5 | Safety layer — **gate for going public** | L | ◐ step 1 of 5: egress proxy and intranet built and tested in the sandbox (runbook `docs/phase5.md`); text filter next |
+| 5 | Safety layer — **gate for going public** | L | ◐ steps 1–2 of 5: egress proxy, intranet and text filter built and tested in the sandbox (runbook `docs/phase5.md`); moderation next |
 | 6 | Governance and time travel | L | ☐ |
 | 7 | Closed beta → soft launch | M | ☐ |
 | 8 | Roguelike layer + public site | L | ☐ |
@@ -566,7 +566,7 @@ Other rulesets override what they need (e.g. `living-pc.yaml` disables `newrun` 
 **Text filter** (`safety/textfilter.py`), applied to `!type` text, macro names and expansions, save names, amendment text, and every display name shown on the overlay:
 
 1. Normalize: Unicode NFKC, casefold, strip zero-width and combining characters, map leetspeak (`4→a, 3→e, 1→i/l, 0→o, 5→s, $→s, @→a`…), collapse repeated letters, remove separators for a second pass.
-2. Match against wordlists for the audience languages (at least EN + FR; decide in Phase 0), plus regexes for URLs, emails, phone numbers, street addresses.
+2. Match against wordlists for the audience languages (English, French, Spanish, Italian, Arabic: D43), plus regexes for URLs, emails, phone numbers, street addresses.
 3. **Rolling buffer:** keep the last 200 characters typed into the target (approximating backspaces). Reject a `!type` if appending it would create a match. This stops slurs split across several commands.
 4. Rejected commands: overlay shows "filtered", the user gets a strike; 3 strikes in 10 min → automatic 10 min timeout.
 
@@ -719,7 +719,7 @@ Runbook: **`docs/phase5.md`** (five steps; grows with each).
 
 - [x] `egress` container: Squid allowlist + bandwidth cap; target configured to use it (Phase 2). It refuses private and link-local destinations: it sits on `infranet` next to brain, whose port 8080 is open to that network (D37, D41). Tested in the sandbox; to deploy on the server (`docs/phase5.md`).
 - [x] `intranet` container: kiwix-serve with a no-pictures Wikipedia ZIM, safe static homepage, Freedoom files (D42). Tested in the sandbox with a test ZIM; the real one is chosen at deploy time.
-- [ ] Text filter with rolling buffer; filtered overlay text and display names; strikes and auto-timeouts.
+- [x] Text filter with rolling buffer; filtered overlay text and display names; strikes and auto-timeouts (D43). Word lists for English, French, Spanish, Italian and Arabic need native speakers' review before going public.
 - [ ] Screen OCR content hold (shadow mode by default).
 - [ ] Panic flow end to end, moderator slash commands, cross-platform bans/timeouts, lockdown mode, minimal admin dashboard with audit viewer.
 - [ ] Watchdog with all health checks and auto-restart of target services via `incus exec`.
@@ -882,7 +882,7 @@ Not legal advice; check anything you're unsure about.
 
 Answer these and move the answers to the decision log:
 
-1. Audience language(s)?
+1. ~~Audience language(s)?~~ English, French, Spanish, Italian, Arabic (D43).
 2. Channel name and brand?
 3. VPS or Root Server, and what is the measured steal time? **Partly answered:** netcup VPS Lite 3 G12s (8 shared vCores), 3.8 % steal under full load (P0). Fine for development and scheduled test streams. Before streaming 24/7: move to a Root Server (dedicated cores), or get netcup's written OK for a constant 25–45 %.
 4. Scheduled streams only, or aim for 24/7 after Phase 10?
@@ -948,6 +948,7 @@ Answer these and move the answers to the decision log:
 | 2026-11-15 | D40 | Discord: discord.py, one server (`DISCORD_GUILD_ID`) and one channel (`#control`); Message Content intent; no replies or reactions on commands (the overlay answers, as for YouTube); `/status` answers privately; guild-scoped slash commands. The video brain follows is set over the console socket (`chat-brain-admin`) and kept in the store | Replies would flood `#control` and cost Discord rate limits. Guild commands appear at once (global ones take up to an hour). Until Phase 5's authenticated dashboard, the console socket is the only admin path, and it isn't on the network |
 | 2026-11-15 | D41 | The egress proxy (Squid) serves only `chatnet`; refuses names not in `chat-uses-allow.txt` first, by name alone (exact names, never a reverse lookup); then resolves allowed names and refuses any private, link-local, loopback or reserved address; HTTP on 80 and CONNECT to 443 only; caches nothing; caps all targets together at `EGRESS_BYTES_PER_SECOND` (2 MB/s), HTTPS tunnels included | The proxy sits on `infranet` next to brain, bcast and the host (D37): the address check keeps even an allowed name from leading into them. The order matters: found in the sandbox, checking the address first made Squid resolve every name a target asked for, a way to send data out in DNS queries for made-up names (and slow: refusals waited on DNS). No cache: nothing chat could poison or fill. One shared cap: a target's download can't starve the stream's upload |
 | 2026-11-15 | D42 | The intranet is nginx (GET and HEAD only, 1 KB bodies) in front of kiwix-serve on loopback (`--blockexternal`); the offline Wikipedia is a `nopic` ZIM chosen at deploy time, downloaded inside the container, checked against Kiwix's `.sha256`, kept on its own volume (`intranet-zim`) so redeploying doesn't download it again; Freedoom's data comes from Debian's package | Words only: pictures in an encyclopedia could still put anything on stream. Kiwix publishes a new dated file every few months, so no fixed name in the repo |
+| 2026-11-16 | D43 | The text filter covers English, French, Spanish, Italian and Arabic, and refuses slurs and hate speech (not general swearing) and personal details (emails, phone numbers, street addresses, links). It matches a canonical form (compatibility forms, case, marks, invisible characters, look-alike letters, leetspeak, repeats), symbols read both as letters and as punctuation; typed text is checked with the last 200 characters typed. Only slurs earn strikes (3 in 10 min: a 10-minute timeout); names holding anything refused show as `viewer#NNNN` | The owner's choice of languages and strictness. Personal details are refused without a strike because they're often a mistake. Lists are matched in a form that undoes spelling tricks, so each term is written once; a term a language shares with an ordinary word in another (`negro`: black in Spanish) stays out |
 | 2026-11-15 | P0 | Server (netcup, Debian 13.7, kernel 6.12): 8 vCPU ("QEMU Virtual CPU" model, but AVX2, AVX, SSE4.2 passed through; no AVX-512), 16 GiB RAM, kvm, no swap, 300 GB free; btrfs, WireGuard, cgroup v2; steal idle 0.0 %, load avg 3.8 %, worst 4.0 % | OK: some contention; pin the encoder (PLAN.md 5.2) and watch dropped frames |
 | 2026-11-15 | P1 | Phase 1 on the server: `bootstrap.sh` built the host from a fresh Debian 13.7 install (Incus from Zabbly), admin user with key-only SSH and root SSH login turned off, WireGuard tunnel to the laptop; `net-isolation.sh` passes every check, again after a reboot | Phase 1 done. The first runs from a terminal failed the allowed paths: the test's own fake services died under `incus exec`'s pseudo-terminal (test fixed, firewall was right) |
 | 2026-11-15 | P2 | Phase 2 on the server: `images/debian-xfce/check.sh` 12/12. VNC 6.4 s and desktop 8.3 s after launch; the four services active under systemd; 1600×900 framebuffer; PCM at 192 016 B/s, test tone −11.7 dBFS; snapshot of the running desktop in 0.1 s, restored while running in 1.5 s with the change undone | Phase 2 done: boot < 30 s and restore < 15 s met with a wide margin |
