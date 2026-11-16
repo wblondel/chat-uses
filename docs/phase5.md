@@ -86,9 +86,11 @@ the intranet. `!key ctrl+alt+t`, then `!type sudo apt install cowsay` and
 `infra/tests/net-isolation.sh` needs the egress and intranet addresses for
 its own stand-ins. It now stops the real containers for the test and starts
 them again afterwards (outside stream hours: the desktop loses its proxy and
-intranet for a minute). Incus keeps a stopped container's address for it, so
-the real ones also lend the test their `ipv4.address` and get it back before
-they start. With `--keep`, the script prints how to give it back by hand.
+intranet for a minute). Incus keeps a stopped container's address for it,
+and dnsmasq its lease, so the real ones also lend the test their
+`ipv4.address`: the script unsets it and releases the lease (`dhcp_release`,
+from dnsmasq-utils), and gives it back before they start again. With
+`--keep`, the script prints how to give it back by hand.
 
 ### Changing what targets can reach
 

@@ -86,7 +86,7 @@ It runs these steps in order (you can run any subset, e.g. `bootstrap.sh firewal
 
 | Step | Does |
 |---|---|
-| `packages` | Adds the Zabbly Incus repository (`INCUS_SOURCE`, key pinned in `infra/host/zabbly.asc`), then installs container-only Incus (`incus-base`, `dnsmasq-base` for bridges, AppArmor), nftables, WireGuard tools, btrfs-progs, tcpdump, stress-ng, unattended-upgrades… |
+| `packages` | Adds the Zabbly Incus repository (`INCUS_SOURCE`, key pinned in `infra/host/zabbly.asc`), then installs container-only Incus (`incus-base`, `dnsmasq-base` for bridges, AppArmor), nftables, WireGuard tools, btrfs-progs, tcpdump, dnsmasq-utils (the isolation test's `dhcp_release`), stress-ng, unattended-upgrades… |
 | `admin-user` | Creates `ADMIN_USER` (if set), copies root's keys, passwordless sudo, `incus-admin` group |
 | `ssh` | Writes `/etc/ssh/sshd_config.d/10-chat-uses.conf`, validates with `sshd -t`, rolls back on error, reloads |
 | `system` | Timezone, `/etc/sysctl.d/60-chat-uses.conf`, swap warning |

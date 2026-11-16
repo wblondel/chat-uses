@@ -28,6 +28,8 @@ PACKAGES=(
 	ca-certificates curl jq gettext-base sudo python3 openssl
 	unattended-upgrades apt-listchanges
 	nftables wireguard-tools qrencode tcpdump
+	# dhcp_release: the isolation test frees a stopped container's lease.
+	dnsmasq-utils
 	# Container-only Incus: the "incus" package adds QEMU for VMs, which this
 	# server can't run. Bridges need dnsmasq; AppArmor confines containers.
 	# Debian's incus-base only recommends both, and we skip recommends.
