@@ -15,6 +15,10 @@
 # line in /etc/chat-uses/bcast.local.env or brain.local.env says otherwise;
 # this script says so if one does.
 #
+# A fresh target gets a snapshot named `golden` once its desktop answers:
+# the desktop as deployed. Each new run starts from it (control/src/chatuses/
+# game/runs.py): brain restores it when a run dies. Chat can't reach it.
+#
 # images/debian-xfce/check.sh launches its own throwaway test target
 # (phase2-check at .251); check the real one with
 # `images/debian-xfce/check.sh --instance chatpc`.
@@ -80,8 +84,12 @@ if ((!exists)); then
 	done
 	if ((up)); then
 		info "the desktop's VNC answers on $TARGET_IP:5900 ($((SECONDS - t0)) s after launch)"
+		sleep 10 # let the session settle: the golden snapshot is the desktop each run starts from
+		incus snapshot create "$NAME" golden --project targets
+		info "took its golden snapshot: each new run starts from it"
 	else
 		warn "VNC didn't answer on $TARGET_IP:5900 within $BOOT_WAIT s: images/debian-xfce/check.sh --instance $NAME says why"
+		warn "no golden snapshot taken: runs will continue on the same desktop (deploy again with --replace)"
 	fi
 	# brain forgets the snapshots the target no longer has when it starts.
 	if ((REPLACE)) && incus exec brain --project infra -- systemctl restart chat-brain 2>/dev/null; then
@@ -96,6 +104,9 @@ fi
 
 log "$NAME"
 incus list "$NAME" --project targets --format csv -c s4 | sed 's/^/    state, address: /'
+if ! incus query "/1.0/instances/$NAME/snapshots?project=targets" | grep -qE '/snapshots/golden("|\?)'; then
+	warn "$NAME has no golden snapshot: new runs will continue on the same desktop (deploy.sh --replace gives it one)"
+fi
 built=$(incus config get "$NAME" image.chat-uses.commit --project targets 2>/dev/null || true)
 head=$(git -C "$CHAT_USES_REPO" rev-parse --short HEAD 2>/dev/null || true)
 if [[ -n $built && -n $head ]] && git -C "$CHAT_USES_REPO" cat-file -e "$built^{commit}" 2>/dev/null; then

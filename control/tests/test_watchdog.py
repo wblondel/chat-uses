@@ -256,3 +256,24 @@ def test_without_incus_vnc_trouble_is_only_reported() -> None:
         assert len(alerts) == 1 and "can't reach the target's VNC (for 61 s)" in alerts[0]
 
     run(test)
+
+
+def test_what_would_end_a_run() -> None:
+    T = 1_800_000_000.0
+    w, _alerts, _state = dog()
+    assert w.fatal(T) is None
+    w.last_error = "Incus unreachable"  # ours, not the machine's
+    assert w.fatal(T) is None
+    w.instance_state = "Stopped"
+    assert w.fatal(T) == "it was switched off"
+    w.instance_state, w.destroyed = "Running", True
+    assert w.fatal(T) == "its system was destroyed"
+    w.destroyed = False
+    w.vnc_down_since = T - watchdog_module.VNC_DEAD + 1
+    assert w.fatal(T) is None  # not long enough
+    w.vnc_down_since = T - watchdog_module.VNC_DEAD - 1
+    assert w.fatal(T) == "its screen stopped answering (VNC)"
+    w.services = {"chat-xvnc": "down"}
+    assert w.fatal(T) == "its display died"
+    w.vnc_down_since, w.screen = None, "frozen"
+    assert w.fatal(T) == "it froze"

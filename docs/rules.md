@@ -49,7 +49,10 @@ really do (docs/phase5.md).
 >
 > **How it works:** commands go in `#control` (or YouTube chat): `!help`
 > lists them. The control panel's buttons in `#control` vote and push the
-> meter, as typing `!yes` or `!democracy` does. Refused text never reaches the screen; three refused slurs in
+> meter, as typing `!yes` or `!democracy` does. Each run of the machine has
+> 3 lives: a rewind costs one, and when the machine dies chat votes
+> `!revive` (a life) or `!rip`. Its card names the last command before the
+> end: a joke, not an accusation. Refused text never reaches the screen; three refused slurs in
 > 10 minutes are a 10-minute timeout. Moderators get the screen's text read
 > to them (screen OCR) and can stop everything in a second.
 >

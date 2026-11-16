@@ -67,6 +67,16 @@
     <div id="lockdown" class="badge lockdown" hidden>Regulars only</div>
   </div>
 
+  <!-- A run's end and the next run's start (brain's "card" messages, game/runs.py).
+       Under the scenes: a panic's cover always wins. -->
+  <div id="card" class="card-scene" hidden>
+    <div class="card-title" id="card-title"></div>
+    <div class="card-cause" id="card-cause"></div>
+    <div class="card-facts" id="card-facts"></div>
+    <div class="card-blow" id="card-blow"></div>
+    <ol class="card-last" id="card-last"></ol>
+  </div>
+
   <!-- Full-frame scenes: starting soon, be right back (also used by panic). -->
   <div id="scene" class="scene" hidden>
     <div class="scene-brand">CHAT USES</div>

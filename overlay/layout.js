@@ -228,6 +228,27 @@ function voteBar(yes, no) {
 function renderVote() {
   const panel = $("vote-panel");
   const box = $("vote");
+  const death = runView?.death;
+  panel.classList.toggle("dying", Boolean(death));
+  if (death) {
+    // The machine died (game/runs.py): the death vote takes the vote panel's place.
+    const left = death.ends_in === null ? null : Math.max(0, Math.ceil(death.ends_in - (performance.now() - runAt) / 1000));
+    panel.classList.remove("active");
+    box.className = "value";
+    box.replaceChildren(
+      el("div", "vote-what", "💀 The machine died"),
+      el("div", "death-cause", sentence(death.cause)),
+      ...(left === null
+        ? [el("div", "vote-need", "No lives left: the run is over")]
+        : [
+            el("div", "vote-time", `${left} s left`),
+            voteBar(death.revive, death.rip),
+            el("div", "vote-need", `${death.revive} revive · ${death.rip} rip · a revive costs a life`),
+            el("div", "vote-how", "!revive   !rip"),
+          ]),
+    );
+    return;
+  }
   if (!vote) {
     panel.classList.remove("active");
     box.className = "value muted";
@@ -258,6 +279,74 @@ function renderVote() {
     parts.push(el("div", `vote-result ${vote.phase}`, how + detail));
   }
   box.replaceChildren(...parts);
+}
+
+// --- the run (control/src/chatuses/game/runs.py) ----------------------------------
+
+let runView = null;
+let runAt = 0; // when it arrived: uptime and the death vote's time count from then
+let runTimer;
+
+function sentence(text) {
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}.` : "";
+}
+
+function hhmmss(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+}
+
+function renderRun() {
+  const v = runView;
+  $("run").textContent = v ? `#${v.number}` : "#—";
+  if (!v) {
+    $("lives").textContent = "";
+    $("uptime").textContent = "—";
+  } else {
+    const max = Math.min(10, v.lives_max ?? 0);
+    $("lives").textContent = v.lives === null ? "∞" : "♥".repeat(Math.min(v.lives, 10)) + "♡".repeat(Math.max(0, max - v.lives));
+    $("uptime").textContent = hhmmss(v.uptime + (performance.now() - runAt) / 1000);
+  }
+  if (v?.death) renderVote(); // its countdown
+}
+
+function setRun(v) {
+  runView = v ?? null;
+  runAt = performance.now();
+  renderRun();
+  renderVote();
+  clearInterval(runTimer);
+  if (runView) runTimer = setInterval(renderRun, 250);
+}
+
+let cardTimer;
+
+function showCard(card) {
+  clearTimeout(cardTimer);
+  const box = $("card");
+  if (!card) {
+    box.hidden = true;
+    return;
+  }
+  const death = card.kind === "death";
+  box.className = `card-scene ${death ? "death" : "start"}`;
+  $("card-title").textContent = death ? `💀 RUN #${card.number} IS DEAD` : `RUN #${card.number} BEGINS`;
+  $("card-cause").textContent = death ? sentence(card.cause) : "";
+  const lives = card.lives === null || card.lives === undefined ? "" : `${"♥".repeat(Math.min(card.lives, 10))} ${card.lives} lives`;
+  $("card-facts").textContent = death
+    ? `Lived ${hhmmss(card.lived)} · ${card.lives_used} ${card.lives_used === 1 ? "life" : "lives"} used`
+    : `${lives}${lives ? " · " : ""}a fresh machine · good luck`;
+  const blow = death ? card.final_blow : null;
+  $("card-blow").textContent = blow ? `Probably killed by ${blow.name} (${blow.text}). No offence.` : "";
+  const last = death ? (card.last_commands || []).slice(0, 10) : [];
+  $("card-last").replaceChildren(...last.map((c) => {
+    const li = el("li");
+    li.append(el("span", "who", c.name), ` ${c.text}`);
+    return li;
+  }));
+  box.hidden = false;
+  cardTimer = setTimeout(() => { box.hidden = true; }, Math.max(1, card.seconds) * 1000);
 }
 
 function setVote(v) {
@@ -376,6 +465,14 @@ function onMessage(msg) {
       setVote(msg.vote);
       setTimeline(msg.timeline);
       setMode(msg.mode);
+      setRun(msg.run);
+      showCard(msg.card);
+      break;
+    case "run":
+      setRun(msg.run);
+      break;
+    case "card":
+      showCard(msg);
       break;
     case "mode":
       setMode(msg);
@@ -437,6 +534,8 @@ function connectBrain(url) {
     feedPanic = null; // back to panic.json until brain answers again
     applyScene();
     setVote(null); // the vote lives in brain
+    setRun(null); // so does the run
+    showCard(null);
     setMode(null); // so does the mode: anarchy's look until it's back
     setControls();
     setTimeout(() => connectBrain(url), 3000);

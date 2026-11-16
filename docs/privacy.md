@@ -31,6 +31,10 @@ server's `#control` channel.
 - **Session statistics:** for each stream session, counts only (how many
   watched, how many were active in chat, how many commands and votes),
   never who. These are kept after the 90 days.
+- **The Graveyard:** when a run of the machine ends, its card keeps its
+  last commands with the names of those who sent them (as the stream showed
+  them), including "probably killed by". It's kept as the run's history,
+  after the 90 days; a deletion request takes your name out of it.
 
 We don't collect anything the platforms don't already show in chat: no
 email, no IP address, no payment data.

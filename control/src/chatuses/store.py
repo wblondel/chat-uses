@@ -15,6 +15,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from chatuses.commands import describe_stored
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,              -- yt:<channel id>, dc:<user id>
@@ -65,6 +67,21 @@ CREATE TABLE IF NOT EXISTS snapshots (
     created_at REAL NOT NULL,
     thumb_path TEXT,                  -- thumbs/<id>.png, or null
     deleted_at REAL
+);
+CREATE TABLE IF NOT EXISTS runs (  -- Phase 8 (game/runs.py)
+    id INTEGER PRIMARY KEY,
+    number INTEGER NOT NULL UNIQUE,
+    ruleset TEXT NOT NULL,
+    instance TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    ended_at REAL,                    -- null while it runs
+    lives_start INTEGER NOT NULL,
+    lives_bonus INTEGER NOT NULL DEFAULT 0,  -- given back by achievements
+    lives_used INTEGER NOT NULL DEFAULT 0,   -- rewinds, loads, revives
+    cause TEXT,                       -- how it ended
+    final_blow_json TEXT,             -- {"user", "name", "text"}: a joke, not an accusation
+    last_commands_json TEXT,          -- [{"user", "name", "text", "ts"}], its last commands
+    final_frame TEXT                  -- thumbs/<file> of its last screen, or null
 );
 CREATE TABLE IF NOT EXISTS laws (
     key TEXT PRIMARY KEY,             -- a law, or tiers.ACTION.SETTING (referee/laws.py)
@@ -367,13 +384,15 @@ class Store:
             for i, kind, proposer, opened, closed, params, tally, eligible, result in rows
         ]
 
-    def add_snapshot(self, ts: float, kind: str, name: str | None, instance: str, ref: str) -> int:
+    def add_snapshot(
+        self, ts: float, kind: str, name: str | None, instance: str, ref: str, run_id: int | None = None
+    ) -> int:
         with self.db:
             self.db.execute("BEGIN")
             cursor = self.db.execute(
-                "INSERT INTO snapshots (kind, name, instance, backend_ref, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (kind, name, instance, ref, ts),
+                "INSERT INTO snapshots (run_id, kind, name, instance, backend_ref, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, kind, name, instance, ref, ts),
             )
             snapshot_id = int(cursor.lastrowid or 0)
             self._event(ts, "snapshot-saved", {"id": snapshot_id, "kind": kind, "name": name, "ref": ref})
@@ -458,6 +477,7 @@ class Store:
                 self.db.execute("DELETE FROM events WHERE id = ?", (event_id,))
             self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
             self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
+            self._forget_in_runs(user_id)
             if self.banned_until(user_id) > ts:
                 self.db.execute("UPDATE users SET display_name = '', roles = '' WHERE id = ?", (user_id,))
             else:
@@ -539,6 +559,116 @@ class Store:
             "events": [(kind, json.loads(payload)) for _i, kind, payload in events],
             "ocr_verdicts": Counter(v["verdict"] for v in verdicts.values()),
         }
+
+    # --- runs (game/runs.py) ------------------------------------------------------------
+
+    _RUN = (
+        "id, number, ruleset, instance, started_at, ended_at, lives_start, lives_bonus, lives_used,"
+        " cause, final_blow_json, last_commands_json, final_frame"
+    )
+
+    def _run(self, row: tuple[Any, ...] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        keys = (
+            "id", "number", "ruleset", "instance", "started", "ended", "lives_start", "lives_bonus",
+            "lives_used", "cause", "final_blow", "last_commands", "final_frame",
+        )  # fmt: skip
+        run: dict[str, Any] = dict(zip(keys, row, strict=True))
+        run["final_blow"] = json.loads(run["final_blow"]) if run["final_blow"] else None
+        run["last_commands"] = json.loads(run["last_commands"]) if run["last_commands"] else []
+        return run
+
+    def open_run(self, ts: float, ruleset: str, instance: str, lives: int) -> dict[str, Any]:
+        with self.db:
+            self.db.execute("BEGIN")
+            (number,) = self.db.execute("SELECT COALESCE(MAX(number), 0) + 1 FROM runs").fetchone()
+            cursor = self.db.execute(
+                "INSERT INTO runs (number, ruleset, instance, started_at, lives_start)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (number, ruleset, instance, ts, lives),
+            )
+            self._event(ts, "run", {"number": number, "phase": "start", "lives": lives})
+        run = self.run(int(cursor.lastrowid or 0))
+        assert run is not None
+        return run
+
+    def run(self, run_id: int) -> dict[str, Any] | None:
+        return self._run(self.db.execute(f"SELECT {self._RUN} FROM runs WHERE id = ?", (run_id,)).fetchone())
+
+    def current_run(self) -> dict[str, Any] | None:
+        return self._run(
+            self.db.execute(
+                f"SELECT {self._RUN} FROM runs WHERE ended_at IS NULL ORDER BY number DESC"
+            ).fetchone()
+        )
+
+    def runs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """The latest runs, newest first."""
+        rows = self.db.execute(f"SELECT {self._RUN} FROM runs ORDER BY number DESC LIMIT ?", (limit,))
+        return [run for row in rows if (run := self._run(row)) is not None]
+
+    def run_lives(self, run_id: int, ts: float, used: int, bonus: int, why: str) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "UPDATE runs SET lives_used = ?, lives_bonus = ? WHERE id = ?", (used, bonus, run_id)
+            )
+            self._event(ts, "lives", {"run": run_id, "used": used, "bonus": bonus, "why": why})
+
+    def end_run(
+        self,
+        run_id: int,
+        ts: float,
+        cause: str,
+        final_blow: dict[str, Any] | None,
+        last_commands: list[dict[str, Any]],
+        final_frame: str | None,
+    ) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "UPDATE runs SET ended_at = ?, cause = ?, final_blow_json = ?, last_commands_json = ?,"
+                " final_frame = ? WHERE id = ?",
+                (ts, cause, json.dumps(final_blow) if final_blow else None, json.dumps(last_commands),
+                 final_frame, run_id),
+            )  # fmt: skip
+            self._event(ts, "run", {"run": run_id, "phase": "end", "cause": cause})
+
+    def last_inputs(self, start: float, end: float, limit: int = 10) -> list[dict[str, Any]]:
+        """The last input commands accepted between start and end (not votes or meta commands),
+        newest first, with who sent them."""
+        rows = self.db.execute(
+            "SELECT c.ts, c.user_id, u.display_name, c.parsed_json FROM commands c"
+            " JOIN users u ON u.id = c.user_id WHERE c.ts >= ? AND c.ts <= ? AND c.outcome = 'accepted'"
+            " AND json_extract(c.parsed_json, '$.type') IN"
+            " ('TypeText', 'PressKeys', 'Click', 'Move', 'Drag', 'Scroll')"
+            " ORDER BY c.ts DESC LIMIT ?",
+            (start, end, limit),
+        ).fetchall()
+        return [
+            {"ts": ts, "user": user, "name": name, "text": describe_stored(json.loads(parsed))}
+            for ts, user, name, parsed in rows
+        ]
+
+    def _forget_in_runs(self, user_id: str) -> None:
+        """Dead runs keep their last commands and final blow (the Graveyard): take a name out."""
+
+        def scrub(entry: dict[str, Any]) -> dict[str, Any]:
+            return {**entry, "user": "", "name": "someone"} if entry.get("user") == user_id else entry
+
+        rows = self.db.execute(
+            "SELECT id, final_blow_json, last_commands_json FROM runs"
+            " WHERE instr(final_blow_json, ?) OR instr(last_commands_json, ?)",
+            (json.dumps(user_id), json.dumps(user_id)),
+        ).fetchall()
+        for run_id, blow, last in rows:
+            blow_data = scrub(json.loads(blow)) if blow else None
+            last_data = [scrub(e) for e in json.loads(last)] if last else []
+            self.db.execute(
+                "UPDATE runs SET final_blow_json = ?, last_commands_json = ? WHERE id = ?",
+                (json.dumps(blow_data) if blow_data else None, json.dumps(last_data), run_id),
+            )
 
     def outcome_counts(self) -> dict[str, int]:
         return dict(self.db.execute("SELECT outcome, COUNT(*) FROM commands GROUP BY outcome").fetchall())

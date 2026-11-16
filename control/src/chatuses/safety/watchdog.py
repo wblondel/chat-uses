@@ -17,6 +17,11 @@ Every CHECK seconds:
   #ops hears that it looks frozen. Nothing is restarted for that: a still
   screen can be fine, and a reboot is Phase 6's decision.
 
+What of this would end a run if it lasts (game/runs.py) is `fatal()`'s: the
+machine off, its system destroyed, VNC dead for VNC_DEAD seconds (after the
+display's restart), its screen frozen. A check that can't run is ours, not
+the machine's: never fatal.
+
 A unit is restarted at most RESTARTS times in RESTART_WINDOW seconds; after
 that it's left to a human, with one alert. A check that fails (Incus
 unreachable, a refusal) stays a problem until a whole check goes through
@@ -40,6 +45,7 @@ log = logging.getLogger(__name__)
 CHECK = 10.0  # seconds between checks
 SERVICES = 30.0  # seconds between service checks (each is an exec in the target)
 VNC_GRACE = 60.0  # seconds VNC may be down before the display is restarted
+VNC_DEAD = 180.0  # seconds VNC may be down, restart or not, before it counts as dead (fatal)
 FROZEN = 120.0  # seconds after input without a screen change
 RESTARTS = 3  # per unit...
 RESTART_WINDOW = 900.0  # ...in this many seconds
@@ -109,6 +115,19 @@ class Watchdog:
         if self.last_error:
             found.append(f"can't check the target: {self.last_error}")
         return found
+
+    def fatal(self, now: float) -> str | None:
+        """What's wrong with the machine that would end a run if it lasts, in a few words; or None."""
+        if self.instance_state == "Stopped":
+            return "it was switched off"
+        if self.destroyed:
+            return "its system was destroyed"
+        if self.vnc_down_since is not None and now - self.vnc_down_since > VNC_DEAD:
+            display = any(self.services.get(unit, "active") != "active" for unit in DISPLAY_UNITS)
+            return "its display died" if display else "its screen stopped answering (VNC)"
+        if self.screen == "frozen":
+            return "it froze"
+        return None
 
     async def run(self) -> None:
         while True:
