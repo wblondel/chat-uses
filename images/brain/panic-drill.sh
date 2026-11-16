@@ -45,7 +45,7 @@ LIMIT=1.0 # seconds
 
 incus info brain --project infra >/dev/null 2>&1 || die "no brain container"
 incus info bcast --project infra >/dev/null 2>&1 || die "no bcast container"
-if in_brain chat-brain-admin status | grep -q '^PANIC'; then
+if in_brain chat-brain-admin status | grep -qE '^(PANIC|CONTENT HOLD)'; then
 	die "a panic is already on: resume it first (chat-brain-admin resume)"
 fi
 

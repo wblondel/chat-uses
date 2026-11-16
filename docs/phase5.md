@@ -12,7 +12,7 @@ at least two moderators have practised every tool on an unlisted stream.
 | 1 | `egress` proxy (allowlist, no private addresses, bandwidth cap) and `intranet` (homepage, files, offline Wikipedia) | done; to deploy on the server |
 | 2 | Text filter: `!type` text with a rolling buffer, names on the overlay, strikes and automatic timeouts | done; comes with the next brain deploy |
 | 3 | Moderation: panic end to end, cross-platform bans and timeouts, lockdown, moderator slash commands, admin dashboard with audit viewer | done; to set up on the server |
-| 4 | Screen OCR content hold, in shadow mode first | |
+| 4 | Screen OCR content hold, in shadow mode first | done; shadow mode on the server, enforce after tuning |
 | 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | |
 
 ## Step 1: egress and intranet
@@ -296,6 +296,75 @@ sudo incus snapshot delete phase2-check panic-20261116-201500 --project targets
   themselves; brain's ban covers commands everywhere.
 - Moderator practice: yours (PLAN.md: at least two moderators practise every
   tool on an unlisted stream).
+
+## Step 4: screen OCR
+
+Text can reach the screen without going through `!type`: a decoded file
+(`echo <base64> | base64 -d`), a web page, a file or window name made in
+pieces. brain now reads the target's screen every 5 seconds and looks the
+text up in the slur lists (PLAN.md 7.4, D46).
+
+- **How:** a second VNC connection that only reads the screen (raw pixels,
+  every size and rectangle checked: the target is hostile), and tesseract
+  for the text. A screen that didn't change isn't read again. Lines are
+  checked one by one and each with the next, since a terminal wraps a long
+  line anywhere. Personal details aren't looked for: a desktop is full of
+  links and numbers.
+- **Shadow mode** (the default): a hit goes in the log and in `#mod-alerts`,
+  with the screenshot attached as a spoiler and the line blurred; nothing
+  happens on stream. Run it like this through the closed beta, and look at
+  what it reports: real hits, and false ones (OCR misreads a word into a
+  listed one).
+- **Enforce mode:** a hit is a **content hold**: like a panic (sound muted,
+  input frozen, a forensic snapshot, an alert), but the cover says "Content
+  check". A moderator `/resume`s if what's on screen is fine, and the lines
+  it saw then won't hold the stream again while they stay on screen; or
+  `/panic`s if it isn't, which turns the hold into a panic. Until Phase 6's
+  rewind, a hold waits for a moderator: enforce only when one is online.
+- **Screenshots** of hits stay in brain (`/var/lib/chat-brain/screens`, the
+  last 200); the dashboard's moderation log shows each hit, blurred until you
+  point at it, with its screenshot.
+
+### On the server
+
+```bash
+cd /opt/chat-uses && git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+sudo images/build.sh bcast && sudo images/bcast/deploy.sh --replace   # the "Content check" cover
+sudo images/brain/check.sh
+```
+
+The check waits for the first read of the screen and shows how long a read
+takes. Settings, in `/etc/chat-uses/brain.local.env` (then
+`images/brain/deploy.sh`):
+
+```bash
+OCR_MODE=shadow        # shadow, enforce or off
+OCR_INTERVAL=5         # seconds between reads
+OCR_LANGS=eng+ara      # tesseract's languages
+```
+
+`eng` reads French, Spanish and Italian words well enough for the lists,
+which ignore accents; `ara` reads Arabic. Each language makes a read slower
+(in the sandbox, one core: `eng` 0.34 s, `eng+ara` 0.6 s, all five 1 s):
+the check shows the time; keep it well under `OCR_INTERVAL`.
+
+### Trying it
+
+On an unlisted stream, with a moderator watching `#mod-alerts`: open a
+terminal on the desktop and make a listed word appear without typing it
+(`!type echo <the word in base64> | base64 -d`, `!enter`). Within a few
+seconds `#mod-alerts` gets the alert with the screenshot. In enforce mode
+the stream says "Content check" until `/resume`.
+
+### Not covered yet
+
+- **Rewind** from a hold, automatically after 3 minutes or by a moderator
+  (PLAN.md 7.4): Phase 6's snapshots. The hold's forensic snapshot is
+  already taken (`hold-…`).
+- **Pictures:** OCR reads text, not images. The egress allowlist keeps
+  pictures out (step 1); moderators and panic cover the rest.
+- **Audio** (text-to-speech): later, optional (PLAN.md 7.4).
 
 ## What was tested before this landed
 

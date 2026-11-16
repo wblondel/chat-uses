@@ -686,10 +686,17 @@ def test_an_ocr_hit_in_enforce_mode_holds_until_a_moderator_resumes(tmp_path: Pa
             brain.discord = quiet_discord()
             brain.ocr_mode, brain.screens_dir = "enforce", tmp_path
             cleared: list[str] = []
-            brain.watch = cast(Any, SimpleNamespace(clear=cleared.extend))
+            brain.watch = cast(
+                Any,
+                SimpleNamespace(
+                    clear=cleared.extend,
+                    status=lambda: {"state": "reading", "reads": 0, "hits": 1, "last_error": ""},
+                ),
+            )
             brain.ocr_hit(ocr_hit(("x badword", "more")))
             assert await feed.next("panic") == {"type": "panic", "on": True, "kind": "hold"}
             assert brain.moderation.kind == "hold" and brain.executor.frozen
+            assert "CONTENT HOLD since" in brain.status_text()
             assert brain.store.recent_events(("hold",))[0][3]["lines"] == ["x badword", "more"]
             assert brain.store.recent_events(("snapshot",))[0][3]["name"].startswith("hold-")
             alerts = brain.discord.pending_alerts()
@@ -726,7 +733,7 @@ def test_a_panic_during_a_hold_becomes_a_panic() -> None:
 
 def test_ocr_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config = Config.from_env({"TARGET_HOST": "x"})
-    assert (config.ocr_mode, config.ocr_interval, config.ocr_langs) == ("shadow", 5.0, "eng")
+    assert (config.ocr_mode, config.ocr_interval, config.ocr_langs) == ("shadow", 5.0, "eng+ara")
     config = Config.from_env(
         {"TARGET_HOST": "x", "OCR_MODE": "enforce", "OCR_INTERVAL": "0.1", "OCR_LANGS": "eng+ara"}
     )

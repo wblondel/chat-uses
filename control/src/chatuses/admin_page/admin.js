@@ -164,7 +164,7 @@ function eventDetails(e) {
 
 // What screen OCR saw holds a slur: blurred until hovered, and the screenshot on demand.
 function seenOnScreen(e) {
-  const cell = el("td");
+  const cell = el("span");
   const lines = e.found || e.lines || [];
   if (lines.length) cell.append(el("span", lines.join(" · "), "spoiler"));
   if (e.screenshot) {

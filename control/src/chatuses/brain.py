@@ -22,7 +22,7 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
     ADMIN_TOKEN_FILE         the admin dashboard's and API's token; both are off without it
     OCR_MODE                 screen OCR: shadow (report only, the default), enforce (hold), off
-    OCR_INTERVAL, OCR_LANGS  seconds between reads (5); tesseract's languages (eng)
+    OCR_INTERVAL, OCR_LANGS  seconds between reads (5); tesseract's languages (eng+ara)
     SCREENS_DIR              where OCR hits' screenshots are kept (/var/lib/chat-brain/screens)
 
 Which YouTube video's chat to read is set with chat-brain-admin, and kept in
@@ -99,7 +99,7 @@ class Config:
     admin_token_file: str = f"{SECRETS}/admin-token"
     ocr_mode: str = "shadow"
     ocr_interval: float = 5.0
-    ocr_langs: str = "eng"
+    ocr_langs: str = "eng+ara"
     screens_dir: str = "/var/lib/chat-brain/screens"
 
     @classmethod
@@ -422,8 +422,9 @@ class Brain:
             machine = "input frozen by the panic"
         lines = [f"Machine: {machine} ({self.executor.queue.qsize()} waiting)"]
         if panic := self.moderation.panic_state:
+            what = "CONTENT HOLD" if self.moderation.kind == "hold" else "PANIC"
             lines.append(
-                f"PANIC since {_clock(panic.get('since', 0))}, by {panic.get('by')}: /resume ends it"
+                f"{what} since {_clock(panic.get('since', 0))}, by {panic.get('by')}: /resume ends it"
             )
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
