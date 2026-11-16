@@ -87,6 +87,43 @@ afterwards.
 
 Paste each run here, newest first: date, commit, where, the table.
 
+### 2026-11-16, the server
+
+Commit d6f2366 for the full run, after the disk-limit fix (PLAN.md D51);
+tests 5-7 at 290f0a7 and 18 at cff6247, after fixing the runner (below).
+
+| # | Result | Details |
+|---|---|---|
+| 1 | PASS | fork bomb: the stream kept 326 frames in 12 s and brain answered; held at `limits.processes` (2,048 of 2,048, 8,462 forks refused) |
+| 2 | PASS | 64 busy loops in a target: the stream kept 356 frames in 12 s, brain answered |
+| 3 | PASS | disk fill stopped at the target's quota (2,746 MiB of 4 GiB); pool 12.11 GiB used of 200 GiB |
+| 4 | PASS | memory hog killed by the OOM killer inside the target (1 GiB limit); the target lives on |
+| 5-7 | PASS | `net-isolation.sh`: 24 passed, 0 failed, next to the real egress and intranet (both back at their addresses afterwards) |
+| 8 | PASS | typed slurs refused: whole, in 3 pieces by 3 people, leetspeak, invisible characters; decoded on screen, seen by screen OCR in 6 s |
+| 9 | PASS | a name holding a slur showed as `viewer#NNNN` |
+| 10 | by hand | not run yet |
+| 11 | PASS | VNC server stopped: the watchdog started it again, input back in 2 s |
+| 12 | by hand | not run yet |
+| 13 | PASS | full-scale white noise in the target: −14.4 LUFS on the stream (YouTube's reference is −14) |
+| 14 | PASS | 50 users, 4,000 messages in 20 s, malformed and too long ones among them: brain at 12 % CPU, limits held (168 accepted, 976 rate-limited, 1,714 invalid, 1,142 chat) |
+| 15 | Phase 6 | votes |
+| 16 | PASS | panic: screen covered in 0.27 s, target muted in 0.24 s. `panic-drill.sh` alone: 0.33 s and 0.27 s, 8/8, forensic snapshot taken |
+| 17 | PASS | brain killed: back in 3 s, the encoder never stopped |
+| 18 | PASS, network by hand | forwarder killed: sending to YouTube again in 9 s, the encoder never stopped. The network cut is not run yet |
+| 19 | by hand | not run yet |
+| 20 | Phase 10 | QEMU targets |
+| 21 | PASS | denied: modprobe, writing `/proc/sys`, a block device node, mounting a host disk, the kernel log, raw sockets for the chat user. Root in the target may open raw sockets inside its own network namespace; the firewall decides where they go |
+
+Found by the first server runs, and fixed:
+- **3 failed at first:** a target wrote 6 GiB past its 4 GiB. The pool's
+  btrfs quota counts had gone stale when a deep subvolume was deleted, so
+  no limit tripped. `bootstrap.sh quotas` keeps them right (D51).
+- **The runner's own bugs:** the fork bomb is now judged by forks refused at
+  the cap, not by a process count. Tests 5-7 borrow the real egress and
+  intranet's addresses properly: Incus reserves a stopped container's
+  address, and dnsmasq keeps its lease and, with `security.ipv4_filtering`,
+  its entry. Test 18 now finds the forwarder once it streams, as ffmpeg.
+
 ### 2026-11-16, sandbox (not the server)
 
 The development sandbox, before the first server run. It can't enforce
