@@ -1,0 +1,67 @@
+# English: slurs and hate speech (README.md). Not general swearing.
+
+# Racial and ethnic slurs
+*nigger
+*nigga
+*jigaboo
+*porchmonkey
+# Ordinary words that contain a term above.
+!snigger
+!sniggered
+!sniggering
+!niggard
+!niggardly
+!niggardliness
+coon
+darkie
+darky
+sambo
+golliwog
+spic
+wetback
+beaner
+chink
+gook
+zipperhead
+slant eye
+slanteye
+kike
+yid
+raghead
+towelhead
+camel jockey
+paki
+wop
+dago
+polack
+redskin
+injun
+squaw
+half breed
+halfbreed
+*gyppo
+
+# Homophobic and transphobic slurs
+*faggot
+fag
+dyke
+tranny
+shemale
+troon
+poofter
+batty boy
+
+# Ableist slurs
+retarded
+mongoloid
+spastic
+
+# Hate speech
+gas the jews
+kill all jews
+kill the jews
+white power
+white pride
+hitler was right
+hitler did nothing wrong
+race war now

@@ -48,6 +48,11 @@ from the host):
 PYTHONPATH=src python3 -m chatuses.drive 10.30.0.251 '!key ctrl+alt+t' '!wait 3' '!type echo hi' '!enter'
 ```
 
+`safety/` keeps the stream safe (PLAN.md 7): `textfilter.py` refuses slurs,
+hate speech and personal details in typed text, save names and names on the
+overlay (word lists in `safety/lists/`, D43), and `strikes.py` turns repeated
+slurs into timeouts.
+
 The chat adapters are in `adapters/`: `youtube.py` (live chat over gRPC,
 PLAN.md D39) and `discord_bot.py` (PLAN.md D40). `admin.py` is
 `chat-brain-admin`, the operator's side of the console socket (which video's

@@ -19,6 +19,7 @@ from chatuses.adapters.youtube import YouTubeChat
 from chatuses.brain import Brain, Config
 from chatuses.executor import connect_to
 from chatuses.pipeline import ChatMessage
+from chatuses.safety.textfilter import HATE, LISTS
 from chatuses.store import Store
 
 
@@ -412,5 +413,56 @@ def test_status_shows_the_last_error_while_not_streaming(
             )
             brain.youtube.state = "streaming"
             assert "YouTube: streaming, 0 quota units today\n" in brain.status_text()
+
+    run(test)
+
+
+# --- Phase 5 step 2: the text filter in brain ------------------------------------------
+
+
+def a_listed_word() -> str:
+    """A word from the filter's lists (tests don't spell them out)."""
+    for line in (LISTS / "en.txt").read_text("utf-8").splitlines():
+        if line.startswith("*"):
+            return line[1:]
+    raise AssertionError("no * term in en.txt")
+
+
+def test_names_holding_a_listed_word_are_anonymized_on_the_overlay() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.handle(ChatMessage("yt:UCx", f"the {a_listed_word()} guy", "!grid", time.time()), "yt")
+            line = await feed.next("log")
+            assert line["user"].startswith("viewer#") and a_listed_word() not in json.dumps(line)
+
+    run(test)
+
+
+def test_a_word_typed_in_pieces_by_several_people_is_refused() -> None:
+    async def test() -> None:
+        server = await FakeVnc().start()
+        word = a_listed_word()
+        async with running(server) as (brain, feed):
+            assert (await brain.console_message("ann", f"!type echo {word[:3]}"))[0] == "accepted"
+            assert (await brain.console_message("ben", f"!type {word[3:]}")) == ("filtered", HATE)
+            lines = [await feed.next("log") for _ in range(2)]
+            assert lines[1]["user"] == "ben" and lines[1]["reason"] == HATE and word not in json.dumps(lines)
+        await server.stop()
+
+    run(test)
+
+
+def test_three_refused_slurs_time_the_user_out_on_stream() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            word = a_listed_word()
+            for _ in range(3):
+                assert (await brain.console_message("troll", f"!type {word}"))[0] == "filtered"
+            assert (await brain.console_message("troll", "!grid"))[0] == "banned"
+            reasons: list[str | None] = []
+            while not any("timed out" in str(r) for r in reasons):
+                reasons.append((await feed.next("log"))["reason"])
+            assert reasons[0] == HATE and reasons[-1] == "timed out for 10 minutes"
+            assert brain.store.banned_until("console:troll") > time.time() + 590
 
     run(test)

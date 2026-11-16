@@ -10,7 +10,7 @@ at least two moderators have practised every tool on an unlisted stream.
 | Step | What | State |
 |---|---|---|
 | 1 | `egress` proxy (allowlist, no private addresses, bandwidth cap) and `intranet` (homepage, files, offline Wikipedia) | done; to deploy on the server |
-| 2 | Text filter: `!type` text with a rolling buffer, names on the overlay, strikes and automatic timeouts | next (needs your audience languages) |
+| 2 | Text filter: `!type` text with a rolling buffer, names on the overlay, strikes and automatic timeouts | done; comes with the next brain deploy |
 | 3 | Moderation: panic end to end, cross-platform bans and timeouts, lockdown, moderator slash commands, admin dashboard with audit viewer | |
 | 4 | Screen OCR content hold, in shadow mode first | |
 | 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | |
@@ -88,7 +88,120 @@ its own stand-ins. It now stops the real containers for the test and starts
 them again afterwards (outside stream hours: the desktop loses its proxy and
 intranet for a minute).
 
-### What was tested before this landed
+### Changing what targets can reach
+
+Every allowed domain is a decision for PLAN.md's log: live Wikipedia,
+Wikimedia Commons or GitHub would let chat put any picture or file on stream.
+To add one: edit `images/egress/rootfs/etc/squid/chat-uses-allow.txt`, add a
+decision to PLAN.md section 15 saying why it's safe, then
+`sudo images/build.sh egress && sudo images/egress/deploy.sh --replace`.
+
+## Step 2: the text filter
+
+brain now refuses what shouldn't reach the stream in words (PLAN.md 7.4, D43):
+
+- **Slurs and hate speech** in English, French, Spanish, Italian and Arabic,
+  plus hate codes (`control/src/chatuses/safety/lists/`). General swearing
+  is allowed.
+- **Personal details:** email addresses, phone numbers, street addresses,
+  links.
+
+It looks at text typed on the desktop (`!type`), save names, and the names
+shown on the overlay. Writing tricks don't get through:
+- case, accents and invisible characters;
+- styled and fullwidth letters, and look-alike letters from other alphabets;
+- leetspeak (`4` and `@` for `a`, `3` for `e`, `1`, `!` and `|` for `i`...);
+- repeated letters, and spelling a word out with dots or spaces.
+
+Typed text is checked together with the last 200 characters typed (with
+backspaces applied), so a word typed in pieces, by one person or several,
+is refused when it would complete.
+
+On stream:
+- **A refused command** shows only "that's not allowed on stream" (or the
+  personal-details reason), never the text.
+- **Strikes:** each refused slur is a strike. Three in 10 minutes earn a
+  10-minute timeout, which the overlay shows. The person's commands are
+  then ignored until it ends. Personal details are refused without a strike,
+  since they're often a mistake.
+- **Names:** a name holding a listed word or personal details is shown as
+  `viewer#1234` (always the same number for the same person).
+
+### On the server
+
+It's part of brain: rebuild and redeploy it (with the other Phase 4 steps
+if you haven't yet).
+
+```bash
+cd /opt/chat-uses && git pull
+sudo images/build.sh brain
+sudo images/brain/deploy.sh --replace
+sudo images/brain/check.sh
+```
+
+Try it with console chat (`chat-brain-say`, step 3 of `docs/phase4.md`): a
+phone number, a word in pieces from two `--as` names, a name with a listed
+word.
+
+### The word lists
+
+`control/src/chatuses/safety/lists/` holds one file per language. Their
+`README.md` explains the syntax (whole words, `*` for anywhere, phrases,
+`!` for ordinary words a `*` term would hit). They are a starting point:
+- **Before going public,** have native speakers review them, the Arabic one
+  first.
+- **Over time,** add what your chat actually tries.
+
+After a change, run the tests: every term is checked against the tricks
+above and against ordinary words. Then rebuild and redeploy brain.
+
+```bash
+cd control && uv run pytest tests/test_textfilter.py
+```
+
+### Not covered yet
+
+- **Text that appears on screen without being typed** (`echo <base64> |
+  base64 -d`, a downloaded file, a renamed window): step 4's screen OCR.
+- **Lifting a timeout early, or banning by hand:** step 3's moderator
+  commands.
+
+## What was tested before this landed
+
+Step 2:
+
+- **1,568 filter tests.** Every list term, in each language, refused:
+  - in 11 spellings: case, leetspeak, symbols inside and around, repeats,
+    invisible characters, fullwidth, styled letters, accents, in a sentence;
+  - spelled out with dots, spaces or hyphens (the `*` terms);
+  - as a plural (whole-word terms), and with any separators (phrases);
+  - Arabic terms with marks, stretching and the article.
+- **Ordinary text still passes:** 31 samples, including "Niger",
+  "niggardly", "sniggered", "spice", "raccoon", "Pakistan", "Scunthorpe",
+  Spanish "negro" (the color), "en retard", swearing in four languages, and
+  IP addresses.
+- **Personal details** in 15 forms refused.
+- **The rolling buffer:** a term split across three commands is refused;
+  backspaces, Enter, and the buffer forgetting old text all handled.
+- **Names:** a name with any term is anonymized, including with look-alike
+  letters.
+- **No crafted input makes a check slow:** about 3 ms at worst.
+- **The pipeline and brain:** strikes, timeouts (stored, logged, on the
+  overlay, then the user ignored), the filter learning what's typed and
+  pressed. 1,880 tests in all.
+- **In the sandbox, on the real overlay:** a word typed in two pieces by two
+  people was refused at the second, a name holding a listed word showed as
+  `viewer#4996`, a troll's three tries showed one refusal and "timed out for
+  10 minutes", and a phone number was refused. The word never appeared.
+- **Found and fixed while testing:**
+  - **A trailing `!` (or `@`, `$`) slipped past whole-word terms:** it was
+    read as a letter. Text is now matched twice, symbols as letters and
+    symbols as punctuation.
+  - **Arabic words starting like a prefix (ل, ال) never matched.**
+  - **"spick" (the idiom "spick and span")** came out of the English list,
+    and `negro` out of the French one: it's the Spanish word for black.
+
+Step 1:
 
 In the sandbox, both images built and deployed, checked from the Phase 2
 desktop:
@@ -121,11 +234,3 @@ desktop:
     `pipefail`.
   - **kiwix-serve startup:** it gave up when its ZIM came after it started,
     and it couldn't list the new volume (mode 0711).
-
-### Changing what targets can reach
-
-Every allowed domain is a decision for PLAN.md's log: live Wikipedia,
-Wikimedia Commons or GitHub would let chat put any picture or file on stream.
-To add one: edit `images/egress/rootfs/etc/squid/chat-uses-allow.txt`, add a
-decision to PLAN.md section 15 saying why it's safe, then
-`sudo images/build.sh egress && sudo images/egress/deploy.sh --replace`.

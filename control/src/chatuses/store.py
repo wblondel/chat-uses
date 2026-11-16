@@ -89,6 +89,21 @@ class Store:
             (user_id, display_name, ts, ts, " ".join(sorted(roles))),
         )
 
+    def banned_until(self, user_id: str) -> float:
+        """When the user's ban or timeout ends (0 if none)."""
+        row = self.db.execute("SELECT banned_until FROM users WHERE id = ?", (user_id,)).fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+
+    def time_out(self, ts: float, user_id: str, until: float, reason: str) -> None:
+        """Keep the user from sending commands until `until` (never shortens a longer one), logged."""
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "UPDATE users SET banned_until = max(coalesce(banned_until, 0), ?) WHERE id = ?",
+                (until, user_id),
+            )
+            self._event(ts, "timeout", {"user": user_id, "until": until, "reason": reason})
+
     def setting(self, key: str) -> str | None:
         row = self.db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None

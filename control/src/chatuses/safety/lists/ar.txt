@@ -1,0 +1,15 @@
+# Arabic: slurs and hate speech (README.md), in Arabic script (display
+# names) and in Latin letters (Arabizi, what !type can type). Not general
+# swearing. Needs a native speaker's review before going public.
+
+# Arabic script
+زنجي
+شاذ
+لوطي
+خول
+اقتلوا اليهود
+الموت لليهود
+
+# Arabizi
+zinji
+khawal

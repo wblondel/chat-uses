@@ -1,33 +1,39 @@
 """From chat message to accepted command (PLAN.md 5.7, command flow):
 
-    moderation gate (banned?) -> parser -> rate limits (input only) ->
-    text filter -> accepted, for the referee and the executor
+    moderation gate (banned or timed out?) -> parser -> rate limits (input
+    only) -> text filter -> accepted, for the referee and the executor
 
 Every message counts for presence (who is active, who may vote). Every
 command, accepted or not, is recorded with its outcome; ordinary chat isn't
-stored. The text filter is Phase 5's (PLAN.md 7.4): until then the hook
-lets everything through.
+stored. The text filter (PLAN.md 7.4, safety/textfilter.py) sees typed text
+together with what was typed just before, and save names; a refused slur is
+a strike, and 3 strikes in 10 minutes a 10-minute timeout.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
-from chatuses.commands import Command, InputCommand, Load, ParseError, Save, TypeText
+from chatuses.commands import Command, InputCommand, Load, ParseError, PressKeys, Save, TypeText
 from chatuses.grid import Grid
 from chatuses.identity import Presence
 from chatuses.parser import parse
 from chatuses.ratelimit import RateLimiter
+from chatuses.safety.strikes import Strikes
+from chatuses.safety.textfilter import HATE, PERSONAL, Kind, TextFilter
 from chatuses.store import Store
 
 OutcomeKind = Literal["chat", "accepted", "invalid", "rate_limited", "filtered", "banned"]
-
-# Returns a reason to refuse the text, or None to let it through.
-TextFilter = Callable[[str, str], str | None]  # (user id, text)
+REASONS: dict[Kind, str] = {"hate": HATE, "personal": PERSONAL}
 
 
-def allow_all(_user: str, _text: str) -> str | None:
-    return None
+class Censor(Protocol):
+    """What the pipeline needs from the text filter (TextFilter; tests use stand-ins)."""
+
+    def kind(self, text: str) -> Kind | None: ...
+    def typed_kind(self, text: str) -> Kind | None: ...
+    def typed(self, text: str) -> None: ...
+    def key(self, name: str, times: int = 1) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,7 @@ class Outcome:
     kind: OutcomeKind
     command: Command | None = None
     reason: str | None = None  # for chat: never contains the user's own text
+    timed_out_until: float | None = None  # this refusal earned a timeout, until then
 
 
 class Pipeline:
@@ -56,14 +63,16 @@ class Pipeline:
         grid: Grid | None = None,
         limiter: RateLimiter | None = None,
         presence: Presence | None = None,
-        text_filter: TextFilter = allow_all,
+        censor: Censor | None = None,
+        strikes: Strikes | None = None,
         is_banned: Callable[[str], bool] = lambda _user: False,
     ) -> None:
         self.store = store
         self.grid = grid or Grid()
         self.limiter = limiter or RateLimiter()
         self.presence = presence or Presence(is_banned=is_banned)
-        self.text_filter = text_filter
+        self.censor: Censor = censor or TextFilter()
+        self.strikes = strikes or Strikes()
         self.is_banned = is_banned
 
     def handle(self, msg: ChatMessage) -> Outcome:
@@ -76,10 +85,22 @@ class Pipeline:
         self.store.record_command(
             msg.ts, msg.user_id, msg.text, outcome.command, outcome.kind, outcome.reason
         )
+        if outcome.kind == "accepted":
+            self._remember(outcome.command)
         return outcome
 
+    def _remember(self, command: Command | None) -> None:
+        """Tell the filter what's being typed on screen."""
+        if isinstance(command, TypeText):
+            self.censor.typed(command.text)
+        elif isinstance(command, PressKeys):
+            for _ in range(command.repeat):
+                for combo in command.combos:
+                    if not combo.modifiers:
+                        self.censor.key(combo.text)
+
     def _judge(self, msg: ChatMessage, parsed: Command | ParseError) -> Outcome:
-        if self.is_banned(msg.user_id):
+        if self.is_banned(msg.user_id) or self.store.banned_until(msg.user_id) > msg.ts:
             return Outcome("banned", reason="you can't send commands right now")
         if isinstance(parsed, ParseError):
             return Outcome("invalid", reason=parsed.reason)
@@ -89,16 +110,18 @@ class Pipeline:
                 return Outcome("rate_limited", parsed, "slow down: one command every 2 seconds")
             if verdict == "global":
                 return Outcome("rate_limited", parsed, "chat is busy: try again in a moment")
-        text = _filterable_text(parsed)
-        if text is not None and (reason := self.text_filter(msg.user_id, text)):
-            return Outcome("filtered", parsed, reason)
-        return Outcome("accepted", parsed)
+        kind = self._filter(parsed)
+        if kind is None:
+            return Outcome("accepted", parsed)
+        until = self.strikes.add(msg.user_id, msg.ts) if kind == "hate" else None
+        if until is not None:
+            self.store.time_out(msg.ts, msg.user_id, until, "3 refused slurs in 10 minutes")
+        return Outcome("filtered", parsed, REASONS[kind], until)
 
-
-def _filterable_text(command: Command) -> str | None:
-    """Text from chat that ends up on screen: typed text and save names."""
-    if isinstance(command, TypeText):
-        return command.text
-    if isinstance(command, (Load, Save)):
-        return command.name
-    return None
+    def _filter(self, command: Command) -> Kind | None:
+        """Text from chat that ends up on screen: typed text (with what came just before), save names."""
+        if isinstance(command, TypeText):
+            return self.censor.typed_kind(command.text)
+        if isinstance(command, (Load, Save)):
+            return self.censor.kind(command.name)
+        return None
