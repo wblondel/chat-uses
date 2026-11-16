@@ -260,6 +260,10 @@ class DiscordChat:
         self._alerts.append(text[:1900])
         self.flush_alerts()
 
+    def pending_alerts(self) -> list[str]:
+        """Alerts not posted yet (Discord unreachable, or no alerts channel)."""
+        return list(self._alerts)
+
     def flush_alerts(self) -> None:
         client = self._client
         if client is None or not client.is_ready():
@@ -305,6 +309,7 @@ class DiscordChat:
             "reason": self.reason,
             "channel": self.channel,
             "messages": self.messages,
+            "alerts_waiting": len(self._alerts),
         }
 
     async def _run(self) -> None:

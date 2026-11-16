@@ -140,12 +140,12 @@ class Moderation:
         self.panic_state = {"since": now, "by": by, "reason": reason}
         self._save("panic", self.panic_state)
         self.store.event(now, "panic", {"by": by, "reason": reason})
-        name = "panic-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now))
-        self.effects.snapshot(name)
         self.effects.alert(
             f"🚨 **Panic** by {by}{f': {reason}' if reason else ''}. "
             "The stream is covered, the target's sound muted, input frozen. `/resume` when it's safe."
         )
+        name = "panic-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now))
+        self.effects.snapshot(name)
         return Answer(
             True, "Panic on: the stream is covered, the sound muted, input frozen. /resume to end it."
         )
