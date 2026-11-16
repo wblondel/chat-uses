@@ -385,6 +385,10 @@ brain keeps an eye on the target (PLAN.md 6.7, D48), every 10 seconds:
   `chat-audio-pcm`) are active, asked every 30 s through Incus. One that
   isn't is restarted, and `#ops` hears it. At most 3 restarts in 15 minutes
   per service; after that it's left to you, with one alert.
+- **A destroyed system:** if systemctl itself can't run in the target (chat
+  ran `sudo rm -rf --no-preserve-root /`), `#ops` hears it once and nothing
+  is restarted, since nothing could be (D52). Rebuild the target:
+  `sudo images/debian-xfce/check.sh --keep` (Phase 6 brings the revive).
 - **VNC:** brain's link down for more than a minute while the services say
   they're fine: the display and the session are restarted.
 - **A frozen screen:** commands reached the target and the screen didn't
@@ -393,7 +397,9 @@ brain keeps an eye on the target (PLAN.md 6.7, D48), every 10 seconds:
   screen.
 
 `chat-brain-admin status`, the dashboard and `images/brain/check.sh` show
-what it sees. It uses brain's Incus access from step 3; without it, only the
+what it sees. A check that fails (Incus unreachable, a refusal) stays a
+problem until one goes through again, and `#ops` hears it once it has lasted
+a minute. It uses brain's Incus access from step 3; without it, only the
 VNC and screen checks run, and only alert.
 
 ### Sound

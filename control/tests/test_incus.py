@@ -40,6 +40,7 @@ class FakeIncusApi:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, dict[str, str], Any]] = []
         self.refuse = ""
+        self.exec_failure = ""  # the "err" of a failed exec operation
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -82,6 +83,9 @@ class FakeIncusApi:
 
     async def wait(self, request: web.Request) -> web.Response:
         await self._note(request)
+        if request.match_info["id"] == "exec1" and self.exec_failure:
+            failed = {"status": "Failure", "status_code": 400, "err": self.exec_failure}
+            return web.json_response({"type": "sync", "metadata": failed})
         if request.match_info["id"] == "exec1":
             return web.json_response(
                 {"type": "sync", "metadata": {"status": "Success", "metadata": {"return": 3}}}
@@ -183,5 +187,23 @@ def test_state_and_exec_for_the_watchdog(tmp_path: Path) -> None:
             "wait-for-websocket": False,
             "record-output": False,
         }
+
+    run(test)
+
+
+def test_exec_gives_back_the_exit_statuses_incus_reports_as_errors(tmp_path: Path) -> None:
+    # A shell's 127 and 126 come back from Incus as a failed operation (what
+    # `rm -rf /` in a target does to systemctl: red-team test 10).
+    async def test() -> None:
+        api = FakeIncusApi()
+        async with serving(tmp_path, api) as (url, files):
+            incus = Incus(url, str(files["client"]), str(files["client_key"]), str(files["server"]))
+            api.exec_failure = "Command not found"
+            assert await incus.exec("desk", ["systemctl", "is-active", "chat-xvnc"]) == 127
+            api.exec_failure = "Command not executable"
+            assert await incus.exec("desk", ["systemctl", "is-active", "chat-xvnc"]) == 126
+            api.exec_failure = "Instance is not running"
+            with pytest.raises(IncusError, match="Instance is not running"):
+                await incus.exec("desk", ["systemctl", "is-active", "chat-xvnc"])
 
     run(test)

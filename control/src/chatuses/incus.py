@@ -24,6 +24,9 @@ from urllib.parse import quote
 import aiohttp
 
 TIMEOUT = 60.0  # seconds, for a whole call (a btrfs snapshot takes about one)
+# Incus reports these two exit statuses as a failed exec, with this wording,
+# rather than as the command's exit status. Given back as the statuses.
+EXEC_FAILURES = {"command not found": 127, "command not executable": 126}
 
 
 class IncusError(Exception):
@@ -84,7 +87,8 @@ class Incus:
         return str(meta.get("status") or "unknown")
 
     async def exec(self, instance: str, command: list[str]) -> int:
-        """Run a command in the instance, without a terminal or output; its exit status."""
+        """Run a command in the instance, without a terminal or output; its exit status
+        (127 when the command can't be found, as from a shell)."""
         timeout = aiohttp.ClientTimeout(total=TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             data = await self._call(
@@ -105,7 +109,10 @@ class Incus:
             done = await self._call(session, "GET", f"{operation}/wait?timeout={int(TIMEOUT)}")
         meta: dict[str, Any] = done.get("metadata") or {}
         if meta.get("status") != "Success":
-            raise IncusError(str(meta.get("err") or meta.get("status") or "the command failed to run"))
+            err = str(meta.get("err") or "")
+            if err.strip().lower() in EXEC_FAILURES:
+                return EXEC_FAILURES[err.strip().lower()]
+            raise IncusError(err or str(meta.get("status") or "the command failed to run"))
         result: dict[str, Any] = meta.get("metadata") or {}
         code = result.get("return")
         if not isinstance(code, int):
