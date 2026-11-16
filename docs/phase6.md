@@ -7,7 +7,7 @@ each tested before the next:
 1. **Rulesets, laws and power votes** (below).
 2. **Snapshots and power** (below): auto snapshots, named saves, `!rewind`, `!load`,
    `!reboot`, `!reset`, the overlay's timeline.
-3. Democracy mode: the meter, 12-second ballots, tally bars.
+3. **Democracy mode** (below): the meter, 12-second ballots, tally bars.
 4. The Discord control panel: Yes / No / Veto / Anarchy / Democracy buttons.
 5. Simulator scenarios (50 users, split votes, brigades, low population,
    ties) and the end-to-end test.
@@ -199,3 +199,63 @@ for a second and comes back as it was. `!load clean` likewise.
   brain's back. Snapshot names with `_` and suffixes are accepted.
 - The overlay's Time travel panel rendered in Chromium from a fake feed,
   with and without a vote running: it fits the sidebar.
+
+## Step 3: anarchy and democracy
+
+`control/src/chatuses/referee/modes.py`, PLAN.md 6.3.
+
+- **Anarchy** (the default): every valid command runs, in order.
+- **Democracy:** commands are ballots. The first one opens a 12-second
+  window (`democracy_window_s`); identical commands are tallied (as the
+  log writes them: `!click F7` is `!click F7` however it was typed), each
+  person's latest ballot counting once, and the most voted runs as
+  "democracy (votes/ballots)". A tie goes to the earliest.
+- **The meter** (0 to 100, from 50): `!democracy` pushes it up 2,
+  `!anarchy` down 2, once per person every 10 s. At 80 the mode becomes
+  democracy, at 20 anarchy again; after a switch it stays for 2 minutes
+  whatever the meter does. It drifts back toward 50, a point every 10 s.
+  Every number is a law (`meter_step`, `meter_democracy_at`,
+  `meter_anarchy_at`, `meter_push_gap_s`, `mode_lock_s`, `meter_drift_s`).
+- **Who pushes the meter:** like voters, people who've been around for 2
+  minutes (and spoke in the last 5): a raid can't flip the mode. Ballots in
+  democracy are ordinary commands, open to anyone whose command is
+  accepted (lockdown is the answer to a raid there).
+- **Moderators** set the mode at once: `/mode anarchy|democracy` on
+  Discord, *Switch to …* on the dashboard, `chat-brain-admin mode
+  democracy`. It's then locked for 2 minutes like any switch.
+- A panic, a rewind or a reboot drops the window's ballots: they were for
+  the screen before.
+- The mode lives in brain: a restart begins in anarchy, the meter at 50.
+- A ruleset without `democracy` in its features turns the meter off.
+
+**On stream:** the sidebar's meter moves (thresholds marked), with the mode
+and its lock below. In democracy, the bottom strip shows the commands being
+voted, with their counts and the seconds left, instead of the log; the
+ticker says how to push back.
+
+### On the server
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
+admin mode democracy
+```
+
+Then two or three people send commands: the strip shows the tally, and
+every 12 seconds the winner runs. `admin mode anarchy` (or 15 `!anarchy`
+from settled people) puts it back.
+
+### What was tested
+
+- `tests/test_modes.py`, on a fake clock: pushes and the per-person gap,
+  newcomers can't push, hysteresis and the lock, drift both ways, the most
+  voted command with latest-ballot-counts and earliest-wins ties, `/mode`
+  and clearing, the overlay's view.
+- `tests/test_brain.py`: a push from a settled user, a moderator's switch,
+  three people's clicks tallied (no log lines, nothing queued), the winner
+  reaching a fake VNC desktop when the window closes; `test_dashboard.py`:
+  switching from the dashboard; `test_discord.py`: `/mode`.
+- The overlay in both modes rendered in Chromium: meter, mode and lock in
+  the sidebar (with a vote and the time travel panel, it fits), the tally
+  in the strip.

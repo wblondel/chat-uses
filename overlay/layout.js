@@ -10,6 +10,8 @@
 //   it can't.
 // - Shows the power vote running (PLAN.md 6.4): what, the count, the time
 //   left, then how it ended.
+// - Shows the mode meter, and in democracy the commands being voted with
+//   their counts instead of the log (PLAN.md 6.3).
 // - Shows chat's snapshots (PLAN.md 6.6): the saves to !load and the latest
 //   auto snapshots to !rewind to, with thumbnails brain serves.
 // - Covers everything the moment brain's feed says "panic" (PLAN.md 7.5),
@@ -266,6 +268,61 @@ function setVote(v) {
   if (vote && (vote.phase === "voting" || vote.phase === "veto")) voteTimer = setInterval(renderVote, 250);
 }
 
+// --- anarchy and democracy (control/src/chatuses/referee/modes.py) --------------
+
+let modeView = null;
+let modeAt = 0; // when it arrived: locked_for and ends_in count from then
+let modeTimer;
+
+function renderTally(tally, elapsed) {
+  const box = $("tally");
+  if (!tally) {
+    box.replaceChildren();
+    return;
+  }
+  const left = tally.ends_in === null ? null : Math.max(0, Math.ceil(tally.ends_in - elapsed));
+  const head = tally.total
+    ? `Democracy · the most voted runs in ${left} s · ${tally.total} vote${tally.total === 1 ? "" : "s"}`
+    : "Democracy · type a command: the most voted runs";
+  const rows = [el("div", "tally-head", head)];
+  tally.options.forEach((option, i) => {
+    const row = el("div", `tally-row${i === 0 ? " lead" : ""}`);
+    const fill = el("div", "fill");
+    fill.style.width = `${(100 * option.votes) / Math.max(1, tally.total)}%`;
+    row.append(fill, el("span", "what", option.text), el("span", "votes", String(option.votes)));
+    rows.push(row);
+  });
+  box.replaceChildren(...rows);
+}
+
+function renderMode() {
+  const v = modeView;
+  const elapsed = (performance.now() - modeAt) / 1000;
+  const democracy = v?.mode === "democracy";
+  $("meter-marker").style.left = `${v ? v.meter : 50}%`;
+  if (v) {
+    $("tick-anarchy").style.left = `${v.anarchy_at}%`;
+    $("tick-democracy").style.left = `${v.democracy_at}%`;
+  }
+  $("mode-name").textContent = democracy ? "Democracy" : "Anarchy";
+  $("mode-name").className = `value ${democracy ? "democracy" : "anarchy"}`;
+  const lock = v ? Math.max(0, Math.ceil(v.locked_for - elapsed)) : 0;
+  $("mode-lock").textContent = lock ? `locked ${lock} s` : "";
+  $("log").hidden = democracy;
+  $("tally").hidden = !democracy;
+  $("ticker").hidden = democracy;
+  $("ticker-democracy").hidden = !democracy;
+  renderTally(democracy ? v.tally : null, elapsed);
+}
+
+function setMode(view) {
+  modeView = view ?? null;
+  modeAt = performance.now();
+  clearInterval(modeTimer);
+  renderMode();
+  if (modeView && (modeView.locked_for || modeView.tally?.ends_in)) modeTimer = setInterval(renderMode, 250);
+}
+
 // --- time travel (control/src/chatuses/snapshots.py) ----------------------------
 
 const REWINDS = 3; // auto snapshots shown: !rewind, !rewind 2, !rewind 3
@@ -318,6 +375,10 @@ function onMessage(msg) {
       setLockdown(msg.lockdown === true);
       setVote(msg.vote);
       setTimeline(msg.timeline);
+      setMode(msg.mode);
+      break;
+    case "mode":
+      setMode(msg);
       break;
     case "timeline":
       setTimeline(msg);
@@ -376,6 +437,7 @@ function connectBrain(url) {
     feedPanic = null; // back to panic.json until brain answers again
     applyScene();
     setVote(null); // the vote lives in brain
+    setMode(null); // so does the mode: anarchy's look until it's back
     setControls();
     setTimeout(() => connectBrain(url), 3000);
   });

@@ -77,6 +77,7 @@ def add_routes(app: web.Application, brain: "Brain", token: str) -> None:
     app.router.add_post("/api/unban", api.guard(api.unban))
     app.router.add_post("/api/endvote", api.guard(api.endvote))
     app.router.add_post("/api/rewind-to", api.guard(api.rewind_to))
+    app.router.add_post("/api/mode", api.guard(api.mode))
     app.router.add_get("/api/users", api.guard(api.users))
     app.router.add_get("/api/commands", api.guard(api.commands))
     app.router.add_get("/api/events", api.guard(api.events))
@@ -220,6 +221,12 @@ class _Api:
     async def unban(self, request: web.Request) -> web.StreamResponse:
         body = await self._body(request)
         return self._answer(self.mod.unban(self._by(request), self._text(body, "who")))
+
+    async def mode(self, request: web.Request) -> web.StreamResponse:
+        mode = (await self._body(request)).get("mode")
+        if mode not in ("anarchy", "democracy"):
+            raise web.HTTPBadRequest(text="mode: anarchy or democracy\n")
+        return self._answer(self.mod.mode(self._by(request), str(mode)))
 
     async def rewind_to(self, request: web.Request) -> web.StreamResponse:
         body = await self._body(request)

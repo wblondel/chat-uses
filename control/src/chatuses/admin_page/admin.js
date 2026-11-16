@@ -104,6 +104,12 @@ function renderState(s) {
       ? `Vote: ${vote.text} by ${vote.by}, ${vote.phase}, ${vote.yes} yes / ${vote.no} no (${vote.quorum} needed)`
       : `Vote: ${vote.text}: ${vote.phase}${vote.result ? `, ${vote.result}` : ""}`;
   $("endvote").hidden = !open;
+  const mode = s.referee.mode;
+  const modeLock = mode.locked_for ? `, locked ${mode.locked_for} s` : "";
+  $("mode-state").textContent = `Mode: ${mode.mode} (meter ${mode.meter}${modeLock})`;
+  const other = mode.mode === "anarchy" ? "democracy" : "anarchy";
+  $("mode-switch").textContent = `Switch to ${other}`;
+  $("mode-switch").dataset.mode = other;
   const rows = s.banned.map((b) => {
     const tr = el("tr");
     const who = el("td");
@@ -296,6 +302,7 @@ $("resume").addEventListener("click", () => {
 });
 $("lockdown").addEventListener("click", () => act("/api/lockdown", { on: !$("lockdown").dataset.on }));
 $("endvote").addEventListener("click", () => act("/api/endvote", {}));
+$("mode-switch").addEventListener("click", () => act("/api/mode", { mode: $("mode-switch").dataset.mode }));
 $("ban-form").addEventListener("submit", (e) => {
   e.preventDefault();
   act("/api/ban", { who: $("ban-who").value, duration: $("ban-duration").value, reason: $("ban-reason").value })

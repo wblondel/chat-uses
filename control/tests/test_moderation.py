@@ -41,6 +41,10 @@ class Effects:
             return False, f"No snapshot {which!r}"
         return True, "Rewinding to #3 (14:20)…"
 
+    def set_mode(self, mode: str, by: str) -> tuple[bool, str]:
+        self.done.append(f"mode {mode} by {by}")
+        return True, f"Mode: {mode} (locked for 120 s)."
+
     def end_vote(self, why: str) -> tuple[bool, str]:
         self.done.append(f"end_vote {why}")
         ended, self.vote_open = self.vote_open, False

@@ -17,6 +17,8 @@ a ban, end a panic or end a lockdown.
   the owner can't be banned this way.
 - **Ending a vote** (/endvote): a power vote that's going wrong stops at
   once (not one already being carried out).
+- **The mode** (/mode anarchy|democracy): set at once, then locked like
+  any switch (referee/modes.py).
 - **Rewinding** (/rewind-to): the target goes back to one of chat's
   snapshots at once, without a vote (an open vote ends); #mod-alerts says
   when it's done.
@@ -97,6 +99,7 @@ class Effects(Protocol):
     def snapshot(self, name: str) -> None: ...  # a forensic snapshot of the target, in the background
     def end_vote(self, why: str) -> tuple[bool, str]: ...  # ended?, what to say (referee/votes.py)
     def rewind_to(self, which: str, by: str) -> tuple[bool, str]: ...  # started?, what to say (snapshots.py)
+    def set_mode(self, mode: str, by: str) -> tuple[bool, str]: ...  # anarchy or democracy (referee/modes.py)
 
 
 class Moderation:
@@ -313,6 +316,11 @@ class Moderation:
         if ended:
             self.store.event(now, "endvote", {"by": by})
         return Answer(ended, text if ended else "No vote is running.")
+
+    def mode(self, by: str, mode: str) -> Answer:
+        """/mode: anarchy or democracy now, whatever the meter says (it's locked for a while after)."""
+        changed, text = self.effects.set_mode(mode, by)
+        return Answer(changed, text)
 
     def rewind_to(self, by: str, which: str, now: float | None = None) -> Answer:
         now = time.time() if now is None else now

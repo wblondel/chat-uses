@@ -16,6 +16,10 @@ dashboard do it; logged as done by "console":
     chat-brain-admin lockdown on|off            only regulars may send commands
     chat-brain-admin bans                       who is banned or timed out, until when
     chat-brain-admin endvote                    end the power vote running now
+    chat-brain-admin mode anarchy|democracy     set the mode now (locked for a while after)
+    chat-brain-admin snapshots                  chat's snapshots: number, kind, label
+    chat-brain-admin snapshot                   take an auto snapshot now
+    chat-brain-admin rewind-to NUMBER|SAVE      put the target back to one, no vote
 
 Rulesets and laws (PLAN.md 6.12, rulesets/):
 
