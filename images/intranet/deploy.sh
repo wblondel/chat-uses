@@ -89,7 +89,7 @@ fi
 info "offline Wikipedia: $(in_intranet sh -c 'ls /srv/zim/*.zim 2>/dev/null | xargs -r -n1 basename' | tr '\n' ' ' || true)"
 
 log "Restarting the intranet's services"
-if in_intranet test -d /run/systemd/system; then
+if wait_booted "$NAME" infra; then
 	in_intranet systemctl restart nginx.service chat-kiwix.service
 	sleep 2
 	in_intranet systemctl --no-pager --plain list-units nginx.service chat-kiwix.service | sed -n '1,3p' | sed 's/^/    /'
