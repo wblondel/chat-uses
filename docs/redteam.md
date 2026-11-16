@@ -16,7 +16,8 @@ sudo infra/tests/redteam.sh --report /tmp/redteam.md
 
 It prints a table; paste it into **Results** below with the date and the
 commit. `--only 8,13` runs some; `--keep` leaves the throwaway target for a
-look.
+look; `--net-image` picks the image `net-isolation.sh` launches (its default
+comes from images.linuxcontainers.org).
 
 What it does to the real stream:
 - **8, 9:** commands from console chat on the real desktop: a terminal
@@ -98,7 +99,7 @@ matters, the line says so; the server run is the one that counts.
 | 2 | FAIL (sandbox) | 64 busy loops: 250 frames in 12 s (270 wanted); the sandbox's 4 shared cores have no pinning to keep bcast's apart |
 | 3 | not run | the `dir` pool can't enforce disk sizes: the runner refuses (an earlier try wrote 9 GiB past a 4 GiB quota) |
 | 4 | not run | no memory controller: without a cap, the host's OOM killer would choose the victim |
-| 5-7 | see below | `net-isolation.sh` through the runner |
+| 5-7 | see step 1 | `net-isolation.sh` passed in step 1's sandbox run (docs/phase5.md); through the runner here, the sandbox's own image store is unreachable without `--net-image debian13-standin` |
 | 8 | PASS | typed slurs refused: whole, in 3 pieces by 3 people, leetspeak, invisible characters; decoded on screen, seen by screen OCR in 4 s |
 | 9 | PASS | a name holding a slur showed as `viewer#NNNN` |
 | 11 | SKIP | no systemd in the sandbox's targets |

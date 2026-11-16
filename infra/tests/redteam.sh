@@ -21,10 +21,12 @@
 # target's screen (and never prints it).
 #
 # Usage:
-#   sudo infra/tests/redteam.sh [--only 1,8,13] [--image IMAGE] [--report FILE] [--keep]
+#   sudo infra/tests/redteam.sh [--only 1,8,13] [--image IMAGE] [--net-image IMAGE]
+#                               [--report FILE] [--keep]
 #
-#   --only LIST     run only these tests
-#   --image IMAGE   image for the throwaway target (default chat-uses/debian-xfce)
+#   --only LIST       run only these tests
+#   --image IMAGE     image for the throwaway target (default chat-uses/debian-xfce)
+#   --net-image IMAGE image for net-isolation.sh's containers (its default: images:debian/13)
 #   --report FILE   also write the results table (Markdown) to FILE
 #   --keep          leave the throwaway target running
 #
@@ -44,10 +46,12 @@ ONLY=""
 IMAGE=chat-uses/debian-xfce
 REPORT=""
 KEEP=0
+NET_IMAGE=()
 while (($#)); do
 	case $1 in
 	--only) ONLY=",${2:?},"; shift ;;
 	--image) IMAGE=${2:?}; shift ;;
+	--net-image) NET_IMAGE=(--image "${2:?}"); shift ;;
 	--report) REPORT=${2:?}; shift ;;
 	--keep) KEEP=1 ;;
 	-h | --help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0 ;;
@@ -254,11 +258,13 @@ t21() {
 # --- the network (5-7) ---------------------------------------------------------------
 
 t5to7() {
-	local out
-	if out=$("$HERE/net-isolation.sh" 2>&1); then
+	local out summary
+	if out=$("$HERE/net-isolation.sh" "${NET_IMAGE[@]}" 2>&1); then
 		result 5-7 PASS "network isolation: $(grep -oE 'Result: .*' <<<"$out" | tail -1)"
 	else
-		result 5-7 FAIL "network isolation: $(grep -oE 'Result: .*' <<<"$out" | tail -1) (run infra/tests/net-isolation.sh to see which)"
+		summary=$(grep -oE 'Result: .*' <<<"$out" | tail -1)
+		summary=${summary:-$(grep -iE 'error|die' <<<"$out" | sed 's/\x1b\[[0-9;]*m//g' | tail -1)}
+		result 5-7 FAIL "network isolation: ${summary:-no result} (run infra/tests/net-isolation.sh to see which)"
 	fi
 }
 
