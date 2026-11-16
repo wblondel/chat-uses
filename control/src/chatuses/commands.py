@@ -5,7 +5,7 @@ commands go to the referee: the mode meter, votes, the overlay's help card.
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from chatuses.keymap import KeyCombo
 
@@ -66,6 +66,8 @@ MetaName = Literal[
     "yes",
     "no",
     "veto",
+    "revive",
+    "rip",
     "impeach",
     "grid",
     "help",
@@ -142,3 +144,30 @@ def describe(command: Command) -> str:
             return f"!load {name}"
         case Save(name=name):
             return f"!save {name}"
+
+
+def describe_stored(data: dict[str, Any]) -> str:
+    """describe() for an input command as the store keeps it (store.to_json): the death card, the
+    site. Built from the parsed fields, never from chat's message (D32)."""
+    try:
+        match data.get("type"):
+            case "TypeText":
+                command: Command = TypeText(str(data["text"]))
+            case "PressKeys":
+                combos = tuple(
+                    KeyCombo(tuple(c["modifiers"]), int(c["key"]), str(c["text"])) for c in data["combos"]
+                )
+                command = PressKeys(combos, int(data.get("repeat", 1)))
+            case "Click":
+                command = Click(str(data["cell"]), 0, 0, data.get("button", "left"), bool(data.get("double")))
+            case "Move":
+                command = Move(str(data["cell"]), 0, 0)
+            case "Drag":
+                command = Drag(str(data["start_cell"]), (0, 0), str(data["end_cell"]), (0, 0))
+            case "Scroll":
+                command = Scroll(data["direction"], int(data["amount"]))
+            case _:
+                return "a command"
+    except (KeyError, TypeError, ValueError):
+        return "a command"
+    return describe(command)

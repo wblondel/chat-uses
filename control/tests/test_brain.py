@@ -294,12 +294,15 @@ def test_time_travel_votes_save_rewind_and_load() -> None:
             brain.referee.votes._cooldown.clear()  # pyright: ignore[reportPrivateUsage]
             first = snaps(brain).auto(1)
             assert first
-            assert await vote("!rewind") == {"phase": "done", "result": f"back to {first.label}"}
+            assert await vote("!rewind") == {
+                "phase": "done",
+                "result": f"back to {first.label} (2 lives left)",
+            }
             assert target.restored == [first.ref] and not brain.executor.frozen
             brain.referee.votes._cooldown.clear()  # pyright: ignore[reportPrivateUsage]
             save = snaps(brain).named("clean")
             assert save
-            assert await vote("!load clean") == {"phase": "done", "result": "back to clean"}
+            assert await vote("!load clean") == {"phase": "done", "result": "back to clean (1 life left)"}
             assert target.restored[-1] == save.ref
             assert [p["kind"] for _, _, _, p in brain.store.recent_events(("time-travel",))] == [
                 "named",

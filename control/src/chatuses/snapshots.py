@@ -73,8 +73,10 @@ class Snapshots:
         grab: Callable[[], Awaitable[Frame | None]] | None = None,
         on_change: Callable[[], None] = lambda: None,
         clock: Callable[[], float] = time.time,
+        run: Callable[[], int | None] = lambda: None,
     ) -> None:
         self.store = store
+        self.run = run  # the run going on (game/runs.py): its ID goes with each snapshot
         self.backend = backend
         self.instance = instance  # the target's instance name (found by address if need be)
         self.laws = laws
@@ -103,6 +105,10 @@ class Snapshots:
             return next((s for s in self.all() if s.id == int(which)), None)
         return self.named(which.casefold())
 
+    def before(self, ts: float) -> Snap | None:
+        """The latest auto snapshot taken before ts (a revive goes back to it)."""
+        return next((s for s in self.all("auto") if s.created < ts), None)
+
     def latest_auto_time(self) -> float | None:
         latest = self.auto(1)
         return latest.created if latest else None
@@ -121,7 +127,7 @@ class Snapshots:
             n += 1
             ref = f"{base}-{n}"
         await self.backend.snapshot(ref, instance=instance)
-        snap_id = self.store.add_snapshot(now, kind, name, instance, ref)
+        snap_id = self.store.add_snapshot(now, kind, name, instance, ref, self.run())
         await self._thumbnail(snap_id)
         await self._prune(kind, name, snap_id)
         self.on_change()
@@ -147,6 +153,20 @@ class Snapshots:
     async def restore(self, snap: Snap) -> None:
         await self.backend.restore(snap.instance, snap.ref)
         self.store.event(self.clock(), "time-travel", {"id": snap.id, "kind": snap.kind, "label": snap.label})
+
+    async def clear(self) -> int:
+        """A new run: every snapshot of the last one goes (from Incus and the timeline), so nothing
+        of a dead run can be loaded. Their thumbnails stay, for the run's page on the site."""
+        gone = self.all()
+        for snap in gone:
+            try:
+                await self.backend.delete_snapshot(snap.instance, snap.ref)
+            except Exception as err:  # already gone: forget it anyway
+                log.warning("deleting snapshot %s: %s", snap.ref, err)
+            self.store.delete_snapshot(self.clock(), snap.id)
+        if gone:
+            self.on_change()
+        return len(gone)
 
     async def _thumbnail(self, snap_id: int) -> None:
         if self.thumbs is None or self.grab is None:

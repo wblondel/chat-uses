@@ -6,7 +6,8 @@ what the stream shows), so the feed needs no password. Messages:
 
     {"type": "hello", "log": [line...], "target": bool,     on connect
      "panic": bool, "panic_kind": str, "lockdown": bool,
-     "vote": {...} | null, "timeline": {...} | null, "mode": {...} | null}
+     "vote": {...} | null, "timeline": {...} | null, "mode": {...} | null,
+     "run": {...} | null, "card": {...} | null}
     {"type": "log", ...line}                                a command, as chat sees it
     {"type": "log-state", "id": int, "state": str}          what became of it
     {"type": "pointer", "x": int, "y": int, "user": str}    who moved the pointer
@@ -21,6 +22,10 @@ what the stream shows), so the feed needs no password. Messages:
                                                             tally (referee/modes.py view())
     {"type": "timeline", "timeline": [...], "saves": [...],  chat's snapshots (snapshots.py view()):
      "slots": int}                                          thumbnails at /thumbs/<id>.png
+    {"type": "run", "run": {...} | null}                     the run: number, lives, uptime, a death
+                                                            vote (game/runs.py view())
+    {"type": "card", "kind": "death" | "start",             a full-frame card for `seconds`: a dead
+     "seconds": float, ...}                                 run's (brain's end_run), a new run's
 
 bcast follows "panic" too (chat-bcast-panic), to mute the target's sound.
 
@@ -72,6 +77,10 @@ class OverlayHub:
         self._timeline: dict[str, Any] | None = None
         self._mode: dict[str, Any] | None = None
         self._mode_at = 0.0
+        self._run: dict[str, Any] | None = None
+        self._run_at = 0.0
+        self._card: dict[str, Any] | None = None
+        self._card_until = 0.0
         self._clients: set[asyncio.Queue[str | None]] = set()
         self._sockets: set[web.WebSocketResponse] = set()
         self._lines: deque[Line] = deque(maxlen=KEEP_LINES)
@@ -138,6 +147,29 @@ class OverlayHub:
         self._timeline = view
         self._send({"type": "timeline", **view})
 
+    def run(self, view: dict[str, Any] | None) -> None:
+        self._run, self._run_at = view, time.monotonic()
+        self._send({"type": "run", "run": view})
+
+    def _run_now(self) -> dict[str, Any] | None:
+        if self._run is None:
+            return None
+        gone = time.monotonic() - self._run_at
+        view = {**self._run, "uptime": round(self._run["uptime"] + gone)}
+        death = view.get("death")
+        if death and death.get("ends_in") is not None:
+            view["death"] = {**death, "ends_in": round(max(0.0, death["ends_in"] - gone), 1)}
+        return view
+
+    def card(self, kind: str, data: dict[str, Any], seconds: float) -> None:
+        self._card = {"type": "card", "kind": kind, **data, "seconds": seconds}
+        self._card_until = time.monotonic() + seconds
+        self._send(self._card)
+
+    def _card_now(self) -> dict[str, Any] | None:
+        left = self._card_until - time.monotonic()
+        return {**self._card, "seconds": round(left, 1)} if self._card is not None and left > 1 else None
+
     def _vote_now(self) -> dict[str, Any] | None:
         if self._vote is None:
             return None
@@ -180,6 +212,8 @@ class OverlayHub:
             "vote": self._vote_now(),
             "timeline": self._timeline,
             "mode": self._mode_now(),
+            "run": self._run_now(),
+            "card": self._card_now(),
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)

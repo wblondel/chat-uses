@@ -18,6 +18,7 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     DISCORD_CHANNEL          the channel commands are read from (control)
     DISCORD_ALERTS_CHANNEL   where moderators get alerts (mod-alerts)
     DISCORD_OPS_CHANNEL      where the watchdog reports the target's health (ops)
+    DISCORD_GRAVEYARD_CHANNEL where dead runs' cards go (graveyard)
     INCUS_URL                the host's Incus API, for forensic snapshots on panic;
                              off without it or without the certificates (INCUS_*)
     TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
@@ -43,7 +44,7 @@ import shutil
 import signal
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,7 @@ from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Load, Meta, Move, Rewind, Save, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
+from chatuses.game.runs import Death, Runs, uptime_text
 from chatuses.identity import Platform, user_id
 from chatuses.incus import Incus, IncusError
 from chatuses.overlay import OverlayHub
@@ -92,11 +94,12 @@ ADMIN_USAGE = (
     "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
     "       | snapshots | snapshot | rewind-to NUMBER|SAVE\n"
-    "       | session | session start NAME | session end | sessions | ocr | ocr-verdict HIT real|false"
+    "       | session | session start NAME | session end | sessions | ocr | ocr-verdict HIT real|false\n"
+    "       | run | run end [CAUSE]"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
-BALLOTS = ("yes", "no", "veto")
+BALLOTS = ("yes", "no", "veto", "revive", "rip")
 PRESSED = {  # the Discord panel's answers to presses that went through
     "!yes": "You voted yes.",
     "!no": "You voted no.",
@@ -105,6 +108,12 @@ PRESSED = {  # the Discord panel's answers to presses that went through
     "!democracy": "You pushed the meter toward democracy.",
 }
 REFEREE_TICK = 0.25  # seconds between the vote engine's checks
+RUN_CHECK = 5.0  # seconds between looks at whether the machine has died (game/runs.py)
+DEATH_CARD = 20.0  # seconds the death card stays on stream
+START_CARD = 6.0  # seconds "RUN #N BEGINS" stays
+GOLDEN = "golden"  # the target's snapshot as deployed (images/debian-xfce/deploy.sh): a new run's start
+DYING = "the machine is dying: !revive or !rip"
+NO_LIVES = "no lives left: the next death ends the run"
 AUTO_CHECK = 30.0  # seconds between looks at whether an auto snapshot is due
 TRAVELLING = "wait: the machine is travelling in time"
 NO_INCUS = "time travel is off: brain has no Incus access"
@@ -127,6 +136,7 @@ class Config:
     discord_channel: str = "control"
     discord_alerts_channel: str = "mod-alerts"
     discord_ops_channel: str = "ops"
+    discord_graveyard_channel: str = "graveyard"
     incus_url: str = ""
     incus_project: str = "targets"
     incus_cert: str = f"{SECRETS}/incus-client.crt"
@@ -165,6 +175,8 @@ class Config:
             discord_channel=env.get("DISCORD_CHANNEL", "") or cls.discord_channel,
             discord_alerts_channel=env.get("DISCORD_ALERTS_CHANNEL", "") or cls.discord_alerts_channel,
             discord_ops_channel=env.get("DISCORD_OPS_CHANNEL", "") or cls.discord_ops_channel,
+            discord_graveyard_channel=env.get("DISCORD_GRAVEYARD_CHANNEL", "")
+            or cls.discord_graveyard_channel,
             incus_url=env.get("INCUS_URL", cls.incus_url),
             incus_project=env.get("INCUS_PROJECT", "") or cls.incus_project,
             incus_cert=env.get("INCUS_CERT", cls.incus_cert),
@@ -246,15 +258,33 @@ class Brain:
             run_winner=self._democracy_won,
         )
         self.overlay.mode(self.referee.modes.view(time.time()))  # pages that connect get it
+        self.runs = Runs(  # game/runs.py: lives, deaths, the next run
+            store,
+            lambda: self.referee.laws,
+            self.pipeline.presence,
+            lives_on=lambda: "lives" in self.referee.ruleset.features,
+            on_change=self._run_changed,
+        )
+        self.runs.ensure(self.referee.ruleset.name, target_instance or target_host)
+        self._ending = False  # a run's end and the next run's start under way
+        self.graveyard_channel = "graveyard"
         self.incus = incus
         self.incus_off_reason = "" if incus else "not set up"
         self.target_host = target_host
         self.target_instance = target_instance
         self.thumbs = thumbs
+        self.grab = grab  # the screen now (thumbnails, a dead run's last screen)
         self.snapshots: Snapshots | None = None  # chat's time travel (snapshots.py): needs Incus
         if incus is not None:
             self.snapshots = Snapshots(
-                store, incus, self._instance, lambda: self.referee.laws, thumbs, grab, self._timeline_changed
+                store,
+                incus,
+                self._instance,
+                lambda: self.referee.laws,
+                thumbs,
+                grab,
+                self._timeline_changed,
+                run=lambda: run["id"] if (run := self.runs.current) else None,
             )
             self._timeline_changed()
         self.sessions = Sessions(store)  # Phase 7: what each session was like
@@ -318,7 +348,10 @@ class Brain:
             if command == Meta("grid"):
                 self.overlay.grid()
         elif outcome.kind == "accepted" and isinstance(command, (Meta, Rewind, Load, Save)):  # referee/
-            reply = self.referee.handle(msg.user_id, name, command, msg.ts)
+            if isinstance(command, Meta) and command.name in ("revive", "rip"):  # game/runs.py
+                reply = self.runs.ballot(msg.user_id, command.name == "revive", msg.ts)
+            else:
+                reply = self.referee.handle(msg.user_id, name, command, msg.ts)
             if not reply.ok:
                 if not private and self._may_show_refusal(msg):
                     self.overlay.add_line(name, platform, None, "refused", reply.text)
@@ -430,14 +463,16 @@ class Brain:
         action, arg = proposal.action, proposal.arg
         if self.moderation.panicking:
             return PAUSED
-        if action == "newrun":
-            return "runs come later: !newrun isn't on yet"
+        if self.runs.state != "alive" or self._ending:
+            return DYING
         if action == "impeach":
             return "nobody is driving: the driver's seat comes later"
         if self.snapshots is None:
             return NO_INCUS
         if self._travelling:
             return TRAVELLING
+        if action in ("rewind", "load") and self.runs.lives_left() == 0:
+            return NO_LIVES
         if action == "rewind" and self.snapshots.auto(int(arg or 1)) is None:
             have = len(self.snapshots.all("auto"))
             return f"only {have} snapshots to go back to" if have else "no snapshot to go back to yet"
@@ -464,7 +499,14 @@ class Brain:
                     if snap is None:
                         return False, "that snapshot is gone"
                     await self._travel(snap)
-                    return True, f"back to {snap.label}"
+                    self.runs.spend_life(proposal.action)
+                    left = self.runs.lives_left()
+                    return True, f"back to {snap.label}" + (
+                        f" ({_lives(left)} left)" if left is not None else ""
+                    )
+                case "newrun":
+                    await self.end_run("abandoned by vote")
+                    return True, "a new run begins"
                 case "reboot" | "reset":
                     return await self._power(proposal.action == "reset")
                 case _:
@@ -762,6 +804,7 @@ class Brain:
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
         lines.append(self.referee.status_line())
+        lines.append(self.run_line())
         lines.append(self.sessions.status())
         if self.snapshots is None:
             lines.append(f"Snapshots: off ({self.incus_off_reason})")
@@ -892,6 +935,13 @@ class Brain:
                 if not rows:
                     return "ok", "No sessions yet."
                 return "ok", "\n".join(_session_line(row) for row in rows)
+            case ["run"]:
+                return "ok", self.run_line()
+            case ["run", "end", *why]:
+                if self.runs.current is None or self._ending:
+                    return "error", "No run to end right now."
+                self._spawn(self.end_run(" ".join(why)[:80] or "ended by a moderator"))
+                return "ok", "Ending the run: its card, then a new run from the golden snapshot."
             case ["ocr"]:
                 return "ok", self.ocr_text()
             case ["ocr-verdict", hit, ("real" | "false") as verdict] if hit.lstrip("#").isdigit():
@@ -979,10 +1029,164 @@ class Brain:
         return ("ok" if ok else "error"), text
 
     async def _referee_ticks(self) -> None:
-        """Close vote windows and veto countdowns on time. Never returns."""
+        """Close vote windows, veto countdowns and death votes on time. Never returns."""
         while True:
             self.referee.tick()
+            if (verdict := self.runs.verdict(time.time())) is not None:
+                self._spawn(self._after_death_vote(verdict))
             await asyncio.sleep(REFEREE_TICK)
+
+    def _spawn(self, job: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(job)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    # --- runs (game/runs.py) ------------------------------------------------------------
+
+    def _run_changed(self) -> None:
+        self.overlay.run(self.runs.view(time.time()))
+
+    def run_line(self) -> str:
+        run, left = self.runs.current, self.runs.lives_left()
+        if run is None:
+            return "Run: none (a new one is starting)"
+        lives = (
+            "lives off"
+            if left is None
+            else f"{left} of {_lives(run['lives_start'] + run['lives_bonus'])} left"
+        )
+        state = f", {self.runs.state}" if self.runs.state != "alive" else ""
+        return f"Run #{run['number']}{state}: {lives}, {uptime_text(time.time() - run['started'])}"
+
+    async def _run_watch(self) -> None:
+        """Has the machine died? (the watchdog's verdict, game/runs.py). Never returns."""
+        while True:
+            await asyncio.sleep(RUN_CHECK)
+            now = time.time()
+            vote = self.referee.votes.current
+            quiet = (
+                self.moderation.panicking
+                or self._travelling
+                or self._ending
+                or (vote is not None and vote.phase == "running")
+            )
+            if (death := self.runs.observe(self.watchdog.fatal(now), now, quiet)) is not None:
+                self._died(death)
+
+    def _died(self, death: Death) -> None:
+        run = self.runs.current
+        number = run["number"] if run else "?"
+        self.referee.end_vote("the machine died")
+        self.referee.modes.clear()
+        if death.vote_ends is None:
+            self.ops(
+                f"💀 Run #{number}: the machine died ({death.cause}), with no lives left: the run is over."
+            )
+        else:
+            self.ops(f"💀 Run #{number}: the machine died ({death.cause}). Chat votes: !revive or !rip.")
+
+    async def _after_death_vote(self, verdict: str) -> None:
+        death = self.runs.death
+        cause = death.cause if death else "it died"
+        if verdict == "rip" or death is None:
+            await self.end_run(cause, death.since if death else None)
+            return
+        try:
+            back = await self._revive(death.since)
+        except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+            self.ops(f"⚠️ The revive failed ({err or type(err).__name__}): the run ends.")
+            await self.end_run(cause, death.since)
+            return
+        self.runs.spend_life("revive")
+        self.runs.revived()
+        left = self.runs.lives_left()
+        lives = f" {_lives(left)} left." if left is not None else ""
+        self.overlay.add_line("revive", "democracy", f"!revive: {back}", "done")
+        self.ops(f"💚 Revived: {back}.{lives}")
+
+    async def _revive(self, since: float) -> str:
+        """Back to the last snapshot from before the machine fell ill, or a forced restart."""
+        snap = self.snapshots.before(since) if self.snapshots else None
+        if snap is not None:
+            await self._travel(snap)
+            return f"back to {snap.label}"
+        if self.incus is not None:
+            ok, text = await self._power(force=True)
+            if ok:
+                return "restarted (no snapshot from before)"
+            raise IncusError(text)
+        return "nothing to go back to: left as it is"
+
+    async def end_run(self, cause: str, last_well: float | None = None) -> None:
+        """The run is over: its card on stream and in #graveyard, then a new run from the golden
+        snapshot. Input waits meanwhile."""
+        if self._ending or self.runs.current is None:
+            return
+        self._ending = True
+        self.executor.freeze()
+        self.referee.modes.clear()
+        try:
+            card = self.runs.card(cause, last_well)
+            for entry in [*card["last_commands"], *([card["final_blow"]] if card["final_blow"] else [])]:
+                entry["name"] = self.filter.safe_name(entry["user"], entry["name"])
+            frame = await self._final_frame(card["number"])
+            self.runs.end(card, frame[0] if frame else None)
+            self.overlay.card("death", card, DEATH_CARD)
+            self._graveyard(card, frame[1] if frame else None)
+            started = time.monotonic()
+            await self._fresh_machine(card["number"])
+            await asyncio.sleep(max(0.0, DEATH_CARD - (time.monotonic() - started)))
+            run = self.runs.start(self.referee.ruleset.name, self.target_instance or self.target_host)
+            self.overlay.card("start", {"number": run["number"], "lives": self.runs.lives_left()}, START_CARD)
+            self.ops(f"🌱 Run #{run['number']} begins.")
+        finally:
+            self._ending = False
+            if not self.moderation.panicking:
+                self.executor.thaw()
+
+    async def _final_frame(self, number: int) -> tuple[str, bytes] | None:
+        """The machine's last screen, for the card in #graveyard and the site: (file, PNG)."""
+        if self.grab is None or self.thumbs is None:
+            return None
+        try:
+            frame = await self.grab()
+            if frame is None:
+                return None
+            png = frame.png()
+            self.thumbs.mkdir(parents=True, exist_ok=True)
+            name = f"run-{number}.png"
+            (self.thumbs / name).write_bytes(frame.thumbnail(480).png())
+            return name, png
+        except Exception as err:  # a dead machine may well have no screen
+            log.warning("run #%s: no final screen: %s", number, err)
+            return None
+
+    async def _fresh_machine(self, number: int) -> None:
+        """The next run starts from the golden snapshot; the dead run's snapshots go."""
+        if self.incus is None or self.snapshots is None:
+            return
+        try:
+            await self.snapshots.clear()
+            await self.incus.restore(await self._instance(), GOLDEN)
+        except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+            self.ops(
+                f"⚠️ Run #{number + 1} starts on the same desktop: no fresh one ({err or type(err).__name__})."
+                " `images/debian-xfce/deploy.sh` takes the golden snapshot new runs start from."
+            )
+
+    def _graveyard(self, card: dict[str, Any], png: bytes | None) -> None:
+        if self.discord is None:
+            return
+        blow = card["final_blow"]
+        lines = [
+            f"💀 **Run #{card['number']}** died: {card['cause']}.",
+            f"Lived {uptime_text(card['lived'])}, {card['lives_used']} lives used.",
+        ]
+        if blow:
+            lines.append(f"Probably killed by {blow['name']} (`{blow['text']}`). No offence.")
+        if card["last_commands"]:
+            lines.append("Last commands: " + ", ".join(f"`{c['text']}`" for c in card["last_commands"][:5]))
+        self.discord.alert("\n".join(lines), png, channel=self.graveyard_channel)
 
     async def serve(self, config: Config, stop: asyncio.Event) -> None:
         token = read_secret(config.admin_token_file)
@@ -1002,13 +1206,14 @@ class Brain:
         self.start_adapters(config)
         self.start_ocr(config)
         self.ops_channel = config.discord_ops_channel
+        self.graveyard_channel = config.discord_graveyard_channel
         if self.snapshots is not None:
             try:
                 await self.snapshots.reconcile()
             except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
                 log.warning("snapshots: can't list the target's: %s", err)
         jobs = (self.keep_tidy(), self.watchdog.run(), self._referee_ticks(), self._auto_snapshots())
-        for job in (*jobs, self._session_samples()):
+        for job in (*jobs, self._session_samples(), self._run_watch()):
             task = asyncio.create_task(job)
             self._background.add(task)
             task.add_done_callback(self._background.discard)
@@ -1077,6 +1282,10 @@ async def amain(config: Config) -> None:
         )
         brain.incus_off_reason = why_not
         await brain.serve(config, stop)
+
+
+def _lives(n: int) -> str:
+    return f"{n} {'life' if n == 1 else 'lives'}"
 
 
 def _session_line(row: dict[str, Any]) -> str:

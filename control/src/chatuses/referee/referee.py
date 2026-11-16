@@ -29,7 +29,7 @@ from chatuses.store import Store
 log = logging.getLogger(__name__)
 
 # Built in brain so far (the rest of a ruleset's features come later).
-BUILT = frozenset({"anarchy", "democracy", "power_votes", "snapshots"})
+BUILT = frozenset({"anarchy", "democracy", "power_votes", "snapshots", "lives"})
 NEEDS_FEATURE = {"save": "snapshots", "rewind": "snapshots", "load": "snapshots"}
 
 

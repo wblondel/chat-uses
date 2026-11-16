@@ -27,6 +27,11 @@ Rulesets and laws (PLAN.md 6.12, rulesets/):
     chat-brain-admin laws                       laws changed over the ruleset's
     chat-brain-admin law NAME VALUE|default     change a law (within its bounds), or put it back
 
+Runs (PLAN.md 6.7, Phase 8):
+
+    chat-brain-admin run                        the run going on: number, lives, how long
+    chat-brain-admin run end [CAUSE]            end it now (its card, #graveyard), then a new run
+
 Screen OCR verdicts (Phase 7): was each hit real? What decides enforcing.
 
     chat-brain-admin ocr                        the hits of the last 90 days and their verdicts

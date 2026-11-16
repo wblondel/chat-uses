@@ -61,6 +61,8 @@ _METAS: dict[str, MetaName] = {
         "yes",
         "no",
         "veto",
+        "revive",
+        "rip",
         "impeach",
         "grid",
         "help",
