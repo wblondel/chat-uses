@@ -252,9 +252,12 @@ def test_alerts_go_to_mod_alerts_without_mentions() -> None:
         fake = SimpleNamespace(is_ready=lambda: True, get_guild=get_guild)
         chat._client = cast(Any, fake)  # pyright: ignore[reportPrivateUsage]
         chat.flush_alerts()
-        chat.alert("after")
+        chat.alert("after", b"\x89PNG")
         await asyncio.sleep(0)
         assert [text for text, _ in posted] == ["before connecting @everyone", "after"]
+        assert sent_files[0] == []
+        [screenshot] = sent_files[1]
+        assert screenshot.filename == "SPOILER_screen.png" and screenshot.fp.read() == b"\x89PNG"
         mentions = posted[0][1]
         assert not mentions.everyone and not mentions.users and not mentions.roles
         assert chat.pending_alerts() == []

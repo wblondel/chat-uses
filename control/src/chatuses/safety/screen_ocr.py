@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -61,23 +62,27 @@ async def tesseract(frame: Frame, langs: str = "eng", timeout: float = OCR_TIMEO
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "OMP_THREAD_LIMIT": "1"},
+            start_new_session=True,  # its own process group: a timeout kills all of it
         )  # fmt: skip
     except OSError as err:
         raise OcrError(f"can't run tesseract: {err}") from err
     try:
         out, _ = await asyncio.wait_for(proc.communicate(frame.ppm()), timeout)
     except TimeoutError as err:
-        proc.kill()
-        await proc.wait()
+        await _kill(proc)
         raise OcrError(f"tesseract took more than {timeout:.0f} s") from err
     except asyncio.CancelledError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
+        await _kill(proc)
         raise
     if proc.returncode != 0:
         raise OcrError(f"tesseract failed (exit {proc.returncode})")
     return out.decode("utf-8", "replace")
+
+
+async def _kill(proc: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    await proc.communicate()  # reads what's left, closes the pipes
 
 
 async def read_screen(host: str, port: int = 5900) -> ScreenReader:
