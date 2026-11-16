@@ -4,8 +4,10 @@ A restricted client certificate that reaches only the `targets` project
 (infra/host/bootstrap.sh, step incus-api). The host's own certificate is
 pinned: brain trusts that one certificate, whatever name it carries.
 
-For now one call: the forensic snapshot taken when a moderator panics
-(PLAN.md 7.5). Phase 6 adds rewinds and the runs' lifecycle.
+Calls: the forensic snapshot taken when a moderator panics (PLAN.md 7.5),
+and for the watchdog (safety/watchdog.py) the instance's state and running
+a command in it (exit status only). Phase 6 adds rewinds and the runs'
+lifecycle.
 
 `python -m chatuses.incus` (images/brain/check.sh) checks the access with
 brain's settings, changing nothing: it finds the target's instance, and
@@ -74,6 +76,41 @@ class Incus:
     async def get(self, path: str) -> dict[str, Any]:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as session:
             return await self._call(session, "GET", path)
+
+    async def state(self, instance: str) -> str:
+        """Running, Stopped, Frozen..."""
+        data = await self.get(f"/1.0/instances/{quote(instance, safe='')}/state")
+        meta: dict[str, Any] = data.get("metadata") or {}
+        return str(meta.get("status") or "unknown")
+
+    async def exec(self, instance: str, command: list[str]) -> int:
+        """Run a command in the instance, without a terminal or output; its exit status."""
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            data = await self._call(
+                session,
+                "POST",
+                f"/1.0/instances/{quote(instance, safe='')}/exec",
+                {
+                    "command": command,
+                    "environment": {},
+                    "interactive": False,
+                    "wait-for-websocket": False,
+                    "record-output": False,
+                },
+            )
+            operation = data.get("operation")
+            if not isinstance(operation, str) or not operation.startswith("/1.0/operations/"):
+                raise IncusError("Incus didn't return an operation")
+            done = await self._call(session, "GET", f"{operation}/wait?timeout={int(TIMEOUT)}")
+        meta: dict[str, Any] = done.get("metadata") or {}
+        if meta.get("status") != "Success":
+            raise IncusError(str(meta.get("err") or meta.get("status") or "the command failed to run"))
+        result: dict[str, Any] = meta.get("metadata") or {}
+        code = result.get("return")
+        if not isinstance(code, int):
+            raise IncusError("no exit status")
+        return code
 
     async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
         """Snapshot the instance (named, or found by address) as `name`; returns the instance's name."""

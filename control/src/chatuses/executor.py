@@ -92,6 +92,7 @@ class Executor:
         self.online = asyncio.Event()
         self.vnc: VncInput | None = None
         self.frozen = False
+        self.last_input = 0.0  # when a command last reached the target (for the watchdog)
         self._running: asyncio.Task[None] | None = None
 
     def can_take(self) -> bool:
@@ -199,6 +200,8 @@ class Executor:
             log.exception("reporting the executor's status failed")
 
     def _finish(self, job: Job, result: JobResult) -> None:
+        if result == "done":
+            self.last_input = time.time()
         try:
             self.report(job, result, time.monotonic() - job.accepted_at)
         except Exception:  # a failed report (database full...) mustn't stop chat's input

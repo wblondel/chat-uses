@@ -118,6 +118,7 @@ class ScreenWatch:
         self.last_read = 0.0
         self.last_ms = 0
         self.last_error = ""
+        self.last_change: float | None = None  # when the screen last changed (the watchdog asks)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -167,6 +168,7 @@ class ScreenWatch:
         digest = frame.digest()
         if digest == self._last_digest:
             return None
+        self.last_change = self.clock()
         start = time.monotonic()
         text = await self.ocr(frame)
         self._last_digest = digest

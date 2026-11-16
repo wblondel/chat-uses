@@ -16,6 +16,10 @@ dashboard do it; logged as done by "console":
     chat-brain-admin lockdown on|off            only regulars may send commands
     chat-brain-admin bans                       who is banned or timed out, until when
 
+Privacy (PLAN.md 11, docs/privacy.md): commands and logs are deleted after 90 days.
+
+    chat-brain-admin forget WHO                 a deletion request: their commands and log entries
+
 Runs inside the brain container (root): python -m chatuses.admin.
 """
 

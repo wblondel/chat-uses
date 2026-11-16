@@ -13,7 +13,7 @@ at least two moderators have practised every tool on an unlisted stream.
 | 2 | Text filter: `!type` text with a rolling buffer, names on the overlay, strikes and automatic timeouts | done; comes with the next brain deploy |
 | 3 | Moderation: panic end to end, cross-platform bans and timeouts, lockdown, moderator slash commands, admin dashboard with audit viewer | done; to set up on the server |
 | 4 | Screen OCR content hold, in shadow mode first | done; shadow mode on the server, enforce after tuning |
-| 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | |
+| 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | watchdog, audio cap, retention, rules and privacy drafts done; red-team runner next |
 
 ## Step 1: egress and intranet
 
@@ -366,7 +366,118 @@ the stream says "Content check" until `/resume`.
   pictures out (step 1); moderators and panic cover the rest.
 - **Audio** (text-to-speech): later, optional (PLAN.md 7.4).
 
+## Step 5: watchdog, sound, privacy, rules
+
+### The watchdog
+
+brain keeps an eye on the target (PLAN.md 6.7, D48), every 10 seconds:
+
+- **The instance runs.** If it's stopped, `#ops` hears it once; brain
+  doesn't start it (you may have stopped it; what a dead target means for
+  the game comes with Phase 6).
+- **The desktop's services** (`chat-xvnc`, `chat-session`, `chat-audio`,
+  `chat-audio-pcm`) are active, asked every 30 s through Incus. One that
+  isn't is restarted, and `#ops` hears it. At most 3 restarts in 15 minutes
+  per service; after that it's left to you, with one alert.
+- **VNC:** brain's link down for more than a minute while the services say
+  they're fine: the display and the session are restarted.
+- **A frozen screen:** commands reached the target and the screen didn't
+  change in the 2 minutes after. `#ops` hears it; nothing is restarted (a
+  still screen can be fine). This needs screen OCR on, which reads the
+  screen.
+
+`chat-brain-admin status`, the dashboard and `images/brain/check.sh` show
+what it sees. It uses brain's Incus access from step 3; without it, only the
+VNC and screen checks run, and only alert.
+
+### Sound
+
+The encoder now compresses the whole mix above `AUDIO_COMPRESS` (0.14,
+−17 dB) at 20:1, in front of the limiter (D47). Measured with ffmpeg's
+loudness meter on stereo test sound, and on the sandbox's stream:
+
+| Sound | Before | After |
+|---|---|---|
+| Full-scale white noise from the target, **on the stream** (red-team test 13) | −0.5 LUFS (the same noise through the old chain) | **−14.3 LUFS** |
+| Pink noise at a normal level | −20.7 | −21.1 |
+| Loud bass-heavy noise | −16.9 | −19.8 |
+| Very loud pink noise | −13.5 | −18.4 |
+
+−14 LUFS is YouTube's reference loudness: chat's worst noise is as loud as a
+loud video, not ear-splitting; normal sound is about untouched, and only
+sound already louder than YouTube would play it is pulled down. To change it, set
+`AUDIO_COMPRESS` in `/etc/chat-uses/bcast.local.env` (1 turns it off) and
+run `images/bcast/deploy.sh`.
+
+### Privacy: retention and deletion requests
+
+What PLAN.md section 11 promises, brain now does (D49):
+
+- **Commands, the event log and OCR screenshots are deleted after 90 days**,
+  by a daily pass. The event log still can't be changed, and nothing younger
+  than 90 days can be deleted, except for a deletion request.
+- **A deletion request:**
+  ```bash
+  sudo incus exec brain --project infra -- chat-brain-admin forget WHO
+  ```
+  WHO is the name as the overlay showed it, or the ID (`yt:…`, `dc:…`). It
+  deletes their commands and every log entry naming them, and the person,
+  unless they're banned (the ban stays, nameless). The log keeps a line
+  saying a request was handled, without the ID.
+
+### Rules and privacy notice
+
+Drafts to make yours before going public:
+
+- `docs/rules.md`: the one-liner for `!rules`, the YouTube description, and
+  Discord's `#rules`.
+- `docs/privacy.md`: the privacy notice, with placeholders (your name,
+  contact address, the data centre). It says what the code does; the table
+  at the end shows how each promise is kept. Not legal advice: have it read.
+
+### On the server
+
+```bash
+cd /opt/chat-uses && git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+sudo images/build.sh bcast && sudo images/bcast/deploy.sh --replace   # the sound cap
+sudo images/brain/check.sh   # now with the watchdog's view
+```
+
+Discord: the watchdog posts in `#ops` (`DISCORD_OPS_CHANNEL`), which
+`setup_server.py` already made.
+
 ## What was tested before this landed
+
+Step 5 (watchdog, sound, privacy):
+
+- **Unit tests, 1,973 in all:**
+  - the watchdog against a stand-in Incus: a healthy target; a dead service
+    restarted, then left to a human after 3 tries, then tried again later;
+    services asked every 30 s, not every check; a stopped target reported
+    once, never started; VNC down a minute restarting the display; a frozen
+    screen reported once; Incus trouble reported;
+  - the Incus client's state and exec over real TLS;
+  - retention: old rows pruned, recent ones still protected; a deletion
+    request removing someone's commands and events, keeping a ban; an older
+    database getting the new trigger; brain's daily pass and `forget`;
+  - alerts sent to the right channel (`#ops`, `#mod-alerts`).
+- **In the sandbox**, brain and bcast built from this branch:
+  - `images/bcast/check.sh`: 8 of 8, sound in sync (−9 to −36 ms).
+  - **Red-team test 13:** full-scale white noise played in the target came
+    out of the stream at **−14.3 LUFS**.
+  - **The watchdog over the real Incus API:** the instance's state, and
+    `systemctl` run in the target through exec with brain's restricted
+    certificate. The sandbox's targets run without systemd, so every
+    service read as down and each restart failed (exit 1): the watchdog
+    reported each, and stopped after 3 tries per service. On the server,
+    the services are real; `images/brain/check.sh` shows them.
+  - `images/brain/check.sh`: 15 of 16 (the watchdog's view, above).
+- **Found and fixed while testing:**
+  - **Stereo noise is 3 dB louder than mono:** the first threshold, set on
+    mono test sound, let the stream reach −11.4 LUFS. Now set on stereo.
+  - **The sandbox ran out of disk** building images: old image versions
+    deleted (17 GB of them).
 
 Step 4:
 

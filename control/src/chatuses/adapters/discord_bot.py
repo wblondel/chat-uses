@@ -253,47 +253,49 @@ class DiscordChat:
         self.messages = 0
         self._task: asyncio.Task[None] | None = None
         self._client: _Client | None = None
-        self._alerts: deque[tuple[str, bytes | None]] = deque(maxlen=MAX_PENDING_ALERTS)
+        self._alerts: deque[tuple[str, bytes | None, str]] = deque(maxlen=MAX_PENDING_ALERTS)
         self._sending: set[asyncio.Task[None]] = set()
 
-    def alert(self, text: str, image: bytes | None = None) -> None:
-        """Post in #mod-alerts (with a PNG, as a spoiler); kept for later if Discord isn't reachable."""
-        self._alerts.append((text[:1900], image))
+    def alert(self, text: str, image: bytes | None = None, channel: str | None = None) -> None:
+        """Post in #mod-alerts, or another channel such as #ops (with a PNG, as a spoiler).
+
+        Kept for later if Discord isn't reachable."""
+        self._alerts.append((text[:1900], image, (channel or self.alerts_channel).removeprefix("#")))
         self.flush_alerts()
 
     def pending_alerts(self) -> list[str]:
         """Alerts not posted yet (Discord unreachable, or no alerts channel)."""
-        return [text for text, _image in self._alerts]
+        return [text for text, _image, _channel in self._alerts]
 
     def flush_alerts(self) -> None:
         client = self._client
         if client is None or not client.is_ready():
             return
         guild = client.get_guild(self.guild_id)
-        channel = (
-            next(
-                (c for c in guild.text_channels if self.alerts_channel in (c.name, str(c.id))),
-                None,
-            )
+        channels = (
+            {c.name: c for c in guild.text_channels} | {str(c.id): c for c in guild.text_channels}
             if guild
-            else None
+            else {}
         )
-        if channel is None:
-            log.warning(
-                "Discord: no #%s channel for alerts; %d waiting", self.alerts_channel, len(self._alerts)
-            )
-            return
+        kept: deque[tuple[str, bytes | None, str]] = deque(maxlen=MAX_PENDING_ALERTS)
         while self._alerts:
-            task = asyncio.create_task(self._post(channel, *self._alerts.popleft()))
+            text, image, name = self._alerts.popleft()
+            channel = channels.get(name)
+            if channel is None:
+                log.warning("Discord: no #%s channel for alerts", name)
+                kept.append((text, image, name))
+                continue
+            task = asyncio.create_task(self._post(channel, text, image))
             self._sending.add(task)
             task.add_done_callback(self._sending.discard)
+        self._alerts = kept
 
     async def _post(self, channel: discord.TextChannel, text: str, image: bytes | None = None) -> None:
         files = [discord.File(io.BytesIO(image), filename="screen.png", spoiler=True)] if image else []
         try:
             await channel.send(text, files=files, allowed_mentions=discord.AllowedMentions.none())
         except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
-            log.warning("Discord: couldn't post in #%s: %s", self.alerts_channel, err)
+            log.warning("Discord: couldn't post in #%s: %s", channel.name, err)
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())

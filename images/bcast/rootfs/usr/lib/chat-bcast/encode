@@ -3,7 +3,11 @@
 
 Captures display :99 and the "mix" sink, encodes 1080p30 (PLAN.md 5.5):
 constant bitrate, a keyframe every 2 s with closed GOPs, 2 B-frames, AAC
-stereo through a limiter (chat can't blast the stream). Publishes "live"
+stereo through a compressor and a limiter, so chat can't blast the stream:
+above AUDIO_COMPRESS the mix is compressed 20:1 (full-scale stereo white
+noise comes out near -14 LUFS, YouTube's reference loudness; normal sound
+passes about untouched), and AUDIO_LIMIT caps the peaks. Neither looks ahead much, so the
+sound keeps its sync. Publishes "live"
 over RTMP, not RTSP: RTMP carries both tracks on one clock, while MediaMTX
 lines up RTSP tracks by when their first packets arrive, which put the sound
 up to 1.5 s off the picture.
@@ -51,7 +55,10 @@ def command(env, start):
         "-b:v", bitrate, "-minrate", bitrate, "-maxrate", bitrate, "-bufsize", bitrate,
         "-x264-params", "nal-hrd=cbr", "-bf", "2", "-g", gop, "-keyint_min", gop,
         "-sc_threshold", "0", "-flags", "+cgop",
-        "-af", f"alimiter=limit={env['AUDIO_LIMIT']}:level=0",
+        "-af", (
+            f"acompressor=threshold={env.get('AUDIO_COMPRESS') or '0.14'}:ratio=20:attack=5:release=300:knee=2.8,"
+            f"alimiter=limit={env['AUDIO_LIMIT']}:level=0"
+        ),
         "-c:a", "aac", "-b:a", env["AUDIO_BITRATE"], "-ar", "48000", "-ac", "2",
         "-f", "flv", "-flvflags", "no_duration_filesize", "rtmp://127.0.0.1:1935/live",
     ]

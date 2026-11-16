@@ -2,8 +2,10 @@
 log (debugging, replays, the audit viewer, the public site later).
 
 WAL mode, one connection, used from brain's single event loop. Events can't
-be changed or deleted: triggers in the schema refuse it. Later phases add
-their tables (votes, runs, snapshots...) here.
+be changed, and can be deleted only once they're past the retention period
+(90 days, PLAN.md 11) or for someone's deletion request (`forget`): triggers
+in the schema refuse anything else. Later phases add their tables (votes,
+runs, snapshots...) here.
 """
 
 import json
@@ -44,11 +46,14 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
     BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
+    WHEN old.ts > unixepoch() - 7776000
+     AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'erasing' AND value = old.id)
     BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 """
 
 
 PERMANENT = 253402300799.0  # 9999-12-31: when a ban without an end ends
+RETENTION = 90 * 86400.0  # seconds raw logs are kept (PLAN.md 11; the trigger says 7776000)
 
 User = dict[str, Any]  # id, display_name, first_seen, last_seen, banned_until (0 if none), roles
 
@@ -74,6 +79,12 @@ class Store:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(users)")}
         if "roles" not in columns:  # Phase 4 step 4
             self.db.execute("ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT ''")
+        (trigger,) = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'events_no_delete'"
+        ).fetchone()
+        if "WHEN" not in trigger:  # Phase 5: retention and deletion requests
+            self.db.execute("DROP TRIGGER events_no_delete")
+            self.db.executescript(SCHEMA)
 
     def close(self) -> None:
         self.db.close()
@@ -230,6 +241,42 @@ class Store:
             (*args, limit),
         ).fetchall()
         return [(i, ts, t, json.loads(p)) for i, ts, t, p in rows]
+
+    def prune(self, now: float) -> tuple[int, int]:
+        """Delete commands and events past the retention period; how many of each."""
+        cutoff = now - RETENTION
+        with self.db:
+            self.db.execute("BEGIN")
+            commands = self.db.execute("DELETE FROM commands WHERE ts < ?", (cutoff,)).rowcount
+            events = self.db.execute("DELETE FROM events WHERE ts < ?", (cutoff,)).rowcount
+        return commands, events
+
+    def forget(self, ts: float, user_id: str) -> tuple[int, int]:
+        """A deletion request: the user's commands and the events naming them.
+
+        A ban survives (the row stays, nameless) so it can't be shed this way;
+        otherwise the user goes too. Logged, without the ID."""
+        with self.db:
+            self.db.execute("BEGIN")
+            commands = self.db.execute("DELETE FROM commands WHERE user_id = ?", (user_id,)).rowcount
+            ids = [
+                row[0]
+                for row in self.db.execute(
+                    "SELECT id FROM events WHERE json_extract(payload_json, '$.user') = ?", (user_id,)
+                )
+            ]
+            for event_id in ids:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('erasing', ?)", (event_id,)
+                )
+                self.db.execute("DELETE FROM events WHERE id = ?", (event_id,))
+            self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
+            if self.banned_until(user_id) > ts:
+                self.db.execute("UPDATE users SET display_name = '', roles = '' WHERE id = ?", (user_id,))
+            else:
+                self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            self._event(ts, "forget", {"commands": commands, "events": len(ids)})
+        return commands, len(ids)
 
     def outcome_counts(self) -> dict[str, int]:
         return dict(self.db.execute("SELECT outcome, COUNT(*) FROM commands GROUP BY outcome").fetchall())

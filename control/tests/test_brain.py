@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import socket
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -755,3 +756,41 @@ def test_ocr_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         brain.start_ocr(Config.from_env({"TARGET_HOST": "x", "SCREENS_DIR": str(tmp_path)}))
         assert brain.watch is not None and brain.ocr_mode == "shadow" and brain.screens_dir == tmp_path
         assert "Screen OCR: shadow, starting, 0 hits" in brain.status_text()
+
+
+# --- retention and deletion requests (Phase 5 step 5) ------------------------------
+
+
+def test_forget_over_chat_brain_admin() -> None:
+    async def test() -> None:
+        async with running() as (brain, _feed):
+            await brain.console_message("alice", "!click Z1")
+            await brain.console_message("bob", "!click Z2")
+            status, text = await brain.admin(["forget", "alice"])
+            assert status == "ok" and text.startswith("Forgot console:alice: 1 commands")
+            assert [c["user"] for c in brain.store.recent_commands()] == ["console:bob"]
+            assert (await brain.admin(["forget", "nobody-here"]))[0] == "error"
+
+    run(test)
+
+
+def test_the_retention_pass_deletes_old_logs_and_screenshots(tmp_path: Path) -> None:
+    async def test() -> None:
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.screens_dir = tmp_path
+            old, new = tmp_path / "ocr-20200101-000000.png", tmp_path / "ocr-20261116-000000.png"
+            old.write_bytes(b"x")
+            new.write_bytes(b"y")
+            os.utime(old, (0, 0))
+            store.seen_user("yt:a", "A", 0.0)
+            store.record_command(0.0, "yt:a", "!enter", None, "accepted", None)
+            task = asyncio.create_task(brain.keep_tidy())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not old.exists() and new.exists()
+            assert store.recent_commands() == []
+
+    run(test)

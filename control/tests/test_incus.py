@@ -46,6 +46,8 @@ class FakeIncusApi:
         app.router.add_get("/1.0/instances", self.instances)
         app.router.add_post("/1.0/instances/{name}/snapshots", self.snapshot)
         app.router.add_get("/1.0/operations/{id}/wait", self.wait)
+        app.router.add_get("/1.0/instances/{name}/state", self.state)
+        app.router.add_post("/1.0/instances/{name}/exec", self.exec)
         return app
 
     async def _note(self, request: web.Request) -> None:
@@ -80,7 +82,19 @@ class FakeIncusApi:
 
     async def wait(self, request: web.Request) -> web.Response:
         await self._note(request)
+        if request.match_info["id"] == "exec1":
+            return web.json_response(
+                {"type": "sync", "metadata": {"status": "Success", "metadata": {"return": 3}}}
+            )
         return web.json_response({"type": "sync", "metadata": {"status": "Success"}})
+
+    async def state(self, request: web.Request) -> web.Response:
+        await self._note(request)
+        return web.json_response({"type": "sync", "metadata": {"status": "Stopped"}})
+
+    async def exec(self, request: web.Request) -> web.Response:
+        await self._note(request)
+        return web.json_response({"type": "async", "operation": "/1.0/operations/exec1"}, status=202)
 
 
 @asynccontextmanager
@@ -149,5 +163,25 @@ def test_another_server_certificate_is_refused(tmp_path: Path) -> None:
             with pytest.raises(aiohttp.ClientConnectorCertificateError):
                 await incus.snapshot("s", instance="phase2-check")
         assert api.requests == []
+
+    run(test)
+
+
+def test_state_and_exec_for_the_watchdog(tmp_path: Path) -> None:
+    async def test() -> None:
+        api = FakeIncusApi()
+        async with serving(tmp_path, api) as (url, files):
+            incus = Incus(url, str(files["client"]), str(files["client_key"]), str(files["server"]))
+            assert await incus.state("desk") == "Stopped"
+            assert await incus.exec("desk", ["systemctl", "is-active", "--quiet", "chat-xvnc"]) == 3
+        [_state, (method, path, _query, body), _wait] = api.requests
+        assert (method, path) == ("POST", "/1.0/instances/desk/exec")
+        assert body == {
+            "command": ["systemctl", "is-active", "--quiet", "chat-xvnc"],
+            "environment": {},
+            "interactive": False,
+            "wait-for-websocket": False,
+            "record-output": False,
+        }
 
     run(test)
