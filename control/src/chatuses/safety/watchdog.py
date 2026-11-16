@@ -6,7 +6,10 @@ Every CHECK seconds:
   nothing more. An operator may have stopped it, and what a dead target means
   for the game is Phase 6's (runs, death votes, revives).
 - **the desktop's services are active** (`systemctl is-active` through Incus
-  exec, every SERVICES seconds). One that isn't is restarted.
+  exec, every SERVICES seconds). One that isn't is restarted. If systemctl
+  itself can't run (`rm -rf /` from chat: red-team test 10), the target's
+  system is destroyed: #ops hears it once, and nothing is restarted, since
+  nothing could be. Bringing it back is a human's job until Phase 6's revive.
 - **brain's VNC link is up.** Down for more than VNC_GRACE seconds while the
   services say they're fine: the display and the session are restarted.
 - **the screen moves after input.** If commands reached the target and the
@@ -15,8 +18,10 @@ Every CHECK seconds:
   screen can be fine, and a reboot is Phase 6's decision.
 
 A unit is restarted at most RESTARTS times in RESTART_WINDOW seconds; after
-that it's left to a human, with one alert. Without Incus access only the VNC
-and screen checks run, and they only alert.
+that it's left to a human, with one alert. A check that fails (Incus
+unreachable, a refusal) stays a problem until a whole check goes through
+again, and #ops hears it once it has lasted BLIND seconds. Without Incus
+access only the VNC and screen checks run, and they only alert.
 """
 
 import asyncio
@@ -38,6 +43,8 @@ VNC_GRACE = 60.0  # seconds VNC may be down before the display is restarted
 FROZEN = 120.0  # seconds after input without a screen change
 RESTARTS = 3  # per unit...
 RESTART_WINDOW = 900.0  # ...in this many seconds
+BLIND = 60.0  # seconds the target can't be checked before #ops hears it
+CANT_RUN = (126, 127)  # systemctl's exit when it can't be run at all
 UNITS = ("chat-xvnc", "chat-session", "chat-audio", "chat-audio-pcm")
 DISPLAY_UNITS = ("chat-xvnc", "chat-session")
 
@@ -68,7 +75,9 @@ class Watchdog:
         self.services: dict[str, str] = {}
         self.screen = "unknown"  # ok, frozen, unknown (no screen OCR)
         self.vnc_down_since: float | None = None
+        self.destroyed = False  # running, but systemctl can't run in it
         self.last_error = ""
+        self._error_since: float | None = None
         self._services_checked = 0.0
         self._restarts: dict[str, deque[float]] = {}
         self._gave_up: set[str] = set()
@@ -90,6 +99,8 @@ class Watchdog:
         found: list[str] = []
         if self.instance_state not in ("Running", "unknown"):
             found.append(f"the target is {self.instance_state.lower()}")
+        if self.destroyed:
+            found.append("the target's system is destroyed (systemctl can't run)")
         found += [f"{unit} is {state}" for unit, state in self.services.items() if state != "active"]
         if self.vnc_down_since is not None:
             found.append("VNC is down")
@@ -109,10 +120,23 @@ class Watchdog:
         try:
             await self._check_target(now)
         except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
-            self.last_error = str(err) or type(err).__name__
-            log.warning("watchdog: %s", self.last_error)
+            self._failed(now, str(err) or type(err).__name__)
         self._check_vnc(now)
         self._check_screen(now)
+
+    def _failed(self, now: float, error: str) -> None:
+        """A check that didn't go through: it stays a problem until one does."""
+        self.last_error = error
+        log.warning("watchdog: %s", error)
+        if self._error_since is None:
+            self._error_since = now
+        elif now - self._error_since > BLIND:
+            self._once("blind", f"🙈 The watchdog can't check the target: {error}.")
+
+    def _went_through(self) -> None:
+        self.last_error = ""
+        self._error_since = None
+        self._said.discard("blind")
 
     async def _check_target(self, now: float) -> None:
         if self.incus is None:
@@ -120,28 +144,48 @@ class Watchdog:
         if not self.instance:
             self.instance = await self.incus.find(self.address)
         self.instance_state = await self.incus.state(self.instance)
-        self.last_error = ""
         if self.instance_state != "Running":
             self.services = {}
+            self.destroyed = False
+            self._went_through()
             self._once("instance", f"🪦 The target ({self.instance}) is {self.instance_state.lower()}.")
             return
         self._said.discard("instance")
-        if now - self._services_checked >= SERVICES:
+        # After a failed check, every check is a whole one until one goes through.
+        if self.last_error or now - self._services_checked >= SERVICES:
             self._services_checked = now
-            for unit in self.units:
-                code = await self.incus.exec(self.instance, ["systemctl", "is-active", "--quiet", unit])
-                self.services[unit] = "active" if code == 0 else "down"
-            for unit, state in self.services.items():
-                if state != "active":
-                    await self._restart(unit, now, f"it was {state}")
+            await self._check_services(now)
+            self._went_through()
         if (
             self.vnc_down_since is not None
             and now - self.vnc_down_since > VNC_GRACE
+            and not self.destroyed
             and all(state == "active" for state in self.services.values())
         ):
             for unit in DISPLAY_UNITS:
                 await self._restart(unit, now, f"VNC was down for {round(now - self.vnc_down_since)} s")
             self.vnc_down_since = now  # give the restart its own grace
+
+    async def _check_services(self, now: float) -> None:
+        assert self.incus is not None
+        services: dict[str, str] = {}
+        for unit in self.units:
+            code = await self.incus.exec(self.instance, ["systemctl", "is-active", "--quiet", unit])
+            if code in CANT_RUN:
+                self.services, self.destroyed = {}, True
+                self._once(
+                    "destroyed",
+                    f"🪦 The target ({self.instance}) is running, but systemctl can't run in it "
+                    f"(exit {code}): its system looks destroyed (files deleted?). Nothing to restart: "
+                    "it needs rebuilding by hand.",
+                )
+                return
+            services[unit] = "active" if code == 0 else "down"
+        self.services, self.destroyed = services, False
+        self._said.discard("destroyed")
+        for unit, state in self.services.items():
+            if state != "active":
+                await self._restart(unit, now, f"it was {state}")
 
     async def _restart(self, unit: str, now: float, why: str) -> None:
         assert self.incus is not None

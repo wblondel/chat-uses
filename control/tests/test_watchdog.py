@@ -18,6 +18,8 @@ class FakeIncus(Incus):
         self.restarts: list[str] = []
         self.restart_fails = False
         self.error: Exception | None = None
+        self.exec_error: Exception | None = None
+        self.no_systemctl = False  # after `rm -rf /` in the target
 
     async def find(self, address: str) -> str:
         return "desk"
@@ -28,6 +30,11 @@ class FakeIncus(Incus):
         return self.status
 
     async def exec(self, instance: str, command: list[str]) -> int:
+        if self.exec_error:
+            raise self.exec_error
+        if self.no_systemctl:
+            self.restarts += command[-1:] if command[:2] == ["systemctl", "restart"] else []
+            return 127
         if command[:2] == ["systemctl", "is-active"]:
             return 3 if command[-1] in self.down else 0
         if command[:2] == ["systemctl", "restart"]:
@@ -179,6 +186,61 @@ def test_incus_trouble_is_noted_and_the_other_checks_go_on() -> None:
         await w.check()
         assert w.last_error == "not authorized" and w.vnc_down_since is not None
         assert "can't check the target: not authorized" in w.status()["problems"]
+
+    run(test)
+
+
+def test_a_destroyed_target_is_reported_once_and_not_restarted() -> None:
+    # Red-team test 10 on the server: after `sudo rm -rf --no-preserve-root /`
+    # the target still runs and its VNC server lives on in memory, but
+    # systemctl is gone. The watchdog said nothing and flipped to "healthy".
+    async def test() -> None:
+        incus, clock, vnc = FakeIncus(), Clock(), [True]
+        w, alerts, _ = dog(incus, vnc, clock)
+        await w.check()
+        incus.no_systemctl = True
+        clock.now += watchdog_module.SERVICES  # the next service check
+        await w.check()
+        for _ in range(18):  # then three minutes of checks, every 10 s
+            assert w.status()["state"] == "unhealthy"
+            assert "the target's system is destroyed (systemctl can't run)" in w.problems()
+            clock.now += watchdog_module.CHECK
+            await w.check()
+        assert len(alerts) == 1 and "systemctl can't run in it (exit 127)" in alerts[0]
+        assert "rebuilding by hand" in alerts[0]
+        vnc[0] = False  # Xvnc dies too: nothing to restart it with
+        clock.now += watchdog_module.VNC_GRACE + 1
+        await w.check()
+        assert incus.restarts == []
+        incus.no_systemctl, vnc[0] = False, True  # rebuilt
+        clock.now += watchdog_module.SERVICES
+        await w.check()
+        assert w.status()["state"] == "healthy" and not w.destroyed
+
+    run(test)
+
+
+def test_a_failed_check_stays_a_problem_until_one_goes_through() -> None:
+    # Between two service checks, a check of the instance's state alone used
+    # to clear the error: the dashboard flipped between it and "healthy".
+    async def test() -> None:
+        incus, clock = FakeIncus(), Clock()
+        w, alerts, _ = dog(incus, clock=clock)
+        incus.exec_error = IncusError("websocket closed")
+        await w.check()
+        for _ in range(3):
+            clock.now += watchdog_module.CHECK
+            await w.check()
+            assert w.last_error == "websocket closed" and w.status()["state"] == "unhealthy"
+        assert alerts == []  # not yet: it may pass
+        clock.now += watchdog_module.BLIND
+        await w.check()
+        await w.check()
+        assert alerts == ["🙈 The watchdog can't check the target: websocket closed."]  # once
+        incus.exec_error = None
+        clock.now += watchdog_module.CHECK  # the next check is a whole one, not in 30 s
+        await w.check()
+        assert w.last_error == "" and w.status()["state"] == "healthy"
 
     run(test)
 

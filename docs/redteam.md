@@ -65,10 +65,13 @@ afterwards.
 
 ### By hand
 
-- **10:** in a throwaway target (`--keep` after a run, or launch one), run
-  `sudo rm -rf --no-preserve-root /`. Expected today: the watchdog reports
-  in `#ops` (services down, then VNC down); nothing comes back by itself
-  until Phase 6's revive. Delete the target afterwards.
+- **10:** on the target brain watches (the watchdog watches no other), from
+  chat: `!key ctrl+alt+t`, `!type sudo rm -rf --no-preserve-root /`,
+  `!enter`. Expected today: within about 30 s, `#ops` hears once that the
+  target runs but systemctl can't run in it (its system is destroyed), and
+  the dashboard's watchdog stays unhealthy; nothing is restarted, and
+  nothing comes back by itself until Phase 6's revive. Then rebuild it:
+  `sudo images/debian-xfce/check.sh --keep`.
 - **12:** on the desktop, `!key ctrl+alt+t`, `!type xrandr -s 1024x768`,
   `!enter`. Expected: the stream shows the smaller desktop, clicks still land
   where the grid says (brain scales to the new size); `xrandr -s 1600x900`
@@ -90,7 +93,8 @@ Paste each run here, newest first: date, commit, where, the table.
 ### 2026-11-16, the server
 
 Commit d6f2366 for the full run, after the disk-limit fix (PLAN.md D51);
-tests 5-7 at 290f0a7 and 18 at cff6247, after fixing the runner (below).
+tests 5-7 at 290f0a7 and 18 at cff6247, after fixing the runner (below);
+the by-hand tests at 9bc0ea9.
 
 | # | Result | Details |
 |---|---|---|
@@ -101,16 +105,16 @@ tests 5-7 at 290f0a7 and 18 at cff6247, after fixing the runner (below).
 | 5-7 | PASS | `net-isolation.sh`: 24 passed, 0 failed, next to the real egress and intranet (both back at their addresses afterwards) |
 | 8 | PASS | typed slurs refused: whole, in 3 pieces by 3 people, leetspeak, invisible characters; decoded on screen, seen by screen OCR in 6 s |
 | 9 | PASS | a name holding a slur showed as `viewer#NNNN` |
-| 10 | by hand | not run yet |
+| 10 | FAIL, fixed: re-run | `rm -rf /` from chat destroyed the target as expected, but `#ops` heard nothing in 5 minutes and the dashboard flipped between "can't check the target: command not found" and "healthy": the watchdog took systemctl's absence for a failed check, not a broken target. Fixed (see below); to run again once brain is rebuilt. The target was rebuilt with `images/debian-xfce/check.sh --keep` |
 | 11 | PASS | VNC server stopped: the watchdog started it again, input back in 2 s |
-| 12 | by hand | not run yet |
+| 12 | PASS | `xrandr -s 1024x768` from chat: the stream showed the smaller desktop and clicks landed where the grid said; `xrandr -s 1600x900` put it back |
 | 13 | PASS | full-scale white noise in the target: −14.4 LUFS on the stream (YouTube's reference is −14) |
 | 14 | PASS | 50 users, 4,000 messages in 20 s, malformed and too long ones among them: brain at 12 % CPU, limits held (168 accepted, 976 rate-limited, 1,714 invalid, 1,142 chat) |
 | 15 | Phase 6 | votes |
 | 16 | PASS | panic: screen covered in 0.27 s, target muted in 0.24 s. `panic-drill.sh` alone: 0.33 s and 0.27 s, 8/8, forensic snapshot taken |
 | 17 | PASS | brain killed: back in 3 s, the encoder never stopped |
-| 18 | PASS, network by hand | forwarder killed: sending to YouTube again in 9 s, the encoder never stopped. The network cut is not run yet |
-| 19 | by hand | not run yet |
+| 18 | PASS | forwarder killed: sending to YouTube again in 9 s, the encoder never stopped. bcast's network cut for 30 s: the YouTube stream came back by itself, the encoder's process was the same before and after, and the layout page had reconnected to brain by the time the picture was back |
+| 19 | PASS | host rebooted: every container came back and every check passed without a hand on it |
 | 20 | Phase 10 | QEMU targets |
 | 21 | PASS | denied: modprobe, writing `/proc/sys`, a block device node, mounting a host disk, the kernel log, raw sockets for the chat user. Root in the target may open raw sockets inside its own network namespace; the firewall decides where they go |
 
@@ -123,6 +127,13 @@ Found by the first server runs, and fixed:
   intranet's addresses properly: Incus reserves a stopped container's
   address, and dnsmasq keeps its lease and, with `security.ipv4_filtering`,
   its entry. Test 18 now finds the forwarder once it streams, as ffmpeg.
+- **10, the watchdog:** after `rm -rf /`, Incus reports systemctl's exit
+  127 as a failed exec ("Command not found"). The watchdog took that for a
+  check that didn't go through, and the next check of the instance's state
+  cleared it. Now exit 127 or 126 from systemctl means the target's system
+  is destroyed: one alert in `#ops`, unhealthy until a check finds
+  systemctl again, nothing restarted. And a check that fails stays a
+  problem until one goes through, with one alert once it lasts a minute.
 
 ### 2026-11-16, sandbox (not the server)
 
