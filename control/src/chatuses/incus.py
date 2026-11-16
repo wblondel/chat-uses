@@ -8,7 +8,8 @@ For now one call: the forensic snapshot taken when a moderator panics
 (PLAN.md 7.5). Phase 6 adds rewinds and the runs' lifecycle.
 
 `python -m chatuses.incus` (images/brain/check.sh) checks the access with
-brain's settings: it finds the target's instance, changing nothing.
+brain's settings, changing nothing: it finds the target's instance, and
+makes sure the certificate is refused in project infra.
 """
 
 import asyncio
@@ -70,6 +71,10 @@ class Incus:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as session:
             return await self.instance_at(session, address)
 
+    async def get(self, path: str) -> dict[str, Any]:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as session:
+            return await self._call(session, "GET", path)
+
     async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
         """Snapshot the instance (named, or found by address) as `name`; returns the instance's name."""
         timeout = aiohttp.ClientTimeout(total=TIMEOUT)
@@ -93,7 +98,10 @@ class Incus:
 
 
 def main() -> None:
-    from chatuses.brain import Config  # here: brain imports this module
+    # Imported here: brain imports this module. And this file runs as
+    # __main__, so the errors raised are chatuses.incus's, not this copy's.
+    from chatuses.brain import Config
+    from chatuses.incus import IncusError
 
     config = Config.from_env(os.environ)
     incus, why_not = config.incus()
@@ -103,7 +111,17 @@ def main() -> None:
         name = asyncio.run(incus.find(config.target_host))
     except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
         sys.exit(f"Incus API at {config.incus_url}: {err or type(err).__name__}")
-    print(f"Incus API at {config.incus_url}: target {config.target_host} is instance {name}")
+    # brain's own instance: it exists, and the certificate must not reach it.
+    incus.project = "infra"
+    try:
+        asyncio.run(incus.get("/1.0/instances/brain"))
+    except IncusError as err:
+        if "permission" not in str(err) and "not authorized" not in str(err).lower():
+            sys.exit(f"Incus API at {config.incus_url}, project infra: {err} (expected a refusal)")
+    else:
+        sys.exit(f"Incus API at {config.incus_url}: brain's certificate reaches project infra (restrict it!)")
+    where = f"Incus API at {config.incus_url}"
+    print(f"{where}: target {config.target_host} is instance {name}; project infra refused")
 
 
 if __name__ == "__main__":

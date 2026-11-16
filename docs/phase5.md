@@ -11,7 +11,7 @@ at least two moderators have practised every tool on an unlisted stream.
 |---|---|---|
 | 1 | `egress` proxy (allowlist, no private addresses, bandwidth cap) and `intranet` (homepage, files, offline Wikipedia) | done; to deploy on the server |
 | 2 | Text filter: `!type` text with a rolling buffer, names on the overlay, strikes and automatic timeouts | done; comes with the next brain deploy |
-| 3 | Moderation: panic end to end, cross-platform bans and timeouts, lockdown, moderator slash commands, admin dashboard with audit viewer | |
+| 3 | Moderation: panic end to end, cross-platform bans and timeouts, lockdown, moderator slash commands, admin dashboard with audit viewer | done; to set up on the server |
 | 4 | Screen OCR content hold, in shadow mode first | |
 | 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | |
 
@@ -163,8 +163,139 @@ cd control && uv run pytest tests/test_textfilter.py
 
 - **Text that appears on screen without being typed** (`echo <base64> |
   base64 -d`, a downloaded file, a renamed window): step 4's screen OCR.
-- **Lifting a timeout early, or banning by hand:** step 3's moderator
-  commands.
+- ~~Lifting a timeout early, or banning by hand~~: step 3's moderator
+  commands (`/unban`, `/ban`).
+
+## Step 3: moderation
+
+The moderators' tools (PLAN.md 7.5, 7.6, D44, D45). Every one works from
+four places, does the same thing from each, and goes in the log with who
+did it:
+
+| | Discord (Moderator, Owner) | Admin dashboard | Chat (moderators) | `chat-brain-admin` |
+|---|---|---|---|---|
+| Panic | `/panic [reason]` | **PANIC** | `!panic [reason]` | `panic [REASON]` |
+| End it | `/resume` | Resume | `!resume` | `resume` |
+| Ban | `/ban who duration [reason]` | Ban | | `ban WHO DURATION [REASON]` |
+| Time out | `/timeout who [minutes]` | Ban, `10m` | | `timeout WHO [MINUTES]` |
+| Lift a ban | `/unban who` | Unban | | `unban WHO` |
+| Raid | `/lockdown on\|off` | Lockdown | | `lockdown on\|off` |
+| Look | `/status` | Audit, log | | `status`, `bans` |
+
+`!panic` and `!resume` in chat are for YouTube's moderators, who have no
+slash commands: brain takes them from anyone YouTube (or Discord) marks as a
+moderator or the owner. From anyone else, they're an unknown command.
+
+### Panic
+
+Within a second of the request:
+
+1. **The stream is covered:** "We'll be right back", over everything. The
+   layout page gets it straight from brain's feed.
+2. **The target's sound is muted** in the mix: `chat-bcast-panic` in bcast
+   follows the same feed.
+3. **Input is frozen:** the command running stops where it is (every key
+   and button let go), the waiting ones are dropped, new ones are refused
+   ("the machine is paused").
+4. **A private forensic snapshot** of the target, `panic-YYYYMMDD-HHMMSS`
+   (in UTC), through the Incus API. Chat can't rewind to it.
+5. **A post in `#mod-alerts`**, then one with the snapshot's result.
+
+It lasts until someone resumes: restarting brain or bcast doesn't end it,
+and while bcast can't reach brain it stays as it was. Without brain at all,
+`sudo incus exec bcast --project infra -- chat-bcast-scene brb` still
+covers the stream and mutes the target (`live` to end it).
+
+### Bans, timeouts, lockdown
+
+- **Who:** the name as the overlay showed it (`viewer#1234` too), for anyone
+  who sent a command in the last 7 days; or their ID, `yt:UC…` or `dc:…`
+  (the dashboard's audit shows it); or a Discord mention. Two people with the
+  same name: use the ID. A ban by ID works before the person shows up.
+- **Bans and timeouts** stop someone's commands on every platform, until the
+  end you set (`30m`, `2h`, `7d`, `1w`, `perm`); a moderator can shorten one
+  or lift it, which also clears their strikes. Moderators and the owner can't
+  be banned this way. To mute someone in Discord itself, use Discord's own
+  timeout (D15).
+- **Lockdown** (a raid): only moderators, the owner, Discord's Regulars,
+  YouTube channel members, and people brain has known for a day can send
+  commands, until it's lifted. The overlay shows "Lockdown: regulars only";
+  the commands it refuses aren't listed one by one (a raid would fill the
+  log).
+
+### The admin dashboard
+
+`http://10.20.0.11:8080/admin`, over the WireGuard tunnel only (laptop: see
+`docs/phase1.md`). It asks for a token, kept in that browser tab:
+
+```bash
+sudo cat /etc/chat-uses/secrets/brain-admin-token
+```
+
+It shows panic and lockdown, the stream's status, who is banned and until
+when, the **audit** (every command: when, who, their ID, what they sent,
+what became of it; click a name to see only theirs), and the moderation log
+(panics, bans, lockdowns, snapshots). The name you type at login goes in
+the log as who did it. Anyone with the token can use it: share it only with
+moderators who need it (the others have Discord), and to change it, delete
+the file and run `images/brain/deploy.sh` again.
+
+A hotkey or a Stream Deck button can call the same API:
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $(sudo cat /etc/chat-uses/secrets/brain-admin-token)" \
+  -H "X-Moderator: Stream Deck" http://10.20.0.11:8080/api/panic
+```
+
+### On the server
+
+```bash
+cd /opt/chat-uses && git pull
+sudo infra/host/bootstrap.sh incus-api   # once: brain's access for the snapshots
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+sudo images/build.sh bcast && sudo images/bcast/deploy.sh --replace   # the stream stops for a minute
+sudo images/brain/check.sh
+sudo images/bcast/check.sh
+```
+
+`incus-api` makes the Incus API listen on infranet's address only
+(`10.20.0.1:8443`; the firewall lets only brain in), and trusts a
+certificate for brain that reaches only the `targets` project. The API
+comes up about 30 s after Incus starts, once the network exists. brain's
+deploy pushes the certificate and makes the dashboard's token.
+
+The new slash commands appear in Discord when the bot reconnects; Discord
+shows them only to members who can time people out (the Moderator role
+can). brain checks the role again each time.
+
+Then practise, on an unlisted stream:
+
+```bash
+sudo images/brain/panic-drill.sh
+```
+
+It panics for real for a few seconds and measures on the stream itself: the
+time until a frame is covered and until the sound is muted (both must be
+under 1 s, red-team test 16). It checks that input is refused, the snapshot
+and the alert, then resumes and checks the picture and the sound come back.
+The drill's snapshot is deleted afterwards (`--keep-snapshot` keeps it).
+
+Forensic snapshots stay until you delete them:
+
+```bash
+sudo incus snapshot list phase2-check --project targets
+sudo incus snapshot delete phase2-check panic-20261116-201500 --project targets
+```
+
+### Not covered yet
+
+- `/rewind-to`, `/freeze`, `/mode`, `/say`, and a panic cancelling open
+  votes: they need Phase 6's votes and snapshots.
+- Night mode (stricter laws when no moderator is online): the 24/7 phase.
+- Mirroring bans to YouTube's own ban: YouTube moderators ban there
+  themselves; brain's ban covers commands everywhere.
+- Moderator practice: yours (PLAN.md: at least two moderators practise every
+  tool on an unlisted stream).
 
 ## What was tested before this landed
 

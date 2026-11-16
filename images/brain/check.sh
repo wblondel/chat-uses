@@ -169,7 +169,9 @@ if [[ -s $token_file ]]; then
 	fi
 	for bad in "" wrong-token; do
 		code=$(api /api/state "$bad" | head -1)
-		if [[ $code == 401 ]]; then pass "admin API refuses ${bad:+a wrong token}${bad:-no token}"; else fail "admin API without the right token: HTTP $code"; fi
+		what="no token"
+		[[ -n $bad ]] && what="a wrong token"
+		if [[ $code == 401 ]]; then pass "admin API refuses $what"; else fail "admin API with $what: HTTP $code"; fi
 	done
 	if incus info bcast --project infra >/dev/null 2>&1; then
 		# shellcheck disable=SC2016 # expanded inside bcast
@@ -183,7 +185,7 @@ fi
 incus_check=$(in_brain bash -c 'set -a; . /etc/chat-uses/brain.env; [ -f /etc/chat-uses/brain.local.env ] && . /etc/chat-uses/brain.local.env; set +a
 	PYTHONPATH=/usr/lib/chat-brain /opt/chat-brain/venv/bin/python -m chatuses.incus' 2>&1 || true)
 case $incus_check in
-*" is instance "*) pass "$incus_check (forensic snapshots on panic)" ;;
+*"; project infra refused") pass "$incus_check (forensic snapshots on panic)" ;;
 *"access off"*) fail "$incus_check: run 'bootstrap.sh incus-api', then deploy.sh" ;;
 *) fail "${incus_check:-no answer from the Incus check}" ;;
 esac
