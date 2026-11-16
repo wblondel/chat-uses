@@ -447,6 +447,7 @@ them is missing, rather than risk the host.
 
 ```bash
 cd /opt/chat-uses && git pull
+sudo infra/host/bootstrap.sh quotas   # disk limits that hold (D51)
 sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
 sudo images/build.sh bcast && sudo images/bcast/deploy.sh --replace   # the sound cap
 sudo images/brain/check.sh   # now with the watchdog's view

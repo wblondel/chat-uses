@@ -95,6 +95,7 @@ It runs these steps in order (you can run any subset, e.g. `bootstrap.sh firewal
 | `wireguard` | Server key, `/etc/wireguard/wg0.conf` from the peer files, starts `wg-quick@wg0` |
 | `incus` | Starts the daemon and waits for it |
 | `storage` | Creates the pool (`btrfs`, loop-backed, `POOL_SIZE`) if missing |
+| `quotas` | Keeps the btrfs quota counts right, so each instance's disk size limit holds: installs `chat-uses-btrfs-quota` (counts deletions, recounts when broken) with a boot service and a 6-hourly timer (PLAN.md D51) |
 | `networks` | Creates/updates `infranet` and `chatnet` from `infra/incus/networks/` |
 | `projects` | Creates/updates `infra` and `targets` from `infra/incus/projects/` |
 | `profiles` | Creates/updates profiles from `infra/incus/profiles/<project>/` |

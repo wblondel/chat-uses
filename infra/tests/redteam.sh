@@ -227,6 +227,13 @@ t3() {
 		result 3 FAIL "pool $POOL_NAME uses the dir driver, which can't enforce disk sizes: disk fill not run"
 		return
 	fi
+	local uuid counts
+	uuid=$(btrfs filesystem show "/var/lib/incus/storage-pools/$POOL_NAME" 2>/dev/null | awk '/uuid:/ {print $NF; exit}' || true)
+	counts=$(cat "/sys/fs/btrfs/$uuid/qgroups/inconsistent" 2>/dev/null || echo "?")
+	if [[ $counts == 1 ]]; then
+		result 3 FAIL "the pool's btrfs quota counts are inconsistent, so no disk limit holds: run 'bootstrap.sh quotas' (disk fill not run)"
+		return
+	fi
 	# Write at most 1.5x the quota, so a missing quota can't fill the host.
 	written=$(in_rt sh -c "dd if=/dev/zero of=/fill bs=1M count=$((quota_mib * 3 / 2)) 2>/dev/null; du -m /fill | cut -f1; rm -f /fill" || true)
 	if [[ $written =~ ^[0-9]+$ ]] && ((written <= quota_mib)); then
