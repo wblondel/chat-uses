@@ -1,0 +1,21 @@
+# Spanish: slurs and hate speech (README.md). Not general swearing.
+# Not listed: "negro" (the color), "moro", "chino" (ordinary words).
+
+# Racial and ethnic slurs
+sudaca
+*negrata
+
+# Homophobic and transphobic slurs
+maricon
+marica
+joto
+bollera
+travelo
+
+# Ableist slurs
+mongolico
+
+# Hate speech
+muerte a los judios
+sucio judio
+sucio negro

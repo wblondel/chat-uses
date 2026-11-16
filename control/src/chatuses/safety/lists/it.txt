@@ -1,0 +1,22 @@
+# Italian: slurs and hate speech (README.md). Not general swearing.
+# Not listed: "negro" alone (Spanish for black), "finocchio" (fennel).
+
+# Racial and ethnic slurs
+negraccio
+terrone
+terroni
+sporco negro
+negri di merda
+
+# Homophobic and transphobic slurs
+frocio
+froci
+ricchione
+culattone
+
+# Ableist slurs
+mongoloide
+
+# Hate speech
+morte agli ebrei
+sporco ebreo

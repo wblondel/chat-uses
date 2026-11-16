@@ -1,0 +1,34 @@
+# French: slurs and hate speech (README.md). Not general swearing.
+
+# Racial and ethnic slurs
+negre
+negresse
+bamboula
+bougnoule
+bougnoul
+bicot
+crouille
+youpin
+youpine
+youtre
+chinetoque
+niakoue
+# Not "negro" alone: it's the Spanish for black (the color), and Spanish is
+# one of the audience languages.
+
+# Homophobic and transphobic slurs
+pede
+tafiole
+tarlouze
+gouine
+travelo
+
+# Hate speech
+sale arabe
+sale noir
+sale negre
+sale juif
+sale pede
+mort aux juifs
+mort aux arabes
+juifs au four
