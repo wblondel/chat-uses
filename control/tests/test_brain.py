@@ -15,10 +15,12 @@ from fake_vnc import FakeVnc
 
 from chatuses import brain as brain_module
 from chatuses import console, executor
+from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.youtube import YouTubeChat
 from chatuses.brain import Brain, Config
 from chatuses.executor import connect_to
-from chatuses.pipeline import ChatMessage
+from chatuses.incus import Incus, IncusError
+from chatuses.pipeline import PAUSED, ChatMessage
 from chatuses.safety.textfilter import HATE, LISTS
 from chatuses.store import Store
 
@@ -466,3 +468,180 @@ def test_three_refused_slurs_time_the_user_out_on_stream() -> None:
             assert brain.store.banned_until("console:troll") > time.time() + 590
 
     run(test)
+
+
+# --- moderation: panic, bans, lockdown (Phase 5 step 3) -------------------------
+
+
+class FakeIncus(Incus):
+    """Snapshots succeed (or fail with `error`) and are recorded."""
+
+    def __init__(self, error: Exception | None = None) -> None:  # no certificates needed
+        self.taken: list[tuple[str, str, str]] = []
+        self.error = error
+
+    async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
+        if self.error:
+            raise self.error
+        self.taken.append((name, instance, address))
+        return instance or "found-by-address"
+
+
+def quiet_discord() -> DiscordChat:
+    """A Discord adapter that never connects: alerts wait in it."""
+    return DiscordChat("token", 1, "control", lambda _msg: None, lambda: "")
+
+
+def test_panic_covers_the_stream_freezes_input_and_resume_lifts_it() -> None:
+    async def test() -> None:
+        server = await FakeVnc().start()
+        async with running(server) as (brain, feed):
+            brain.discord = quiet_discord()
+            answer = brain.moderation.panic("Mia (dc:1) on Discord", "nsfw")
+            assert answer.ok
+            assert await feed.next() == {"type": "panic", "on": True}  # the first thing on the feed
+            assert brain.executor.frozen
+            assert await brain.console_message("alice", "!enter") == ("paused", PAUSED)
+            await brain.console_message("bob", "!click A1")  # paused input stays off the overlay
+            await brain.console_message("bob", "!grid")
+            assert (await feed.next("log"))["text"] == "!grid"
+            [snapshot] = brain.store.recent_events(("snapshot",))
+            assert snapshot[3]["result"] == "off"
+            alerts = brain.discord.pending_alerts()
+            assert alerts[0].startswith("🚨 **Panic** by Mia (dc:1) on Discord: nsfw.")
+            assert alerts[1].startswith("No forensic snapshot")
+            assert "PANIC since" in brain.status_text()
+            assert "Machine: input frozen by the panic" in brain.status_text()
+            assert brain.moderation.resume("Mia").ok
+            assert await feed.next("panic") == {"type": "panic", "on": False}
+            assert await brain.console_message("alice", "!enter") == ("accepted", None)
+            assert (await feed.next("log-state"))["state"] == "done"
+        await server.stop()
+
+    run(test)
+
+
+def test_a_page_connecting_during_a_panic_is_covered_at_once() -> None:
+    async def test() -> None:
+        async with running() as (brain, _feed):
+            brain.moderation.panic("m")
+            brain.moderation.lockdown("m", True)
+            async with test_utils.TestClient(test_utils.TestServer(brain.web_app())) as client:
+                ws = await client.ws_connect("/ws/overlay")
+                hello = await Feed(ws).next("hello")
+                assert hello["panic"] is True and hello["lockdown"] is True
+                await ws.close()
+
+    run(test)
+
+
+def test_a_panic_outlives_a_restart() -> None:
+    with Store(":memory:") as store:
+        Brain(store, lambda: connect_to("127.0.0.1", 1)).moderation.panic("m")
+        again = Brain(store, lambda: connect_to("127.0.0.1", 1))
+        assert again.executor.frozen and again.overlay.panic_on
+        assert again.moderation.resume("m").ok and not again.executor.frozen
+
+
+def test_moderators_panic_from_chat_and_others_cant() -> None:
+    async def test() -> None:
+        async with running() as (brain, _feed):
+            viewer = ChatMessage("yt:v", "Viewer", "!panic", time.time())
+            assert brain.handle(viewer, "yt")[0] == "invalid"
+            assert not brain.moderation.panicking
+            mod = ChatMessage("yt:m", "Mod", "!PANIC spam on screen", time.time(), frozenset({"moderator"}))
+            assert brain.handle(mod, "yt")[0] == "moderation"
+            assert brain.moderation.panic_state is not None
+            assert brain.moderation.panic_state["by"] == "Mod (yt:m) in YouTube chat"
+            assert brain.moderation.panic_state["reason"] == "spam on screen"
+            owner = ChatMessage("dc:o", "Owner", "!resume", time.time(), frozenset({"owner"}))
+            assert brain.handle(owner, "dc") == (
+                "moderation",
+                "Resumed: the stream is live and chat has control again.",
+            )
+            again = ChatMessage("dc:o", "Owner", "!resume", time.time(), frozenset({"owner"}))
+            assert brain.handle(again, "dc")[0] == "invalid"  # no panic to end
+            normal = ChatMessage("dc:o", "Owner", "!enter", time.time(), frozenset({"owner"}))
+            assert brain.handle(normal, "dc")[0] == "busy"  # other commands go through as usual
+
+    run(test)
+
+
+def test_forensic_snapshots_through_incus() -> None:
+    async def test() -> None:
+        with Store(":memory:") as store:
+            incus = FakeIncus()
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1), incus, "10.30.0.251")
+            brain.discord = quiet_discord()
+            brain.moderation.panic("m", now=1_700_000_000.0)
+            async with asyncio.timeout(2):
+                while not store.recent_events(("snapshot",)):
+                    await asyncio.sleep(0.01)
+            assert incus.taken == [("panic-20231114-221320", "", "10.30.0.251")]
+            [event] = store.recent_events(("snapshot",))
+            assert event[3]["result"] == "ok" and event[3]["instance"] == "found-by-address"
+            assert (
+                "📸 Forensic snapshot `found-by-address/panic-20231114-221320` taken"
+                in (brain.discord.pending_alerts()[-1])
+            )
+            brain.moderation.resume("m")
+            brain.incus = FakeIncus(IncusError("not allowed"))
+            brain.moderation.panic("m")
+            async with asyncio.timeout(2):
+                while len(store.recent_events(("snapshot",))) < 2:
+                    await asyncio.sleep(0.01)
+            assert store.recent_events(("snapshot",))[0][3]["error"] == "not allowed"
+            assert brain.discord.pending_alerts()[-1].endswith("failed: not allowed")
+
+    run(test)
+
+
+def test_moderation_over_chat_brain_admin() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.store.seen_user("yt:a", "Alice", time.time())
+            assert await brain.admin(["ban", "Alice", "2h", "spamming", "links"]) == (
+                "ok",
+                "Alice (yt:a) banned for 2 hours: their commands are ignored on every platform.",
+            )
+            assert brain.store.recent_events(("ban",))[0][3]["reason"] == "spamming links"
+            assert (await brain.admin(["ban", "yt:b", "perm"]))[0] == "ok"
+            status, text = await brain.admin(["bans"])
+            assert status == "ok" and "yt:b) forever" in text and "Alice (yt:a) until" in text
+            assert await brain.admin(["timeout", "yt:c"]) == (
+                "ok",
+                "yt:c timed out for 10 minutes: their commands are ignored on every platform.",
+            )
+            assert (await brain.admin(["timeout", "yt:c", "30"]))[0] == "ok"
+            assert (await brain.admin(["unban", "yt:a"]))[0] == "ok"
+            assert (await brain.admin(["unban", "yt:a"]))[0] == "error"
+            assert (await brain.admin(["lockdown", "on"]))[0] == "ok"
+            assert await feed.next("lockdown") == {"type": "lockdown", "on": True}
+            assert "Lockdown on since" in brain.status_text()
+            assert (await brain.admin(["lockdown", "maybe"]))[0] == "error"
+            assert (await brain.admin(["panic"]))[0] == "ok"
+            assert (await brain.admin(["resume"]))[0] == "ok"
+            assert brain.store.recent_events(("panic",))[0][3]["by"] == "console"
+            status, usage = await brain.admin(["ban", "yt:x"])
+            assert status == "error" and "ban WHO DURATION" in usage
+
+    run(test)
+
+
+def test_incus_settings(tmp_path: Path) -> None:
+    config = Config.from_env({"TARGET_HOST": "x"})
+    assert config.incus() == (None, "INCUS_URL isn't set")
+    files = {name: tmp_path / name for name in ("c.crt", "c.key", "s.crt")}
+    env = {
+        "TARGET_HOST": "x",
+        "INCUS_URL": "https://10.20.0.1:8443",
+        "INCUS_CERT": str(files["c.crt"]),
+        "INCUS_KEY": str(files["c.key"]),
+        "INCUS_SERVER_CERT": str(files["s.crt"]),
+    }
+    incus, why = Config.from_env(env).incus()
+    assert incus is None and why.startswith("missing ") and "c.key" in why
+    for path in files.values():
+        path.write_text("not a certificate")
+    incus, why = Config.from_env(env).incus()
+    assert incus is None and why.startswith("can't load the certificates")

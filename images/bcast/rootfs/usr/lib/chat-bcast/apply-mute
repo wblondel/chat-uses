@@ -1,0 +1,45 @@
+#!/usr/bin/python3
+"""Mute or unmute the target's sound from the control files (D28, D44).
+
+The target is muted unless the scene is "live" (scene.json, chat-bcast-scene)
+and there is no panic (panic.json, chat-bcast-panic). Those two files are the
+only source of truth: chat-bcast-scene, chat-bcast-panic and the audio relay
+each run this after a change or a (re)start, so a PulseAudio restart never
+forgets a mute and one never lifts the other's.
+
+Prints what it did; exits 1 if PulseAudio didn't take it.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+CONTROL = "/var/lib/chat-bcast/control"
+
+
+def read(name, key, default):
+    try:
+        with open(os.path.join(CONTROL, name)) as f:
+            return json.load(f).get(key, default)
+    except (OSError, ValueError, AttributeError):
+        return default
+
+
+def main():
+    scene = read("scene.json", "scene", "live")
+    panic = read("panic.json", "panic", False) is True
+    muted = panic or scene != "live"
+    why = "panic" if panic else f"scene {scene}"
+    env = {**os.environ, "PULSE_SERVER": os.environ.get("PULSE_SERVER") or "unix:/run/chat-bcast-audio/native"}
+    done = subprocess.run(["pactl", "set-sink-mute", "target", "1" if muted else "0"], env=env, check=False)
+    state = f"muted ({why})" if muted else "on"
+    if done.returncode != 0:
+        print(f"target sound should be {state}, but PulseAudio didn't answer", file=sys.stderr)
+        return 1
+    print(f"target sound {state}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

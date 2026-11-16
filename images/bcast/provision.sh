@@ -73,14 +73,16 @@ ln -sfn /usr/share/novnc /usr/share/chat-bcast/www/novnc
 install -d -o bcast -g bcast /var/lib/chat-bcast/control
 ln -sfn /var/lib/chat-bcast/control /usr/share/chat-bcast/www/control
 printf '{"scene": "live"}\n' >/var/lib/chat-bcast/control/scene.json
-chown bcast:bcast /var/lib/chat-bcast/control/scene.json
+printf '{"panic": false}\n' >/var/lib/chat-bcast/control/panic.json
+chown bcast:bcast /var/lib/chat-bcast/control/scene.json /var/lib/chat-bcast/control/panic.json
 # deploy.sh puts the YouTube stream key here (root:bcast 0640).
 install -d -m 0750 -o root -g bcast /etc/chat-uses/secrets
 
 log "Services"
 systemctl enable chat-bcast.target chat-bcast-xvfb.service chat-bcast-audio.service \
 	chat-bcast-mediamtx.service chat-bcast-websockify.service chat-bcast-audio-in.service \
-	chat-bcast-browser.service chat-bcast-encoder.service chat-bcast-forwarder.service >/dev/null 2>&1
+	chat-bcast-browser.service chat-bcast-encoder.service chat-bcast-forwarder.service \
+	chat-bcast-panic.service >/dev/null 2>&1
 
 log "Cleaning up"
 apt-get autoremove -y -q >/dev/null

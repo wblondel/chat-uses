@@ -1,4 +1,5 @@
-"""Discord in (PLAN.md D9, Phase 4): `!` commands in #control, and /status.
+"""Discord in (PLAN.md D9, Phase 4): `!` commands in #control, /status, and
+the moderators' slash commands and alerts (Phase 5, PLAN.md 7.5-7.6).
 
 The bot reads messages in one channel of one server (DISCORD_GUILD_ID,
 DISCORD_CHANNEL: a channel name or ID). It needs the Message Content intent
@@ -9,6 +10,12 @@ infra/discord/setup_server.py creates), plus whoever owns the server.
 Like YouTube, feedback goes on the overlay, not as replies: replies would
 flood #control (D8). /status answers privately (ephemeral).
 
+Moderators (the Moderator or Owner role, or the server's owner) get /panic,
+/resume, /ban, /timeout, /unban and /lockdown. Discord shows them only to
+members who may time people out (the Moderator role can); brain checks the
+role again on every use. Answers are private; what was done is posted in
+#mod-alerts (DISCORD_ALERTS_CHANNEL), with mentions turned off.
+
 discord.py reconnects by itself through network trouble; a wrong token or a
 missing intent stop the adapter with the reason in its status.
 """
@@ -17,8 +24,9 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections import deque
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 import discord
@@ -26,6 +34,9 @@ from discord import app_commands
 
 from chatuses.identity import user_id
 from chatuses.pipeline import ChatMessage
+
+if TYPE_CHECKING:
+    from chatuses.safety.moderation import Answer, Moderation
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +51,10 @@ class _NoVoiceWarnings(logging.Filter):
 logging.getLogger("discord.client").addFilter(_NoVoiceWarnings())
 
 ROLE_NAMES = {"Owner": "owner", "Moderator": "moderator", "Regular": "regular"}
+MODERATOR_ROLE_NAMES = frozenset({"Owner", "Moderator"})
 RETRY = (5.0, 300.0)  # seconds between restarts after an unexpected failure
+MAX_PENDING_ALERTS = 20  # kept while Discord is unreachable; older ones are dropped
+NOT_A_MODERATOR = "Only moderators can do that."
 
 Deliver = Callable[[ChatMessage], None]
 
@@ -71,6 +85,15 @@ def chat_from(
     return ChatMessage(user_id("dc", str(author_id)), author_name, content, ts, frozenset(roles))
 
 
+def is_moderator(role_names: Iterable[str], owns_guild: bool) -> bool:
+    return owns_guild or bool(MODERATOR_ROLE_NAMES & set(role_names))
+
+
+def moderator_label(name: str, discord_id: int) -> str:
+    """Who did it, for the event log and #mod-alerts."""
+    return f"{name} (dc:{discord_id}) on Discord"
+
+
 class _Client(discord.Client):
     def __init__(self, adapter: "DiscordChat") -> None:
         intents = discord.Intents.none()
@@ -88,8 +111,70 @@ class _Client(discord.Client):
         async def status(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
             await interaction.response.send_message(adapter.status_text(), ephemeral=True)
 
+        if adapter.moderation is not None:
+            self._moderator_commands(adapter.moderation)
         self.tree.copy_global_to(guild=guild)
         self._guild = guild
+
+    def _moderator_commands(self, mod: "Moderation") -> None:
+        """/panic, /resume, /ban, /timeout, /unban, /lockdown (PLAN.md 7.5, 7.6)."""
+        tree = self.tree
+        hidden = app_commands.default_permissions(moderate_members=True)  # shown to moderators only
+
+        async def run(interaction: discord.Interaction, act: Callable[[str], "Answer"]) -> None:
+            member = interaction.user
+            guild = interaction.guild
+            roles = [r.name for r in member.roles] if isinstance(member, discord.Member) else []
+            owns = guild is not None and guild.owner_id == member.id
+            if guild is None or guild.id != self.adapter.guild_id or not is_moderator(roles, owns):
+                await interaction.response.send_message(NOT_A_MODERATOR, ephemeral=True)
+                return
+            answer = act(moderator_label(member.display_name, member.id))
+            await interaction.response.send_message(answer.text, ephemeral=True)
+
+        @tree.command(name="panic", description="Cover the stream, mute the machine, freeze input")
+        @app_commands.describe(reason="What's on screen (for #mod-alerts)")
+        @hidden
+        async def panic(interaction: discord.Interaction, reason: str = "") -> None:  # pyright: ignore[reportUnusedFunction]
+            await run(interaction, lambda by: mod.panic(by, reason))
+
+        @tree.command(name="resume", description="End the panic: the stream goes live again")
+        @hidden
+        async def resume(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
+            await run(interaction, lambda by: mod.resume(by))
+
+        @tree.command(name="ban", description="Stop someone's commands on every platform")
+        @app_commands.describe(
+            who="Their name as the overlay shows it, or their ID (yt:…, dc:…)",
+            duration="30m, 2h, 7d, 1w, or perm",
+            reason="For the log",
+        )
+        @hidden
+        async def ban(  # pyright: ignore[reportUnusedFunction]
+            interaction: discord.Interaction, who: str, duration: str, reason: str = ""
+        ) -> None:
+            await run(interaction, lambda by: mod.ban(by, who, duration, reason))
+
+        @tree.command(name="timeout", description="Stop someone's commands for a while (10 minutes)")
+        @app_commands.describe(who="Their name as the overlay shows it, or their ID", minutes="1 to 10080")
+        @hidden
+        async def timeout(  # pyright: ignore[reportUnusedFunction]
+            interaction: discord.Interaction, who: str, minutes: app_commands.Range[int, 1, 10080] = 10
+        ) -> None:
+            await run(interaction, lambda by: mod.timeout(by, who, minutes))
+
+        @tree.command(name="unban", description="Lift someone's ban or timeout")
+        @app_commands.describe(who="Their name as the overlay shows it, or their ID")
+        @hidden
+        async def unban(interaction: discord.Interaction, who: str) -> None:  # pyright: ignore[reportUnusedFunction]
+            await run(interaction, lambda by: mod.unban(by, who))
+
+        @tree.command(name="lockdown", description="Raid? Only regulars may send commands")
+        @hidden
+        async def lockdown(  # pyright: ignore[reportUnusedFunction]
+            interaction: discord.Interaction, state: Literal["on", "off"]
+        ) -> None:
+            await run(interaction, lambda by: mod.lockdown(by, state == "on"))
 
     async def setup_hook(self) -> None:
         # Guild commands show up at once (global ones can take an hour).
@@ -112,6 +197,7 @@ class _Client(discord.Client):
             return
         self.adapter.state, self.adapter.reason = "connected", ""
         log.info("Discord: reading #%s in %s", self.adapter.channel, guild.name)
+        self.adapter.flush_alerts()
 
     async def on_disconnect(self) -> None:
         if self.adapter.state == "connected":
@@ -145,17 +231,67 @@ class _Client(discord.Client):
 
 class DiscordChat:
     def __init__(
-        self, token: str, guild_id: int, channel: str, deliver: Deliver, status_text: Callable[[], str]
+        self,
+        token: str,
+        guild_id: int,
+        channel: str,
+        deliver: Deliver,
+        status_text: Callable[[], str],
+        moderation: "Moderation | None" = None,
+        alerts_channel: str = "mod-alerts",
     ) -> None:
         self.token = token
         self.guild_id = guild_id
         self.channel = channel.removeprefix("#")
         self.deliver = deliver
         self.status_text = status_text
+        self.moderation = moderation
+        self.alerts_channel = alerts_channel.removeprefix("#")
         self.state = "off"  # off, connecting, connected, reconnecting, stopped
         self.reason = ""
         self.messages = 0
         self._task: asyncio.Task[None] | None = None
+        self._client: _Client | None = None
+        self._alerts: deque[str] = deque(maxlen=MAX_PENDING_ALERTS)
+        self._sending: set[asyncio.Task[None]] = set()
+
+    def alert(self, text: str) -> None:
+        """Post in #mod-alerts; kept for later if Discord isn't reachable right now."""
+        self._alerts.append(text[:1900])
+        self.flush_alerts()
+
+    def pending_alerts(self) -> list[str]:
+        """Alerts not posted yet (Discord unreachable, or no alerts channel)."""
+        return list(self._alerts)
+
+    def flush_alerts(self) -> None:
+        client = self._client
+        if client is None or not client.is_ready():
+            return
+        guild = client.get_guild(self.guild_id)
+        channel = (
+            next(
+                (c for c in guild.text_channels if self.alerts_channel in (c.name, str(c.id))),
+                None,
+            )
+            if guild
+            else None
+        )
+        if channel is None:
+            log.warning(
+                "Discord: no #%s channel for alerts; %d waiting", self.alerts_channel, len(self._alerts)
+            )
+            return
+        while self._alerts:
+            task = asyncio.create_task(self._post(channel, self._alerts.popleft()))
+            self._sending.add(task)
+            task.add_done_callback(self._sending.discard)
+
+    async def _post(self, channel: discord.TextChannel, text: str) -> None:
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
+            log.warning("Discord: couldn't post in #%s: %s", self.alerts_channel, err)
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
@@ -173,12 +309,14 @@ class DiscordChat:
             "reason": self.reason,
             "channel": self.channel,
             "messages": self.messages,
+            "alerts_waiting": len(self._alerts),
         }
 
     async def _run(self) -> None:
         wait = RETRY[0]
         while True:
             client = _Client(self)
+            self._client = client
             self.state, self.reason = "connecting", ""
             try:
                 await client.start(self.token)

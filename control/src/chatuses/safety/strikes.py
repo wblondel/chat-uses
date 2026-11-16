@@ -29,3 +29,7 @@ class Strikes:
             return None
         hits.clear()
         return now + self.timeout
+
+    def forget(self, user: str) -> None:
+        """A moderator lifted the user's timeout: start counting again from zero."""
+        self._hits.pop(user, None)

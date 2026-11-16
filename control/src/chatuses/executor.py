@@ -6,6 +6,10 @@ target goes away (reboot, rewind), whatever was waiting is dropped, not
 replayed onto a fresh desktop later, and the executor reconnects in the
 background.
 
+A panic freezes it (PLAN.md 7.5): the command running stops where it is,
+with every key and button let go, the waiting ones are dropped, and nothing
+new is taken until it thaws.
+
 Grid coordinates are scaled to the screen size the VNC server reports, so a
 target at another resolution still gets clicks where chat aimed.
 """
@@ -24,7 +28,7 @@ from chatuses.keymap import char_keysym
 from chatuses.store import Store, to_json
 from chatuses.vnc import BUTTONS, VncError, VncInput
 
-JobResult = Literal["done", "offline"]
+JobResult = Literal["done", "offline", "flushed"]  # flushed: dropped by a panic
 KEY_DELAY = 0.008  # seconds between keystrokes
 JOB_TIMEOUT = 10.0  # seconds for one command; the longest takes about one
 RECONNECT = (1.0, 15.0)  # first and longest wait between connection attempts
@@ -87,20 +91,33 @@ class Executor:
         self.queue: asyncio.Queue[Job] = asyncio.Queue(max_pending)
         self.online = asyncio.Event()
         self.vnc: VncInput | None = None
+        self.frozen = False
+        self._running: asyncio.Task[None] | None = None
 
     def can_take(self) -> bool:
         """Would submit() accept a job right now? (Nothing changes before the next await.)"""
-        return self.online.is_set() and not self.queue.full()
+        return self.online.is_set() and not self.frozen and not self.queue.full()
 
     def submit(self, job: Job) -> bool:
-        """Queue a command; False if the target is offline or the queue is full."""
-        if not self.online.is_set():
+        """Queue a command; False if the target is offline, frozen, or the queue is full."""
+        if not self.online.is_set() or self.frozen:
             return False
         try:
             self.queue.put_nowait(job)
         except asyncio.QueueFull:
             return False
         return True
+
+    def freeze(self) -> None:
+        """Panic: stop the command running, drop the waiting ones, take nothing new."""
+        self.frozen = True
+        if self._running and not self._running.done():
+            self._running.cancel()  # _serve lets go of the keys and reports it
+        while not self.queue.empty():
+            self._finish(self.queue.get_nowait(), "flushed")
+
+    def thaw(self) -> None:
+        self.frozen = False
 
     async def run(self) -> None:
         """Connect, run jobs until the connection drops, start over. Never returns."""
@@ -134,14 +151,34 @@ class Executor:
                 if not get.done():
                     return  # connection lost while idle
                 job = get.result()
+                if self.frozen:  # taken just as a panic began
+                    self._finish(job, "flushed")
+                    continue
+                self._running = asyncio.create_task(execute(vnc, job.command, self.grid))
                 try:
-                    await asyncio.wait_for(execute(vnc, job.command, self.grid), JOB_TIMEOUT)
+                    await asyncio.wait_for(asyncio.shield(self._running), JOB_TIMEOUT)
+                except asyncio.CancelledError:
+                    me = asyncio.current_task()
+                    if not self._running.cancelled() or (me is not None and me.cancelling()):
+                        raise  # brain is stopping, not a panic
+                    try:  # frozen half-way: nothing may stay pressed
+                        await asyncio.wait_for(vnc.release(), JOB_TIMEOUT)
+                    except (VncError, TimeoutError):
+                        self._finish(job, "flushed")
+                        return
+                    self._finish(job, "flushed")
+                    continue
                 except (VncError, TimeoutError):
                     self._finish(job, "offline")
                     return
                 self._finish(job, "done")
         finally:
             lost.cancel()
+            if self._running and not self._running.done():
+                self._running.cancel()
+                with contextlib.suppress(asyncio.CancelledError, VncError):
+                    await self._running
+            self._running = None
             if get and not get.done():  # cancelling a get leaves its job in the queue
                 get.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

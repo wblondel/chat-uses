@@ -74,3 +74,63 @@ def test_settings(tmp_path: Path) -> None:
         assert store.setting("youtube_video") == "def"
         store.set_setting("youtube_video", None)
         assert store.setting("youtube_video") is None
+
+
+def test_moderator_bans_set_the_end_and_unbans_clear_it() -> None:
+    with Store(":memory:") as store:
+        store.seen_user("yt:a", "Alice", 1.0)
+        store.time_out(2.0, "yt:a", 1000.0, "strikes")
+        store.ban(3.0, "yt:a", 500.0, "mod", "shorter")  # a moderator may shorten it
+        assert store.banned_until("yt:a") == 500.0
+        store.ban(3.0, "dc:new", 900.0, "mod", "", kind="timeout")  # someone not seen yet
+        assert store.user("dc:new") == {
+            "id": "dc:new",
+            "display_name": "",
+            "first_seen": 3.0,
+            "last_seen": 3.0,
+            "banned_until": 900.0,
+            "roles": "",
+        }
+        assert [u["id"] for u in store.banned(400.0)] == ["dc:new", "yt:a"]
+        store.unban(4.0, "yt:a", "mod2")
+        assert store.banned_until("yt:a") == 0.0
+        assert [u["id"] for u in store.banned(400.0)] == ["dc:new"]
+        types = [(t, p.get("by")) for _, _, t, p in store.recent_events()]
+        assert types == [("unban", "mod2"), ("timeout", "mod"), ("ban", "mod"), ("timeout", None)]
+
+
+def test_audit_queries_newest_first_with_paging_and_filters() -> None:
+    with Store(":memory:") as store:
+        store.seen_user("yt:a", "Alice", 1.0)
+        store.seen_user("dc:b", "Bob", 1.0)
+        for i in range(5):
+            store.record_command(float(i), "yt:a" if i % 2 else "dc:b", f"!type {i}", None, "invalid", "why")
+        rows = store.recent_commands(limit=2)
+        assert [r["raw"] for r in rows] == ["!type 4", "!type 3"]
+        assert rows[1] == {
+            "id": 4,
+            "ts": 3.0,
+            "user": "yt:a",
+            "display_name": "Alice",
+            "raw": "!type 3",
+            "outcome": "invalid",
+            "reason": "why",
+        }
+        assert [r["raw"] for r in store.recent_commands(before_id=rows[1]["id"])] == [
+            "!type 2",
+            "!type 1",
+            "!type 0",
+        ]
+        assert [r["raw"] for r in store.recent_commands(user_id="yt:a")] == ["!type 3", "!type 1"]
+        store.event(9.0, "panic", {"by": "m"})
+        assert [t for _, _, t, _ in store.recent_events(("panic", "ban"))] == ["panic"]
+        newest = store.recent_events(limit=1)[0][0]
+        assert len(store.recent_events(before_id=newest)) == 5
+
+
+def test_users_seen_since_most_recent_first() -> None:
+    with Store(":memory:") as store:
+        store.seen_user("yt:a", "Alice", 1.0)
+        store.seen_user("yt:b", "Bob", 5.0)
+        store.seen_user("yt:c", "Cy", 3.0)
+        assert [u["id"] for u in store.users_seen_since(2.0)] == ["yt:b", "yt:c"]

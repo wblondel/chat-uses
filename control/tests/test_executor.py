@@ -6,6 +6,7 @@ import pytest
 from fake_vnc import FakeVnc, Key, Pointer
 
 from chatuses import executor as executor_module
+from chatuses import vnc as vnc_module
 from chatuses.commands import InputCommand, TypeText
 from chatuses.executor import Executor, Job, JobResult, connect_to, execute, record_in
 from chatuses.grid import Grid
@@ -240,6 +241,62 @@ def test_stopping_the_executor_leaves_nothing_open() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
         await server.wait_hung_up()
+        await server.stop()
+
+    run(test)
+
+
+# --- panic: freeze and thaw ---------------------------------------------------
+
+
+def test_freezing_stops_the_running_command_lets_go_and_drops_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vnc_module, "DRAG_STEP", 0.2)  # a 2-second drag, stopped half-way
+
+    async def test() -> None:
+        server = await FakeVnc().start()
+        reports: Reports = []
+        executor = Executor(lambda: connect_to("127.0.0.1", server.port), report=reporter(reports))
+        task = asyncio.create_task(executor.run())
+        await online(executor)
+        assert executor.submit(Job("yt:dragger", command("!drag B2 H6")))
+        assert executor.submit(Job("yt:waiting", TypeText("x")))
+        await server.wait_for(2)  # the button is down
+        executor.freeze()
+        await until(lambda: len(reports) == 2)
+        assert sorted(reports) == [("yt:dragger", "flushed"), ("yt:waiting", "flushed")]
+        await asyncio.sleep(0.3)
+        events = list(server.events)
+        assert events[-1][:2] == ("ptr", 0)  # let go
+        assert len(events) < 13  # the drag didn't finish
+        assert not executor.can_take() and not executor.submit(Job("yt:a", TypeText("x")))
+        assert executor.online.is_set()  # still connected: resume is instant
+        executor.thaw()
+        assert executor.submit(Job("yt:a", TypeText("y")))
+        await until(lambda: len(reports) == 3)
+        assert reports[-1] == ("yt:a", "done")
+        task.cancel()
+        await server.stop()
+
+    run(test)
+
+
+def test_cancelling_the_executor_mid_command_still_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(vnc_module, "DRAG_STEP", 0.2)
+
+    async def test() -> None:
+        server = await FakeVnc().start()
+        executor = Executor(lambda: connect_to("127.0.0.1", server.port))
+        task = asyncio.create_task(executor.run())
+        await online(executor)
+        executor.submit(Job("yt:a", command("!drag B2 H6")))
+        await server.wait_for(2)
+        task.cancel()  # brain stopping, not a panic
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        events = await server.wait_hung_up()
+        assert events[-1][:2] == ("ptr", 0)  # closing let go of the button
         await server.stop()
 
     run(test)

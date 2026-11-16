@@ -1,0 +1,17 @@
+[Unit]
+Description=chat-uses broadcast: follow brain's panic state, mute the target's sound (PLAN.md 7.5)
+PartOf=chat-bcast.target
+Wants=chat-bcast-audio.service
+After=chat-bcast-audio.service
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+Environment=HOME=/var/lib/chat-bcast PULSE_SERVER=unix:/run/chat-bcast-audio/native
+ExecStart=/usr/lib/chat-bcast/panic-follow
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=chat-bcast.target

@@ -115,6 +115,11 @@ class VncInput:
             return "(reason too long)"
         return (await self._reader.readexactly(length)).decode("utf-8", "replace")[:200]
 
+    async def release(self) -> None:
+        """Let go of every key and button held down (a command was stopped half-way)."""
+        if self._keys_down or self._buttons:
+            await self._release()
+
     async def _release(self) -> None:
         for keysym in list(self._keys_down):
             await self.key(keysym, False)

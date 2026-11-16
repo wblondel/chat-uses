@@ -98,6 +98,7 @@ It runs these steps in order (you can run any subset, e.g. `bootstrap.sh firewal
 | `networks` | Creates/updates `infranet` and `chatnet` from `infra/incus/networks/` |
 | `projects` | Creates/updates `infra` and `targets` from `infra/incus/projects/` |
 | `profiles` | Creates/updates profiles from `infra/incus/profiles/<project>/` |
+| `incus-api` | The Incus API on infranet's address only (`INFRANET_GW:INCUS_API_PORT`), and a client certificate for brain restricted to project `targets` (`/etc/chat-uses/secrets/brain-incus.*`; Phase 5, `docs/phase5.md` step 3) |
 | `summary` | Prints the state and next steps |
 
 ### 3. Check SSH still works

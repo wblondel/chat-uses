@@ -2,8 +2,8 @@
 """Pull the target's sound into the stream, steady and in time.
 
 The target serves raw PCM (s16le, 48 kHz, stereo) on TCP AUDIO_PORT; pacat
-plays it into the sink "target", which feeds "mix" (chat-bcast-scene mutes
-it).
+plays it into the sink "target", which feeds "mix" (apply-mute mutes it for
+a scene or a panic).
 
 This is a jitter buffer. The target is chat's machine and often busy, so its
 sound arrives in bursts; a player fed straight from the socket runs dry
@@ -24,7 +24,6 @@ stream) is in the encoder, on the whole mix.
 """
 
 import fcntl
-import json
 import os
 import select
 import socket
@@ -45,7 +44,6 @@ LOW = 15 * MS  # when pacat is behind, the pipe drains down to this
 SETTLE = 40 * MS  # a pipe backlog that never falls below this...
 WINDOW = 10  # ...for this many seconds is drained too
 TIMEOUT = 5  # seconds without data = the target is gone
-SCENE = "/var/lib/chat-bcast/control/scene.json"
 
 
 def log(message):
@@ -53,17 +51,12 @@ def log(message):
 
 
 def apply_scene_mute():
-    """Mute the target unless the scene is "live", as chat-bcast-scene does.
+    """Mute the target as the scene and the panic state say (apply-mute).
 
     PulseAudio forgets the mute when it restarts, and this script restarts
-    with it: the scene file stays the one source of truth.
+    with it: the control files stay the one source of truth.
     """
-    try:
-        with open(SCENE) as f:
-            scene = json.load(f).get("scene", "live")
-    except (OSError, ValueError, AttributeError):
-        scene = "live"
-    subprocess.run(["pactl", "set-sink-mute", "target", "0" if scene == "live" else "1"], check=False)
+    subprocess.run(["/usr/lib/chat-bcast/apply-mute"], check=False, stdout=subprocess.DEVNULL)
 
 
 def backlog(fd):
