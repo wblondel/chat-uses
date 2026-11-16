@@ -45,7 +45,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 4 | Control plane MVP | L | ✅ done on the server: two players on an unlisted stream from YouTube and Discord, about 4 s from command to stream (section 15, P4) |
 | 5 | Safety layer — **gate for going public** | L | ◐ deployed on the server (runbook `docs/phase5.md`): every automated red-team test passes, panic covers the screen in 0.33 s and mutes in 0.27 s (section 15, P5; `docs/redteam.md`). Every red-team test that can run before Phase 6 passes, by hand ones included (P5b, P5c). The owner tried every moderator tool (P5d). Left: a second moderator's practice, the word lists' review (planned), the rules and privacy notice filled in |
 | 6 | Governance and time travel | L | ◐ all 5 steps built (runbook `docs/phase6.md`): rulesets and laws, power votes with the overlay's vote panel, snapshots and time travel (save, rewind, load, reboot, reset) with thumbnails, democracy mode with the meter and tally bars, the Discord control panel, governance scenarios in CI, the end-to-end test on a real Incus; left: rewind / reboot / reset votes on an unlisted stream with friends |
-| 7 | Closed beta → soft launch | M | ◐ steps 1-2 of 3 (runbook `docs/phase7.md`): session reports, screen OCR verdicts; next: the beta runbook |
+| 7 | Closed beta → soft launch | M | ◐ tooling built (runbook `docs/phase7.md`): session reports, screen OCR verdicts, the beta runbook and retro template; left: Phase 5's gate, the beta sessions, enforcing, the soft launch |
 | 8 | Roguelike layer + public site | L | ☐ |
 | 9 | Depth (driver's seat, macros, constitution, OCR click, chaos) | M–L | ☐ |
 | 10 | Growth and 24/7 operations | M | ☐ |
@@ -749,7 +749,7 @@ Runbook: **`docs/phase6.md`** (five steps; grows with each).
 - [ ] Turn OCR enforcement on (when the beta's verdicts say so: `docs/phase7.md`, D62).
 - [ ] Public soft launch on a **schedule** (e.g. three evenings a week, 3–4 h), with you hosting and at least one moderator online. Not 24/7 yet.
 - [x] Collect per session: peak and average viewers, active chatters, commands/min, votes proposed/passed, panics, content holds (true/false positives), encoder speed, CPU (`infra/host/session.py`, D61).
-- [ ] Weekly retro note in `docs/retros/`: what was fun, what broke, what to change.
+- [ ] Weekly retro note in `docs/retros/`: what was fun, what broke, what to change (template: `docs/retros/TEMPLATE.md`).
 
 **Done when:** 5 public sessions in a row with no moderation incident that reached viewers, then decide on 24/7 (record in the decision log).
 
