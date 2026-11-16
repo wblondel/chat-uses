@@ -36,6 +36,7 @@ import logging
 import os
 import shutil
 import signal
+import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -58,7 +59,7 @@ from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
 from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
-from chatuses.store import Store, to_json
+from chatuses.store import RETENTION, Store, to_json
 from chatuses.vnc import VncInput
 
 log = logging.getLogger("chatuses.brain")
@@ -73,8 +74,9 @@ SECRETS = "/etc/chat-uses/secrets"
 ADMIN_USAGE = (
     "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off\n"
     "       | panic [REASON] | resume | lockdown on|off | bans\n"
-    "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO"
+    "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO"
 )
+PRUNE_EVERY = 24 * 3600.0  # seconds between retention passes
 
 
 @dataclass(frozen=True)
@@ -329,6 +331,26 @@ class Brain:
         what = "held the stream" if enforce else "shadow mode, nothing was done on stream"
         self.alert(f"👁️ Screen OCR saw a listed word ({what}):\n{seen}", hit.frame.png())
 
+    async def keep_tidy(self) -> None:
+        """Retention (PLAN.md 11): raw logs and screenshots go after 90 days. Never returns."""
+        while True:
+            now = time.time()
+            try:
+                commands, events = self.store.prune(now)
+                shots = 0
+                if self.screens_dir and self.screens_dir.is_dir():
+                    for shot in self.screens_dir.glob("ocr-*.png"):
+                        if shot.stat().st_mtime < now - RETENTION:
+                            shot.unlink()
+                            shots += 1
+                if commands or events or shots:
+                    log.info(
+                        "retention: deleted %d commands, %d events, %d screenshots", commands, events, shots
+                    )
+            except (OSError, sqlite3.Error) as err:
+                log.error("retention: %s", err)
+            await asyncio.sleep(PRUNE_EVERY)
+
     def _keep_screenshot(self, hit: Hit) -> str | None:
         if self.screens_dir is None:
             return None
@@ -481,6 +503,13 @@ class Brain:
                 return _answer(self.moderation.timeout("console", who, int(minutes)))
             case ["unban", who]:
                 return _answer(self.moderation.unban("console", who))
+            case ["forget", who]:
+                found = self.moderation.resolve(who, time.time())
+                if isinstance(found, Answer):
+                    return _answer(found)
+                commands, events = self.store.forget(time.time(), found)
+                self.strikes.forget(found)
+                return "ok", f"Forgot {found}: {commands} commands and {events} log entries deleted."
             case ["bans"]:
                 rows = self.moderation.state()["banned"]
                 if not rows:
@@ -536,6 +565,9 @@ class Brain:
         executor = asyncio.create_task(self.executor.run())
         self.start_adapters(config)
         self.start_ocr(config)
+        tidy = asyncio.create_task(self.keep_tidy())
+        self._background.add(tidy)
+        tidy.add_done_callback(self._background.discard)
         if self.watch:
             watch = asyncio.create_task(self.watch.run())
             self._background.add(watch)

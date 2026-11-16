@@ -64,6 +64,7 @@ Useful ones:
 | `VIDEO_BITRATE` | `7000k` | YouTube 1080p30: 4–10 Mbps |
 | `X264_PRESET` | `veryfast` | `faster`/`fast` look better and cost more CPU |
 | `AUDIO_LIMIT` | `0.8` | Limiter ceiling on the whole mix |
+| `AUDIO_COMPRESS` | `0.2` | Above this level the mix is compressed 20:1 (Phase 5: loud noise stays near -14 LUFS) |
 | `AUDIO_BUFFER_MS` | `120` | Sound held before it plays, so a busy desktop's bursty sound doesn't cut (PLAN.md D31). Change `AUDIO_DELAY` by as much |
 | `AUDIO_DELAY` | `-100ms` | Shifts the sound against the picture; the default compensates the buffer. `check.sh` tells you how much to change it |
 | `FORWARD_URL` | empty | Send the stream here instead of YouTube (dry run) |
