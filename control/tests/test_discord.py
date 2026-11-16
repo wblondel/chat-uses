@@ -189,6 +189,9 @@ class NoEffects:
     def rewind_to(self, which: str, by: str) -> tuple[bool, str]:
         return False, "no snapshot"
 
+    def set_mode(self, mode: str, by: str) -> tuple[bool, str]:
+        return False, "no"
+
 
 def test_moderator_slash_commands_are_role_gated_and_private() -> None:
     async def test() -> None:

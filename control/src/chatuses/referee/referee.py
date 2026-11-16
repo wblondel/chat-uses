@@ -2,8 +2,9 @@
 
 Takes the meta commands the pipeline accepted (commands.MetaCommand):
 proposals for power votes, ballots and vetoes go to the vote engine
-(votes.py); what a passed vote does is brain's (`Actions`). Democracy mode
-(modes.py) comes with Phase 6 step 3.
+(votes.py); what a passed vote does is brain's (`Actions`). `!anarchy` and
+`!democracy` push the mode meter (modes.py); in democracy, input commands
+are ballots, and brain runs each window's winner.
 
 The ruleset comes from rulesets/NAME.yaml (laws.py); the laws are its laws
 with the store's `laws` table on top. Switching rulesets or changing a law
@@ -17,17 +18,18 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from chatuses.commands import Load, Meta, MetaCommand, Rewind, Save, describe
+from chatuses.commands import InputCommand, Load, Meta, MetaCommand, Rewind, Save, describe
 from chatuses.identity import Presence
 from chatuses.referee import laws as laws_module
 from chatuses.referee.laws import DEFAULT, Laws, Ruleset, RulesetError
+from chatuses.referee.modes import Mode, Modes, Winner
 from chatuses.referee.votes import Proposal, Reply, Vote, VoteEngine
 from chatuses.store import Store
 
 log = logging.getLogger(__name__)
 
 # Built in brain so far (the rest of a ruleset's features come later).
-BUILT = frozenset({"anarchy", "power_votes", "snapshots"})
+BUILT = frozenset({"anarchy", "democracy", "power_votes", "snapshots"})
 NEEDS_FEATURE = {"save": "snapshots", "rewind": "snapshots", "load": "snapshots"}
 
 
@@ -48,6 +50,8 @@ class Referee:
         rulesets: Path | None = None,
         ruleset: Ruleset = DEFAULT,
         clock: Callable[[], float] = time.time,
+        show_mode: Callable[[dict[str, Any]], None] = lambda _view: None,
+        run_winner: Callable[[Winner], None] = lambda _winner: None,
     ) -> None:
         self.store = store
         self.actions = actions
@@ -57,6 +61,8 @@ class Referee:
         self.ruleset = ruleset
         self.laws = self._laws(ruleset)
         self.votes = VoteEngine(presence, lambda: self.laws, store, self._changed, self._passed)
+        self.show_mode = show_mode  # the overlay's meter and tally
+        self.modes = Modes(presence, lambda: self.laws, self._mode_changed, run_winner, now=clock())
         self._running: set[asyncio.Task[None]] = set()
 
     def _laws(self, ruleset: Ruleset) -> Laws:
@@ -78,8 +84,10 @@ class Referee:
                 return self.votes.ballot(user, command.name == "yes", now)
             case Meta(name="veto"):
                 return self.votes.veto(user, now)
-            case Meta(name="anarchy" | "democracy"):
-                return Reply(False, "democracy mode is coming soon")
+            case Meta(name=("anarchy" | "democracy") as toward):
+                if "democracy" not in self.ruleset.features:
+                    return Reply(False, "democracy is off in this ruleset")
+                return self.modes.push(user, toward, now)
             case Meta(name=("reboot" | "reset" | "newrun" | "impeach") as action):
                 return self._propose(user, name, Proposal(action, describe(command)), now)
             case Rewind(steps=steps):
@@ -103,13 +111,29 @@ class Referee:
             return Reply(False, why)
         return self.votes.propose(user, name, proposal, now)
 
+    def ballot(self, user: str, name: str, command: InputCommand, now: float) -> Reply:
+        """An input command while in democracy: counted for this window."""
+        return self.modes.ballot(user, name, command, now)
+
+    @property
+    def democracy(self) -> bool:
+        return self.modes.mode == "democracy"
+
     def tick(self) -> None:
-        self.votes.tick(self.clock())
+        now = self.clock()
+        self.votes.tick(now)
+        self.modes.tick(now)
 
     # --- moderators and operators ----------------------------------------------------
 
     def end_vote(self, why: str) -> Reply:
         return self.votes.cancel(why, self.clock())
+
+    def set_mode(self, mode: Mode, by: str) -> Reply:
+        reply = self.modes.set_mode(mode, self.clock())
+        if reply.ok:
+            self.store.event(self.clock(), "mode", {"mode": mode, "by": by})
+        return reply
 
     def set_ruleset(self, name: str, by: str) -> str:
         """Switch to rulesets/NAME.yaml; raises RulesetError (the old one stays)."""
@@ -147,6 +171,7 @@ class Referee:
             "disabled": sorted(self.ruleset.disabled),
             "laws_changed": self.store.laws(),
             "vote": self.votes.view(self.clock()),
+            "mode": self.modes.view(self.clock()),
         }
 
     def status_line(self) -> str:
@@ -159,12 +184,17 @@ class Referee:
         else:
             what = f"{vote['text']}: {vote['phase']}, {vote['result']}"
         changed = len(self.store.laws())
-        return f"Ruleset: {self.ruleset.name}{f' ({changed} laws changed)' if changed else ''}; vote: {what}"
+        mode = f"{self.modes.mode} (meter {round(self.modes.meter)})"
+        laws = f" ({changed} laws changed)" if changed else ""
+        return f"Ruleset: {self.ruleset.name}{laws}; mode: {mode}; vote: {what}"
 
     # --- the vote engine's callbacks ------------------------------------------------
 
     def _changed(self, _vote: Vote | None) -> None:
         self.show(self.votes.view(self.clock()))
+
+    def _mode_changed(self) -> None:
+        self.show_mode(self.modes.view(self.clock()))
 
     def _passed(self, vote: Vote) -> None:
         task = asyncio.get_running_loop().create_task(self._carry_out(vote))

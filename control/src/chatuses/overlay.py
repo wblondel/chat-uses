@@ -6,7 +6,7 @@ what the stream shows), so the feed needs no password. Messages:
 
     {"type": "hello", "log": [line...], "target": bool,     on connect
      "panic": bool, "panic_kind": str, "lockdown": bool,
-     "vote": {...} | null, "timeline": {...} | null}
+     "vote": {...} | null, "timeline": {...} | null, "mode": {...} | null}
     {"type": "log", ...line}                                a command, as chat sees it
     {"type": "log-state", "id": int, "state": str}          what became of it
     {"type": "pointer", "x": int, "y": int, "user": str}    who moved the pointer
@@ -17,6 +17,8 @@ what the stream shows), so the feed needs no password. Messages:
     {"type": "lockdown", "on": bool}                        only regulars may send commands
     {"type": "vote", "vote": {...} | null}                  the power vote, its count and time left
                                                             (referee/votes.py view()); null: none
+    {"type": "mode", "mode": ..., "meter": int, ...}         anarchy or democracy, the meter, democracy's
+                                                            tally (referee/modes.py view())
     {"type": "timeline", "timeline": [...], "saves": [...],  chat's snapshots (snapshots.py view()):
      "slots": int}                                          thumbnails at /thumbs/<id>.png
 
@@ -68,6 +70,8 @@ class OverlayHub:
         self._vote: dict[str, Any] | None = None
         self._vote_at = 0.0  # when it was last sent (monotonic): a new page gets the time left
         self._timeline: dict[str, Any] | None = None
+        self._mode: dict[str, Any] | None = None
+        self._mode_at = 0.0
         self._clients: set[asyncio.Queue[str | None]] = set()
         self._sockets: set[web.WebSocketResponse] = set()
         self._lines: deque[Line] = deque(maxlen=KEEP_LINES)
@@ -116,6 +120,20 @@ class OverlayHub:
         self._vote, self._vote_at = view, time.monotonic()
         self._send({"type": "vote", "vote": view})
 
+    def mode(self, view: dict[str, Any]) -> None:
+        self._mode, self._mode_at = view, time.monotonic()
+        self._send({"type": "mode", **view})
+
+    def _mode_now(self) -> dict[str, Any] | None:
+        if self._mode is None:
+            return None
+        gone = time.monotonic() - self._mode_at
+        view = {**self._mode, "locked_for": max(0, round(self._mode.get("locked_for", 0) - gone))}
+        tally = self._mode.get("tally")
+        if tally and tally.get("ends_in") is not None:
+            view["tally"] = {**tally, "ends_in": round(max(0.0, tally["ends_in"] - gone), 1)}
+        return view
+
     def timeline(self, view: dict[str, Any]) -> None:
         self._timeline = view
         self._send({"type": "timeline", **view})
@@ -161,6 +179,7 @@ class OverlayHub:
             "lockdown": self.lockdown_on,
             "vote": self._vote_now(),
             "timeline": self._timeline,
+            "mode": self._mode_now(),
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)

@@ -157,16 +157,10 @@ def test_meta_commands() -> None:
             await brain.console_message("alice", "!grid")
             assert (await feed.next("log"))["state"] == "done"
             assert await feed.next() == {"type": "grid"}
-            assert await brain.console_message("alice", "!democracy") == (
-                "refused",
-                "democracy mode is coming soon",
-            )
+            newcomer = "you can push the meter once you've been here 2 minutes"
+            assert await brain.console_message("alice", "!democracy") == ("refused", newcomer)
             line = await feed.next("log")
-            assert (line["text"], line["state"], line["reason"]) == (
-                None,
-                "refused",
-                "democracy mode is coming soon",
-            )
+            assert (line["text"], line["state"], line["reason"]) == (None, "refused", newcomer)
 
     run(test)
 
@@ -233,7 +227,10 @@ def test_a_power_vote_on_the_overlay() -> None:
                 "done",
                 2,
             )
-            assert "Ruleset: roguelike; vote: !reboot: done, rebooted" in brain.status_text()
+            assert (
+                "Ruleset: roguelike; mode: anarchy (meter 50); vote: !reboot: done, rebooted"
+                in brain.status_text()
+            )
             assert not brain.executor.frozen  # input is back after the reboot
 
     run(test)
@@ -403,6 +400,39 @@ def test_thumbnails_are_served_and_nothing_else(tmp_path: Path) -> None:
                     "/thumbs/x.png",
                 ):
                     assert (await client.get(path)).status == 404, path
+
+    run(test)
+
+
+def test_democracy_runs_the_most_voted_command() -> None:
+    async def test() -> None:
+        server = await FakeVnc().start()
+        async with running(server) as (brain, feed):
+            settle(brain, "alice", "bob", "carol")
+            assert await brain.console_message("alice", "!democracy") == ("accepted", None)
+            mode = await feed.next("mode")
+            assert (mode["mode"], mode["meter"]) == ("anarchy", 52)
+            assert await brain.admin(["mode", "democracy"]) == ("ok", "Mode: democracy (locked for 120 s).")
+            assert (await feed.next("mode"))["mode"] == "democracy"
+            for name, text in (("alice", "!click F7"), ("bob", "!click F7"), ("carol", "!click A1")):
+                assert await brain.console_message(name, text) == ("accepted", None)
+            tally = (await feed.next("mode"))["tally"]
+            while tally["total"] < 3:
+                tally = (await feed.next("mode"))["tally"]
+            assert tally["options"] == [{"text": "!click F7", "votes": 2}, {"text": "!click A1", "votes": 1}]
+            assert brain.executor.queue.qsize() == 0  # ballots, not inputs
+            now = time.time()
+            brain.referee.clock = lambda: now + 13
+            brain.referee.tick()
+            line = await feed.next("log")
+            assert (line["user"], line["platform"], line["text"], line["state"]) == (
+                "democracy (2/3)", "democracy", "!click F7", "queued"
+            )  # fmt: skip
+            assert await feed.next("log-state") == {"type": "log-state", "id": line["id"], "state": "done"}
+            assert (await server.wait_for(3))[0] == ("ptr", 0, 550, 650)  # F7
+            assert await brain.admin(["mode", "democracy"]) == ("error", "It's already democracy.")
+            assert "mode: democracy" in brain.status_text()
+        await server.stop()
 
     run(test)
 

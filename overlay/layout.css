@@ -143,6 +143,9 @@ html, body {
   background: var(--text); border-radius: 3px;
 }
 .meter-legend { font-size: 18px; font-weight: bold; }
+.meter-tick { position: absolute; top: 0; width: 2px; height: 18px; background: rgba(10, 14, 26, 0.6); }
+#mode-name { font-size: 22px; }
+#mode-lock { font-size: 18px; white-space: nowrap; }
 .anarchy { color: var(--anarchy); }
 .democracy { color: var(--democracy); }
 
@@ -202,7 +205,25 @@ html, body {
 .plat { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .plat.yt { background: #ff3b3b; }
 .plat.dc { background: #5865f2; }
-#ticker { font-size: 20px; color: var(--muted); }
+#ticker, #ticker-democracy { font-size: 20px; color: var(--muted); }
+#ticker-democracy { color: var(--democracy); }
+#ticker-democracy b { color: var(--text); }
+
+/* Democracy's tally (referee/modes.py), in the log's place. */
+#tally {
+  font-family: var(--mono); font-size: 22px;
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 26px repeat(2, 34px);
+  column-gap: 28px; row-gap: 6px;
+}
+.tally-head { grid-column: 1 / -1; font: bold 20px var(--font); color: var(--democracy); }
+.tally-row {
+  position: relative; overflow: hidden; border-radius: 6px; background: var(--panel);
+  display: flex; justify-content: space-between; align-items: center; padding: 0 12px;
+}
+.tally-row .fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(91, 140, 255, 0.35); }
+.tally-row.lead .fill { background: rgba(91, 140, 255, 0.6); }
+.tally-row span { position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tally-row .votes { flex: none; margin-left: 12px; font-weight: bold; }
 #ticker b { color: var(--text); }
 
 /* --- corner: clock and controls status ---------------------------------- */

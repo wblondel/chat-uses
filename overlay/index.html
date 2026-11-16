@@ -34,8 +34,9 @@
     </section>
     <section class="panel">
       <div class="label">Mode</div>
-      <div class="meter"><div class="meter-fill" id="meter"></div><div class="meter-marker" id="meter-marker"></div></div>
+      <div class="meter"><div class="meter-fill" id="meter"></div><div class="meter-tick" id="tick-anarchy"></div><div class="meter-tick" id="tick-democracy"></div><div class="meter-marker" id="meter-marker"></div></div>
       <div class="row meter-legend"><span class="anarchy">Anarchy</span><span class="democracy">Democracy</span></div>
+      <div class="row"><span class="value anarchy" id="mode-name">Anarchy</span><span class="muted" id="mode-lock"></span></div>
     </section>
     <section class="panel" id="vote-panel">
       <div class="label">Vote</div>
@@ -54,7 +55,10 @@
     <div id="log">
       <div class="log-line muted">Waiting for chat…</div>
     </div>
+    <!-- Democracy (referee/modes.py): the commands being voted, instead of the log. -->
+    <div id="tally" hidden></div>
     <div id="ticker">Type in chat: <b>!type</b> text · <b>!click F7</b> · <b>!key ctrl+alt+t</b> · <b>!help</b></div>
+    <div id="ticker-democracy" hidden>Democracy: the most-voted command runs · <b>!anarchy</b> to push back</div>
   </footer>
 
   <div id="corner">

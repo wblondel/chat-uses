@@ -234,3 +234,18 @@ def test_without_incus_the_dashboard_says_time_travel_is_off() -> None:
             assert state["time_travel"] is None
 
     run(test)
+
+
+def test_switching_the_mode_from_the_dashboard() -> None:
+    async def test() -> None:
+        async with dashboard() as (brain, client):
+            state = await (await client.get("/api/state", headers=AUTH)).json()
+            assert (state["referee"]["mode"]["mode"], state["referee"]["mode"]["meter"]) == ("anarchy", 50)
+            resp = await client.post("/api/mode", json={"mode": "democracy"}, headers=AUTH)
+            assert await resp.json() == {"ok": True, "text": "Mode: democracy (locked for 120 s)."}
+            assert brain.referee.democracy
+            assert (await client.post("/api/mode", json={"mode": "chaos"}, headers=AUTH)).status == 400
+            [(_, _, _, payload)] = brain.store.recent_events(("mode",))
+            assert payload == {"mode": "democracy", "by": "the dashboard"}
+
+    run(test)

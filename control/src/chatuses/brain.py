@@ -62,6 +62,7 @@ from chatuses.overlay import OverlayHub
 from chatuses.pipeline import PAUSED, ChatMessage, Pipeline
 from chatuses.referee import laws
 from chatuses.referee.laws import DEFAULT, Ruleset, RulesetError
+from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
 from chatuses.referee.votes import Proposal
 from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
@@ -87,7 +88,8 @@ ADMIN_USAGE = (
     "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off\n"
     "       | panic [REASON] | resume | lockdown on|off | bans\n"
     "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
-    "       | endvote | ruleset [NAME] | laws | law NAME VALUE|default"
+    "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
+    "       | snapshots | snapshot | rewind-to NUMBER|SAVE"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
@@ -223,7 +225,17 @@ class Brain:
             locked_out=self.moderation.held_by_lockdown,
             paused=lambda: self.moderation.panicking,
         )
-        self.referee = Referee(store, self.pipeline.presence, self, self.overlay.vote, rulesets, ruleset)
+        self.referee = Referee(
+            store,
+            self.pipeline.presence,
+            self,
+            self.overlay.vote,
+            rulesets,
+            ruleset,
+            show_mode=self.overlay.mode,
+            run_winner=self._democracy_won,
+        )
+        self.overlay.mode(self.referee.modes.view(time.time()))  # pages that connect get it
         self.incus = incus
         self.incus_off_reason = "" if incus else "not set up"
         self.target_host = target_host
@@ -269,7 +281,10 @@ class Brain:
         outcome = self.pipeline.handle(msg)
         name = self.filter.safe_name(msg.user_id, msg.display_name)
         command = outcome.command
-        if outcome.kind == "accepted" and isinstance(command, InputCommand):
+        if outcome.kind == "accepted" and isinstance(command, InputCommand) and self.referee.democracy:
+            # A ballot: the overlay's tally shows it; the window's winner runs (_democracy_won).
+            self.referee.ballot(msg.user_id, name, command, msg.ts)
+        elif outcome.kind == "accepted" and isinstance(command, InputCommand):
             if not self.executor.can_take():
                 # Down or swamped: a refusal like the others, so a busy chat
                 # during a reboot doesn't fill the log with dead lines.
@@ -320,6 +335,7 @@ class Brain:
         if on:
             self.executor.freeze()
             self.referee.end_vote("cancelled: the stream is paused")
+            self.referee.modes.clear()  # ballots for the screen before
             return
         self.executor.thaw()
         ended = self.moderation.last_panic or {}
@@ -343,6 +359,24 @@ class Brain:
     def end_vote(self, why: str) -> tuple[bool, str]:
         reply = self.referee.end_vote(why)
         return reply.ok, reply.text
+
+    def set_mode(self, mode: str, by: str) -> tuple[bool, str]:
+        if mode not in ("anarchy", "democracy"):
+            return False, "anarchy or democracy"
+        if "democracy" not in self.referee.ruleset.features:
+            return False, "Democracy is off in this ruleset."
+        reply = self.referee.set_mode("democracy" if mode == "democracy" else "anarchy", by)
+        return reply.ok, reply.text
+
+    def _democracy_won(self, winner: Winner) -> None:
+        """The window's most-voted command runs, as chat's (PLAN.md 6.3)."""
+        label = f"democracy ({winner.votes}/{winner.total})"
+        if not self.executor.can_take():
+            self.overlay.add_line(label, "democracy", winner.text, "refused", BUSY)
+            return
+        line = self.overlay.add_line(label, "democracy", winner.text, "queued")
+        self._names[line] = "democracy"
+        self.executor.submit(Job(winner.ballot.user, winner.ballot.command, ref=line))
 
     # --- what a passed vote does (referee.Actions) -------------------------------------
 
@@ -408,6 +442,7 @@ class Brain:
         assert self.snapshots is not None
         self._travelling = True
         self.executor.freeze()
+        self.referee.modes.clear()
         try:
             await self.snapshots.restore(snap)
         finally:
@@ -419,6 +454,7 @@ class Brain:
         assert self.incus is not None
         self._travelling = True
         self.executor.freeze()
+        self.referee.modes.clear()
         try:
             await self.incus.restart(await self._instance(), force=force)
         except IncusError as err:
@@ -759,6 +795,8 @@ class Brain:
                 return _answer(self.moderation.rewind_to("console", which))
             case ["endvote"]:
                 return _answer(self.moderation.endvote("console"))
+            case ["mode", ("anarchy" | "democracy") as mode]:
+                return _answer(self.moderation.mode("console", mode))
             case ["ruleset"]:
                 names = ", ".join(laws.available(self.referee.rulesets)) if self.referee.rulesets else "?"
                 return "ok", f"Ruleset: {self.referee.ruleset.name} (available: {names})"
