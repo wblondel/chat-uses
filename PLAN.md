@@ -43,7 +43,7 @@ This document is the plan to build it. Follow it in order: each phase ends with 
 | 2 | Golden target image: Debian 13 + Xfce | M | ✅ done on the server (section 15, P2) |
 | 3 | Broadcast pipeline | M | ◐ pipeline and 1 h YouTube stream done on the server (section 15, P3); 6 h with the target at its CPU cap left |
 | 4 | Control plane MVP | L | ◐ code done: brain with YouTube and Discord chat, console chat, VNC injector and executor, overlay feed (runbook `docs/phase4.md`); left: on the server, control from both platforms on an unlisted stream and measure the latency |
-| 5 | Safety layer — **gate for going public** | L | ◐ steps 1–5: egress proxy, intranet, text filter, moderation (panic, bans, lockdown, slash commands, admin dashboard), screen OCR (shadow mode), watchdog, sound cap, retention, rules and privacy drafts built and tested in the sandbox (runbook `docs/phase5.md`); red-team runner next, then the owner's red-team run and moderator practice |
+| 5 | Safety layer — **gate for going public** | L | ◐ all five steps built and tested in the sandbox (runbook `docs/phase5.md`): egress proxy, intranet, text filter, moderation (panic, bans, lockdown, slash commands, admin dashboard), screen OCR (shadow mode), watchdog, sound cap, retention, rules and privacy drafts, red-team runner. Left: deploy, the red-team run on the server (`docs/redteam.md`), moderator practice |
 | 6 | Governance and time travel | L | ☐ |
 | 7 | Closed beta → soft launch | M | ☐ |
 | 8 | Roguelike layer + public site | L | ☐ |
@@ -724,7 +724,7 @@ Runbook: **`docs/phase5.md`** (five steps; grows with each).
 - [x] Panic flow end to end, moderator slash commands, cross-platform bans/timeouts, lockdown mode, minimal admin dashboard with audit viewer (D44, D45). Tested in the sandbox; on the server: `bootstrap.sh incus-api`, rebuild brain and bcast, then `images/brain/panic-drill.sh` (`docs/phase5.md` step 3). Rewinds, votes and night mode come with Phases 6–7.
 - [x] Watchdog with all health checks and auto-restart of target services via `incus exec` (D48). Deaths, revives and reboots of the target are Phase 6's.
 - [x] Audio limiter: a 20:1 compressor above −17 dB in front of the limiter; full-scale white noise comes out near −14 LUFS (D47).
-- [ ] Run the whole red-team suite (7.7). Record results in `docs/redteam.md`. Fix and re-run until all pass.
+- [ ] Run the whole red-team suite (7.7). Record results in `docs/redteam.md`. Fix and re-run until all pass. The runner is `infra/tests/redteam.sh` (automated tests; the rest by hand, in `docs/redteam.md`); the sandbox run is recorded there, the server run is next.
 - [x] Write the stream rules (`!rules`, YouTube description, Discord `#rules`) and the privacy notice (11): drafts in `docs/rules.md` and `docs/privacy.md`, to fill in and have read before going public. Retention (90 days) and deletion requests are in brain (D49).
 - [ ] Train moderators: panic, resume, rewind, ban, lockdown.
 

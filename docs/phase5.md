@@ -13,7 +13,7 @@ at least two moderators have practised every tool on an unlisted stream.
 | 2 | Text filter: `!type` text with a rolling buffer, names on the overlay, strikes and automatic timeouts | done; comes with the next brain deploy |
 | 3 | Moderation: panic end to end, cross-platform bans and timeouts, lockdown, moderator slash commands, admin dashboard with audit viewer | done; to set up on the server |
 | 4 | Screen OCR content hold, in shadow mode first | done; shadow mode on the server, enforce after tuning |
-| 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | watchdog, audio cap, retention, rules and privacy drafts done; red-team runner next |
+| 5 | Watchdog, audio limits, the whole red-team suite (`docs/redteam.md`), stream rules and privacy notice, moderator practice | done; the red-team run on the server and moderator practice are yours |
 
 ## Step 1: egress and intranet
 
@@ -435,6 +435,14 @@ Drafts to make yours before going public:
   contact address, the data centre). It says what the code does; the table
   at the end shows how each promise is kept. Not legal advice: have it read.
 
+### The red-team suite
+
+`infra/tests/redteam.sh` runs the 21 attacks of PLAN.md 7.7 that can be
+automated and prints a table; `docs/redteam.md` says what each does to the
+stream, how to do the rest by hand, and keeps the results. It refuses the
+fork bomb, the disk fill and the memory hog when the cap that should stop
+them is missing, rather than risk the host.
+
 ### On the server
 
 ```bash
@@ -443,6 +451,19 @@ sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
 sudo images/build.sh bcast && sudo images/bcast/deploy.sh --replace   # the sound cap
 sudo images/brain/check.sh   # now with the watchdog's view
 ```
+
+Then, on an unlisted stream, the red-team run (about 15 minutes; see
+`docs/redteam.md` for what it disrupts):
+
+```bash
+sudo infra/tests/redteam.sh --report /tmp/redteam.md
+```
+
+Paste its table into `docs/redteam.md`, do the tests by hand it lists, and
+fix anything red. With all 21 passing, panic under a second, and two
+moderators who have practised every tool (`/panic`, `/resume`, `/ban`,
+`/timeout`, `/unban`, `/lockdown`, the dashboard) on an unlisted stream,
+Phase 5 is done.
 
 Discord: the watchdog posts in `#ops` (`DISCORD_OPS_CHANNEL`), which
 `setup_server.py` already made.
