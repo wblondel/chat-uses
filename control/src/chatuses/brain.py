@@ -40,9 +40,9 @@ from chatuses.adapters.youtube import YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Meta, Move, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.identity import Platform, user_id
-from chatuses.names import display_name
 from chatuses.overlay import OverlayHub
 from chatuses.pipeline import ChatMessage, Pipeline
+from chatuses.safety.textfilter import TextFilter
 from chatuses.store import Store, to_json
 from chatuses.vnc import VncInput
 
@@ -101,7 +101,8 @@ def read_secret(path: str) -> str | None:
 class Brain:
     def __init__(self, store: Store, connect: Callable[[], Awaitable[VncInput]]) -> None:
         self.store = store
-        self.pipeline = Pipeline(store)
+        self.filter = TextFilter()
+        self.pipeline = Pipeline(store, censor=self.filter)
         self.overlay = OverlayHub()
         self.executor = Executor(connect, report=self._executed, on_status=self.overlay.status)
         self._record = record_in(store)
@@ -113,7 +114,7 @@ class Brain:
     def handle(self, msg: ChatMessage, platform: Platform) -> tuple[str, str | None]:
         """One chat message, start to finish. Returns its outcome and the reason chat sees."""
         outcome = self.pipeline.handle(msg)
-        name = display_name(msg.display_name)
+        name = self.filter.safe_name(msg.user_id, msg.display_name)
         command = outcome.command
         if outcome.kind == "accepted" and isinstance(command, InputCommand):
             if not self.executor.can_take():
@@ -137,6 +138,9 @@ class Brain:
                 self.overlay.grid()
         elif outcome.kind in ("invalid", "rate_limited", "filtered") and self._may_show_refusal(msg):
             self.overlay.add_line(name, platform, None, "refused", outcome.reason)
+        if outcome.timed_out_until is not None:  # always shown: chat should see what it earned
+            minutes = round((outcome.timed_out_until - msg.ts) / 60)
+            self.overlay.add_line(name, platform, None, "refused", f"timed out for {minutes} minutes")
         return outcome.kind, outcome.reason
 
     def _may_show_refusal(self, msg: ChatMessage) -> bool:
