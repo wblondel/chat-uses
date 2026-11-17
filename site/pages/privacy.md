@@ -75,8 +75,9 @@ for YouTube viewers, on request for anyone).
 
 We don't collect anything the platforms don't already show in chat: no
 email, no IP address, no payment data. This site keeps no log of its
-visitors, sets no cookies, runs no scripts and shows no ads; no third party
-serves content here.
+visitors, sets no cookies and shows no ads; no third party serves content
+here. Its only script is Cloudflare's, which shows our contact address to
+people and hides it from spam robots.
 
 ## Why
 

@@ -16,7 +16,9 @@ Everything on it was public already: names are the overlay's (filtered, D43),
 commands are written as the overlay writes them (D32), pictures are past
 frames of the stream (D55). `tag` escapes whatever it isn't given as Markup,
 so text from chat can't become HTML; pages carry no script, and Caddy's
-Content-Security-Policy forbids any. The site's own texts (site/pages/*.md in
+Content-Security-Policy forbids any but Cloudflare's (/cdn-cgi/scripts/: its
+email address obfuscation, which shows the contact address to people and
+not to spam robots). The site's own texts (site/pages/*.md in
 the repo: about, rules, privacy) are Markdown, rendered by a small converter
 that escapes too and keeps only https:, mailto: and the site's own links.
 """
@@ -123,10 +125,7 @@ def inline(text: str) -> Markup:
         elif m["code"] is not None:
             out.append(tag("code", m["code"]))
         elif _SAFE_URL.fullmatch(m["url"]):
-            link = tag("a", inline(m["text"]), href=m["url"])
-            if m["url"].startswith("mailto:"):  # Cloudflare's email obfuscation needs a script: not here
-                link = Markup(f"<!--email_off-->{link}<!--/email_off-->")
-            out.append(link)
+            out.append(tag("a", inline(m["text"]), href=m["url"]))
         else:  # a link we don't make (javascript:, a path, a placeholder): as typed
             out.append(esc(m[0]))
         at = m.end()
