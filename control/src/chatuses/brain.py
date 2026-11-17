@@ -311,6 +311,9 @@ class Brain:
             on_change=self._run_changed,
         )
         self.runs.ensure(self.referee.ruleset.name, target_instance or target_host)
+        # A run that was already going on (brain restarted) changed nothing, so nothing told the
+        # overlay: pages that connect would show no run until its lives changed.
+        self._run_changed()
         self._ending = False  # a run's end and the next run's start under way
         self.graveyard_channel = "graveyard"
         self.achievements = achievements or []  # game/achievements.py

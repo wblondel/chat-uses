@@ -175,6 +175,19 @@ def test_a_revive_without_a_snapshot_switches_a_stopped_machine_on() -> None:
     run(test)
 
 
+def test_after_a_restart_the_overlay_shows_the_run_going_on() -> None:
+    """Found on the server: brain restarted on run #1, and the overlay's run panel stayed empty."""
+    with Store(":memory:") as store:
+        first = Brain(store, lambda: connect_to("127.0.0.1", 1))
+        assert first.runs.current is not None
+        first.runs.spend_life("rewind")
+        again = Brain(store, lambda: connect_to("127.0.0.1", 1))  # the same store: run #1 goes on
+        view = again.overlay._run_now()  # pyright: ignore[reportPrivateUsage]
+        assert view is not None and (view["number"], view["lives"], view["lives_max"]) == (1, 2, 3)
+        assert view["uptime"] >= 0 and view["state"] == "alive"
+        assert len(store.runs()) == 1
+
+
 def test_no_lives_no_vote_and_no_rewinds() -> None:
     async def test() -> None:
         async with brain_with() as (brain, _sent):
