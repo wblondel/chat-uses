@@ -179,8 +179,11 @@ def _progress(status: dict[str, Any]) -> str:
     if status.get("total_bytes"):
         done_gb, total_gb = float(status.get("bytes_done") or 0) / 1e9, float(status["total_bytes"]) / 1e9
         line += f" ({done_gb:.2f} of {total_gb:.2f} GB)"
-    if status.get("seconds_remaining"):
-        line += f", about {duration(float(status['seconds_remaining']))} left"
+    left = float(status.get("seconds_remaining") or 0)
+    if done >= 0.02 and 0 < left < 86400:  # before that, restic's guess means nothing
+        line += f", about {duration(left)} left"
+    elif done < 0.02:
+        line += ", comparing with the last backup"
     return line
 
 
@@ -327,9 +330,8 @@ def backup() -> int:
     if error := brain_store(keep_days):
         errors.append(error)
     errors += images(settings["BACKUP_IMAGES"].split())
-    say(
-        f"restic: encrypting and sending to {settings['BACKUP_REPOSITORY']} (the first time: the whole image)"
-    )
+    first = "" if state.get("last_ok") else " (the first time: everything, the image too)"
+    say(f"restic: encrypting and sending what changed to {settings['BACKUP_REPOSITORY']}{first}")
     started = time.monotonic()
     code, result, complaint = restic_backup(settings, "--tag", TAG, "--host", TAG, *excludes(), *paths())
     # Exit 3: some files couldn't be read, the backup was still made (restic's own word).
