@@ -2,6 +2,7 @@ import pytest
 
 from chatuses.commands import (
     Click,
+    ClickText,
     Drag,
     Load,
     Meta,
@@ -134,8 +135,8 @@ def test_clicks_refuse(text: str) -> None:
     reason(text)
 
 
-def test_click_on_text_comes_later() -> None:
-    assert "Phase 9" in reason('!click "Settings"')
+def test_click_on_text_is_its_own_command() -> None:
+    assert p('!click "Settings"') == ClickText("Settings")  # more in test_textclick.py
 
 
 def test_move_and_drag() -> None:

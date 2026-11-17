@@ -9,7 +9,7 @@ in at least one session.
 2. **The constitution: `!amend`** (below).
 3. **The driver's seat and `!impeach`** (below).
 4. **Chaos modifiers and the points shop** (below).
-5. `!click "text"`.
+5. **Clicking on text: `!click "text"`** (below).
 
 ## Step 1: macros
 
@@ -285,3 +285,79 @@ Brain and bcast: `sudo images/build.sh brain && sudo images/brain/deploy.sh
 --replace`, then `sudo images/build.sh bcast && sudo images/bcast/deploy.sh
 --replace` (between streams). `admin chaos start quake` shakes the stream
 for 15 s; `admin chaos` shows the shop.
+
+## Step 5: clicking on text
+
+PLAN.md 6.1, `control/src/chatuses/textclick.py`. Chat clicks on what it
+reads instead of a cell:
+
+| Command | Does |
+|---|---|
+| `!click "Settings"` | clicks the middle of the first "Settings" on the screen |
+| `!click "Settings"#2` | the second one (`#1` to `#9`, in reading order: top to bottom, then left to right) |
+| `!dclick` `!rclick` `!mclick "Trash"` | double, right and middle clicks, the same way |
+
+The text is 1 to 40 characters, one or more words on one line; case and the
+punctuation around words don't matter (`"file system"` finds `File
+System…`). Straight or curly quotes both work (phones type curly ones). A
+macro can't hold one: a macro aims at cells, and what's on the screen
+changes.
+
+**Found when its turn comes**, not when chat sent it: brain takes a frame
+from the target's screen (the read-only VNC grabber, as screen OCR), reads
+it with tesseract twice, as it is and in black and white (a 1-bit image:
+small dark text on grey buttons is missed in the first and read in the
+second), and merges the words. Each reading takes well under a second on
+a desktop; the two run at once, 10 s at most each, 15 s for the lot.
+
+**Not there, nothing is clicked.** The overlay's log line says `not on the
+screen`; the same if the screen can't be read (tesseract failed, VNC
+down). A click that can't be aimed is a miss, never a guess.
+
+What the screen says is the target's, and hostile: it decides only where a
+click lands, never what is shown or typed, and none of it is logged. The
+worst a lying screen can do is a misclick. Chat's quoted text goes through
+the text filter (it's on the overlay). Chaos's mouse works on these too:
+mirrored or drunk, the click found is moved as any click is.
+
+The executor records the click it became (its cell and point), so the audit
+viewer shows where it landed; the `commands` table keeps what chat sent.
+
+Not built: PLAN.md's optional accessibility (AT-SPI) helper inside the
+target. OCR finds the labels of an ordinary desktop; the helper can come
+later if OCR misses too much in live play.
+
+### What was tested
+
+- `tests/test_textclick.py`, on tesseract's real output for a 1600x900
+  desktop drawn in Chromium (top bar, desktop icons, a settings dialog,
+  `tests/fixtures/`): every label found within 8 px of its true middle but
+  one (the second Apply, bottom right, which neither reading sees);
+  Cancel and Apply found only in the black-and-white reading; both
+  "Settings" once each, in reading order; `#n`; case and punctuation; a
+  phrase only on one line, in order; the 1-bit image byte for byte. With a
+  stand-in tesseract: both readings run and merge, one that fails or hangs
+  leaves the other, neither is an error. The grammar and its refusals
+  (empty, `#0`, unclosed, too long, extra words, in a macro); described as
+  typed and stored whole. The executor: resolved when its turn comes and
+  clicked there, recorded as the click; a miss sends nothing; a screen too
+  slow to read is a miss and the queue moves on. Through brain: grid
+  coordinates from a screen twice the size, `#n` past the last match, a
+  mirrored text click, a screen that can't be read, the filter refusing
+  the quoted text, and the overlay's line saying it missed.
+- The simulator: text clicks in chat's mix, hostile ones refused (too
+  long, unclosed, `#0`, bidi characters, in a macro).
+- By hand, the same desktop through the real tesseract: every label above
+  found, 0.2 s a reading.
+- The overlay in Chromium from a fake feed: a text click done, and one
+  missed, struck through with `not on the screen` beside it.
+
+### On the server
+
+Brain only: `sudo images/build.sh brain && sudo images/brain/deploy.sh
+--replace` (tesseract is already in its image, for screen OCR). In
+`#control` or on stream: `!click "Applications"` opens the menu;
+`!click "nothing here"` says it isn't on the screen. The overlay's new
+"missed" wording needs bcast's layout page: `sudo images/build.sh bcast &&
+sudo images/bcast/deploy.sh --replace` between streams (before it, a missed
+click shows as dropped, without the reason).

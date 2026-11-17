@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from chatuses.commands import Click, Drag, InputCommand, MacroRun, Move, StepCommand, TypeText
+from chatuses.commands import Click, ClickText, Drag, InputCommand, MacroRun, Move, StepCommand, TypeText
 from chatuses.grid import Grid, ShuffledGrid
 from chatuses.store import Store
 
@@ -196,6 +196,8 @@ class Chaos:
             return command
         if isinstance(command, MacroRun):
             return MacroRun(command.name, tuple(self._step(step) for step in command.steps))
+        if isinstance(command, ClickText):  # aimed when its turn comes: brain transforms the click then
+            return command
         return self._step(command)
 
     def _step(self, command: StepCommand) -> StepCommand:

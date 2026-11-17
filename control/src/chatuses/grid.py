@@ -42,6 +42,12 @@ class Grid:
     def row_labels(self) -> list[str]:
         return [str(r + 1) for r in range(self.rows)]
 
+    def cell_at(self, x: int, y: int) -> str:
+        """The cell a pixel is in, e.g. "F7"."""
+        col = min(self.cols - 1, max(0, x * self.cols // self.width))
+        row = min(self.rows - 1, max(0, y * self.rows // self.height))
+        return f"{self.column_labels[col]}{row + 1}"
+
     def locate(self, ref: str) -> tuple[int, int]:
         """Pixel (x, y) of a cell or sub-cell reference, e.g. "F7" or "f7.5".
 

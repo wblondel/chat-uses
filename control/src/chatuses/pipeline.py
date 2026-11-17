@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from chatuses.commands import (
+    ClickText,
     Command,
     InputCommand,
     Load,
@@ -152,6 +153,8 @@ class Pipeline:
             return self.censor.typed_kind(command.text)
         if isinstance(command, (Load, Save)):
             return self.censor.kind(command.name)
+        if isinstance(command, ClickText):  # the log shows it
+            return self.censor.kind(command.text)
         if isinstance(command, MacroDefine):  # shown on the overlay as it's voted on
             return self.censor.kind(command.name) or next(
                 (kind for text in _typed(command.steps) if (kind := self.censor.kind(text))), None
