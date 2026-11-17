@@ -87,6 +87,13 @@ body.chaos-quake #screen, body.chaos-quake #cols, body.chaos-quake #rows {
   padding: 2px 8px; border-radius: 5px;
 }
 #pointer.left #pointer-who { left: auto; right: 12px; }
+/* A move or a drag isn't a click: a hollow ring, no lit cell; a drag's path as a dashed line. */
+#pointer.click .dot { background: rgba(79, 209, 197, 0.55); }
+#pointer.move .dot, #pointer.drag .dot { border-style: dashed; background: none; }
+#drag-line {
+  position: absolute; z-index: 3; pointer-events: none; height: 0;
+  border-top: 3px dashed var(--accent); transform-origin: 0 0;
+}
 #pointer.below #pointer-who { top: 14px; }
 
 .cover {

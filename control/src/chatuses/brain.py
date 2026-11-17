@@ -1198,8 +1198,12 @@ class Brain:
             return
         self.points.command_ran(job.user_id)
         match job.command:
-            case Click(x=x, y=y) | Move(x=x, y=y) | Drag(end=(x, y)):
+            case Click(x=x, y=y):
                 self.overlay.pointer(x, y, name)
+            case Move(x=x, y=y):
+                self.overlay.pointer(x, y, name, "move")
+            case Drag(start=start, end=(x, y)):
+                self.overlay.pointer(x, y, name, "drag", start)
             case _:
                 pass
 
