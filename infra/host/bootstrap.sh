@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck source=infra/host/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api site summary)
+STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api site monitor summary)
 
 PACKAGES=(
 	ca-certificates curl jq gettext-base sudo python3 openssl
@@ -576,6 +576,58 @@ UNIT
 		warn "the site isn't copied yet (brain must run Phase 8's image): journalctl -u chat-uses-site-sync"
 	fi
 	info "https://$SITE_DOMAIN/ (the certificate comes once DNS points here and 80/443 are open)"
+}
+
+# The host's monitor (Phase 10): every minute, it tells #ops, through a
+# Discord webhook, when brain, chat, a container, the encoder, the disk or
+# the CPU goes wrong, and when it's back to normal (infra/host/monitor.py).
+step_monitor() {
+	log "Monitor (alerts in #ops)"
+	install -d -m 0755 /var/lib/chat-uses
+	[[ -d $CHAT_USES_ETC/secrets ]] || install -d -m 0700 "$CHAT_USES_ETC/secrets"
+	local changed=0
+	write_file /usr/local/sbin/chat-uses-monitor 0755 <"$CHAT_USES_HOST_DIR/monitor.py" && changed=1
+	# What it needs from host.env: the installed copy has no lib.sh to read it.
+	printf 'BRAIN_IP=%s\nBRAIN_PORT=%s\nPOOL_NAME=%s\n' "$BRAIN_IP" "$BRAIN_PORT" "$POOL_NAME" |
+		write_file "$CHAT_USES_ETC/monitor.env" 0644 || true
+	write_file /etc/systemd/system/chat-uses-monitor.service 0644 <<'UNIT' && changed=1
+[Unit]
+Description=chat-uses: check the stream and tell #ops what's wrong
+After=incus.service
+Wants=incus.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chat-uses-monitor
+TimeoutStartSec=2min
+Nice=5
+UNIT
+	write_file /etc/systemd/system/chat-uses-monitor.timer 0644 <<'UNIT' && changed=1
+[Unit]
+Description=chat-uses: check the stream every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+UNIT
+	if have_systemd; then
+		((changed)) && systemctl daemon-reload
+		systemctl enable --quiet chat-uses-monitor.timer
+		systemctl start chat-uses-monitor.timer
+	fi
+	local line
+	while IFS= read -r line; do
+		info "${line#monitor: }"
+	done < <(/usr/local/sbin/chat-uses-monitor --check 2>&1 || true)
+	if [[ -s $CHAT_USES_ETC/secrets/ops-webhook ]]; then
+		info "test the webhook: sudo chat-uses-monitor --test"
+	else
+		warn "alerts can't reach #ops yet: in Discord, #ops → Edit Channel → Integrations → Webhooks → New Webhook → Copy Webhook URL, then: sudo install -m 0600 /dev/stdin $CHAT_USES_ETC/secrets/ops-webhook (paste it, Enter, Ctrl-D)"
+	fi
 }
 
 step_summary() {
