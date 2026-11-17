@@ -242,9 +242,10 @@ me the numbers and I'll write them down in PLAN.md.
 - **The quota** is 10,000 units a day, reset at midnight Pacific (08:00 or
   09:00 UTC). Every connection costs 5 units however long YouTube keeps it
   open, so what a day of chat costs depends on how often YouTube closes it:
-  `admin status` shows the units spent today and the calls with how long
-  they lasted (`… quota units today (N calls since brain started, S s
-  each)`). brain keeps the day's count in its store, so a restart doesn't
+  `admin status` shows the units spent today, the calls in the last hour,
+  how long the closed ones lasted on average and how long the open one has
+  been open (`… quota units today (N calls in the last hour, 5 units each;
+  closed ones lasted S s on average; open for T min)`). brain keeps the day's count in its store, so a restart doesn't
   start it again, and pauses at 9,000. When the quota is used up (by that
   count, or because Google refuses: `quotaExceeded`), YouTube chat waits for
   the reset and goes on by itself; `#ops` is told once, and `admin status`

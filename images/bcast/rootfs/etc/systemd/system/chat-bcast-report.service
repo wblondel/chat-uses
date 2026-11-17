@@ -1,0 +1,15 @@
+[Unit]
+Description=chat-uses broadcast: tell brain whether the stream reaches YouTube (#ops)
+PartOf=chat-bcast.target
+After=chat-bcast-forwarder.service
+
+[Service]
+User=bcast
+EnvironmentFile=/etc/chat-uses/bcast.env
+EnvironmentFile=-/etc/chat-uses/bcast.local.env
+ExecStart=/usr/lib/chat-bcast/report
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=chat-bcast.target

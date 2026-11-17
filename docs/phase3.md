@@ -23,6 +23,7 @@ container **`bcast`** in project `infra` at `BCAST_IP` (10.20.0.10):
 | `chat-bcast-encoder` | x11grab + `mix` → x264 1080p30 CBR 7 Mbps, keyframe every 2 s, AAC 128k through a limiter → RTMP `live` on MediaMTX. Restarts itself if it stops producing frames |
 | `chat-bcast-mediamtx` | MediaMTX v1.21.3: RTMP and RTSP on loopback only, HLS preview on port **8888** |
 | `chat-bcast-forwarder` | Copies `live` to YouTube (RTMPS) without re-encoding; idle until a stream key or `FORWARD_URL` is set |
+| `chat-bcast-report` | Tells brain every 15 s whether the forwarder holds its connection to YouTube (brain alerts `#ops`) |
 
 They all belong to `chat-bcast.target` and restart on their own. If one dies,
 the others keep going: if the target crashes, the stream shows "Reconnecting
@@ -205,8 +206,21 @@ To stop sending to YouTube, delete the key file on the host and run
   starved, and a bigger `AUDIO_BUFFER_MS` would cover it.
 - **Restart everything:** `sudo incus exec bcast --project infra -- systemctl restart chat-bcast.target`.
   Stop a single service the same way; it stays stopped until you start it again.
-- **Stream down:** check `chat-bcast-forwarder` (YouTube side), then the
-  encoder (`speed`, "stalled" lines), then MediaMTX, then the server's network.
+- **Stream down:** `#ops` says so. bcast tells brain every 15 s whether the
+  forwarder holds its connection to YouTube (`chat-bcast-report`, from
+  systemd's view of it, never its log, which can hold the stream key), and
+  brain posts in `#ops` after a minute of failing, when the stream is back,
+  and when bcast stops reporting for 3 minutes; `admin status` has a
+  `Stream:` line. A forwarder that fails at once, every 5 s, with "Error in
+  the pull function" or "Input/output error", is YouTube hanging up: most
+  often it no longer takes the stream key, and a new key from YouTube
+  Studio (`/etc/chat-uses/secrets/youtube-stream-key`, then `deploy.sh`)
+  fixes it. Otherwise check the encoder (`speed`, "stalled" lines), then
+  MediaMTX, then the server's network. To read the forwarder's log without
+  the key:
+  ```bash
+  sudo incus exec bcast --project infra -- bash -c 'k=$(tr -d "[:space:]" </etc/chat-uses/secrets/youtube-stream-key 2>/dev/null); journalctl -u chat-bcast-forwarder -b --no-pager -n 15 -o short-iso | sed -E "s#live2/[^ ]+#live2/<key>#g" | { if [ -n "$k" ]; then sed "s#$k#<key>#g"; else cat; fi; }'
+  ```
 - **Rebuild and roll back** like the target image (`docs/phase2.md`): rebuild
   with `images/build.sh bcast`, apply with `deploy.sh --replace`, older builds
   keep dated aliases.

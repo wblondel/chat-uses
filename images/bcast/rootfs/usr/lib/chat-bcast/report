@@ -1,0 +1,114 @@
+#!/usr/bin/python3
+"""Tell brain whether the stream reaches YouTube; brain says so in #ops.
+
+Every REPORT_EVERY seconds, the forwarder's state as systemd sees it (never
+its log: ffmpeg's errors can hold the stream key) goes to brain, as
+PUT http://BRAIN/bcast/forwarder with
+
+    {"state": "ok" | "failing" | "idle", "failing_s": N, "restarts": N}
+
+- idle: no stream key and no FORWARD_URL, so nothing goes to YouTube;
+- ok: the forwarder has stayed up STABLE seconds: ffmpeg holds its
+  connection (when YouTube hangs up, it exits within seconds and systemd
+  starts it again 5 s later);
+- failing: it keeps starting again; failing_s says for how long.
+
+brain alerts #ops after a minute of failing, when the stream is back, and
+when bcast stops reporting (control/src/chatuses/brain.py). BRAIN is the
+host and port of BRAIN_URL (the overlay feed's address). Standard library
+only. REPORT_EVERY can be set in the environment (tests).
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from urllib.parse import urlsplit
+
+KEY = "/etc/chat-uses/secrets/youtube-stream-key"
+UNIT = "chat-bcast-forwarder.service"
+REPORT_EVERY = float(os.environ.get("REPORT_EVERY") or 15)
+STABLE = 30.0  # seconds up before the forwarder counts as connected
+
+
+def report_url() -> str | None:
+    feed = urlsplit(os.environ.get("BRAIN_URL", ""))
+    return f"http://{feed.netloc}/bcast/forwarder" if feed.netloc else None
+
+
+def sending() -> bool:
+    """Is there anything to send to? (a stream key, or FORWARD_URL)"""
+    if os.environ.get("FORWARD_URL", "").strip():
+        return True
+    try:
+        return os.path.getsize(KEY) > 0
+    except OSError:
+        return False
+
+
+def forwarder() -> tuple[str, float, int]:
+    """systemd's view: its state, since when (monotonic seconds), how many restarts."""
+    out = subprocess.run(
+        ["systemctl", "show", UNIT, "-p", "ActiveState,ActiveEnterTimestampMonotonic,NRestarts"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout
+    values = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    entered = values.get("ActiveEnterTimestampMonotonic", "0")
+    restarts = values.get("NRestarts", "0")
+    return (
+        values.get("ActiveState", ""),
+        int(entered) / 1e6 if entered.isdigit() else 0.0,
+        int(restarts) if restarts.isdigit() else 0,
+    )
+
+
+def main() -> int:
+    url = report_url()
+    if url is None:
+        print("BRAIN_URL is empty: nobody to report to")
+        while True:
+            time.sleep(3600)
+    failing_since: float | None = None
+    told = ""
+    while True:
+        now = time.monotonic()
+        restarts = 0
+        if not sending():
+            state, failing_since = "idle", None
+        else:
+            try:
+                active, entered, restarts = forwarder()
+            except (OSError, subprocess.SubprocessError):
+                active, entered = "", 0.0
+            if active == "active" and entered and now - entered >= STABLE:
+                state, failing_since = "ok", None
+            else:
+                failing_since = failing_since if failing_since is not None else now
+                state = "failing"
+        body = {
+            "state": state,
+            "failing_s": round(now - failing_since) if failing_since is not None else 0,
+            "restarts": restarts,
+        }
+        request = urllib.request.Request(
+            url, data=json.dumps(body).encode(), method="PUT", headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5):
+                pass
+            if told:
+                print("brain answers again")
+                told = ""
+        except OSError as err:  # brain restarting, or down: nothing to do but try again
+            if told != str(err):
+                print(f"can't reach brain: {err}", file=sys.stderr)
+                told = str(err)
+        time.sleep(REPORT_EVERY)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
