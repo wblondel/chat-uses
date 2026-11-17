@@ -337,3 +337,4 @@ body.chaos-quake #screen, body.chaos-quake #cols, body.chaos-quake #rows {
 .scene-brand { font-size: 56px; font-weight: bold; letter-spacing: 8px; color: var(--accent); }
 .scene-title { font-size: 96px; font-weight: bold; }
 .scene-subtitle { font-size: 36px; color: var(--muted); }
+#chaos-what { font-size: 17px; line-height: 22px; color: var(--text); margin: 2px 0 4px; }

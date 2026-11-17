@@ -352,6 +352,7 @@ function renderChaos() {
   $("chaos-panel").hidden = !on;
   if (!on) return;
   $("chaos-name").textContent = `🌀 ${v.name}`;
+  $("chaos-what").textContent = v.what ?? "";
   $("chaos-left").textContent = `${Math.ceil(left)} s`;
   $("chaos-by").textContent = v.source === "random" ? "by chance" : `from ${v.by}`;
 }

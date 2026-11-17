@@ -240,6 +240,7 @@ class Chaos:
         view: dict[str, Any] = {
             "key": active.modifier.key,
             "name": active.modifier.name,
+            "what": active.modifier.what,
             "by": active.by,
             "source": active.source,
             "ends_in": round(max(0.0, active.until - now), 1),

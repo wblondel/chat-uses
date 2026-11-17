@@ -817,7 +817,8 @@ class Brain:
         if new is not None:
             m = new.modifier
             by = "chance" if new.source == "random" else new.by
-            self.overlay.add_line(by, "console", f"🌀 {m.name}: {m.what} ({m.seconds} s)", "done")
+            # Short: the log's columns are narrow. The Chaos panel says what it does.
+            self.overlay.add_line(by, "console", f"🌀 {m.name} for {m.seconds} s", "done")
             if new.source != "points":  # a purchase is logged with who paid
                 self.store.event(time.time(), "chaos", {"key": m.key, "source": new.source})
         elif old is not None:
