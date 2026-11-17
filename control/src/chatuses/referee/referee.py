@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from chatuses.commands import (
+    Amend,
     InputCommand,
     Load,
     MacroDefine,
@@ -30,6 +31,7 @@ from chatuses.commands import (
     describe,
 )
 from chatuses.identity import Presence
+from chatuses.referee import constitution
 from chatuses.referee import laws as laws_module
 from chatuses.referee.laws import DEFAULT, Laws, Ruleset, RulesetError
 from chatuses.referee.modes import Mode, Modes, Winner
@@ -110,6 +112,12 @@ class Referee:
                 return self._propose(user, name, Proposal("macro", describe(command), macro, steps), now)
             case MacroRemove(name=macro):
                 return self._propose(user, name, Proposal("unmacro", describe(command), macro), now)
+            case Amend(law=law, value=value):
+                try:
+                    constitution.check(self.ruleset, self.laws, law, value)
+                except constitution.AmendError as err:
+                    return Reply(False, str(err))
+                return self._propose(user, name, Proposal("amend", describe(command), law, value=value), now)
             case Meta():
                 return Reply(False, "not a vote")
 
@@ -176,6 +184,17 @@ class Referee:
         self.laws = laws
         return f"{key} = {value} (until the ruleset's comes back with `law {key} default`)"
 
+    def amend(self, law: str, value: float, by: str, vote_id: int | None) -> tuple[int, str]:
+        """A passed !amend: numbered, kept, applied. Raises AmendError if it can't be any more."""
+        clause, new = constitution.check(self.ruleset, self.laws, law, value)
+        now = self.clock()
+        number = self.store.add_amendment(now, clause.name, clause.key, new, by, vote_id)
+        self.store.set_law(now, clause.key, new, f"amendment #{number}")
+        self.laws = self._laws(self.ruleset)
+        unit = f" {clause.unit}" if clause.unit else ""
+        later = " from the next run" if clause.key == "lives_start" else ""
+        return number, f"Amendment #{number}: {clause.name} is {value:g}{unit}{later}"
+
     def status(self) -> dict[str, Any]:
         unbuilt = sorted(self.ruleset.features - BUILT)
         return {
@@ -238,3 +257,5 @@ def _word(command: MetaCommand) -> str:
             return "macro"
         case MacroRemove():
             return "unmacro"
+        case Amend():
+            return "amend"

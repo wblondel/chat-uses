@@ -121,7 +121,15 @@ class MacroRemove:
     name: str
 
 
-MetaCommand = Meta | Rewind | Load | Save | MacroDefine | MacroRemove
+@dataclass(frozen=True)
+class Amend:
+    """!amend LAW VALUE: a vote to change one of the laws chat may (referee/constitution.py)."""
+
+    law: str  # chat's short name: democracy_window
+    value: float
+
+
+MetaCommand = Meta | Rewind | Load | Save | MacroDefine | MacroRemove | Amend
 Command = InputCommand | MetaCommand
 
 
@@ -176,6 +184,8 @@ def describe(command: Command) -> str:
             return f"!macro {name} = {macro_source(steps)}"
         case MacroRemove(name=name):
             return f"!unmacro {name}"
+        case Amend(law=law, value=value):
+            return f"!amend {law} {value:g}"
 
 
 def macro_source(steps: tuple[StepCommand, ...]) -> str:

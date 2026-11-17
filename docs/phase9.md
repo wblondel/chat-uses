@@ -6,7 +6,7 @@ clicking on text. Done when each has simulator coverage and was live-tested
 in at least one session.
 
 1. **Macros** (below).
-2. The constitution: `!amend`.
+2. **The constitution: `!amend`** (below).
 3. The driver's seat and `!impeach`.
 4. Chaos modifiers and the points shop.
 5. `!click "text"`.
@@ -84,3 +84,66 @@ admin macros                                 # No macros yet: …
 
 In a session: `!macro term = key ctrl+alt+t`, 3 `!yes` from people who've
 been around 2 minutes, then `!term` opens a terminal.
+
+## Step 2: the constitution
+
+PLAN.md 6.10 and 6.4. `!amend LAW VALUE` proposes changing one of the laws
+chat may change, within bounds (`referee/constitution.py`):
+
+| Chat writes | The law | Bounds |
+|---|---|---|
+| `democracy_window` | seconds a democracy window lasts | 8 to 30 |
+| `snapshot_every` | minutes between automatic snapshots | 10 to 30 |
+| `driver_every` | minutes between driver's seats (step 3) | 5 to 30 |
+| `driver_time` | seconds a driver drives (step 3) | 30 to 120 |
+| `democracy_at` | where on the meter democracy begins | 70 to 90 |
+| `anarchy_at` | where on the meter anarchy comes back | 10 to 30 |
+| `lives` | lives a run starts with, from the next run | 1 to 5 |
+| `reboot_threshold`, `save_threshold`, `reset_threshold`, `rewind_threshold`, `load_threshold` | % of yes the vote needs | the ruleset's ± 10 points, never under 50 |
+
+For example `!amend democracy_window 20` or `!amend rewind_threshold 70`.
+
+Never chat's ("the Bill of Rights"): the filters and blocklists, rate
+limits, the network's rules, bans, panic and moderators' powers, who may
+vote (eligibility), `!newrun`'s rules, and `!amend`'s own.
+
+**The vote** is the hardest there is (6.4): 75 % yes, a quorum of 30 % of
+those active and at least 4, 90 seconds, then a 60-second veto countdown,
+and an hour before the next amendment. What the constitution doesn't
+allow is refused before any vote, in fixed words (`democracy_window can be
+8 to 30 s`; an unknown law: `chat can't amend that: the site's Laws page
+lists what it can`), never repeating what chat typed; a value the law has
+already is refused too.
+
+**A passed amendment** is numbered (`Amendment #3: democracy_window is 20
+s`), kept with who proposed it, and written in the laws table over the
+ruleset, as `chat-brain-admin law` writes (marked `amendment #3`). It
+applies from the next vote or window; `lives` from the next run. A
+moderator undoes one with `chat-brain-admin law KEY default`; the
+amendment stays in the record. A deletion request takes the proposer off
+it. The site's Laws page says, for each law, whether chat may amend it
+and within what, and lists every amendment with its number, the law, the
+value, when, and who proposed it (their name as the overlay shows it).
+
+### What was tested
+
+- `tests/test_constitution.py`: the clauses and their bounds (thresholds
+  around the ruleset's, never under half; nothing for `!newrun` or
+  `!amend`); eight kinds of amendment refused in fixed words; thresholds
+  as percentages kept as fractions; the grammar, refusals never repeating
+  chat; through brain: refused before a vote, passed through its veto
+  countdown, numbered, applied, kept across a restart; one failing its
+  quorum, one vetoed, one waiting the hour; `lives` from the next run and
+  a threshold from the next vote; a deletion request; the site's page.
+- The simulator's `amendments` scenario: 60 % fails (75 % needed), 12 of
+  30 pass it through 2 vetoes, the law changes as Amendment #1, the next
+  one waits an hour, out of bounds, `!newrun`'s rules and an unknown law
+  refused before any vote.
+
+### On the server
+
+With step 1's: `sudo images/build.sh brain && sudo images/brain/deploy.sh
+--replace`. In a session, with 5 or more people around: `!amend
+democracy_window 20`, 4 `!yes`, wait out the 90 s and the veto countdown:
+`admin laws` shows `democracy_window_s = 20`, and the site's Laws page
+Amendment #1.

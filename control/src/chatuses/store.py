@@ -101,6 +101,15 @@ CREATE TABLE IF NOT EXISTS macros (  -- Phase 9 (PLAN.md 6.10): chat's own comma
     added_at REAL NOT NULL,
     vote_id INTEGER REFERENCES votes(id)
 );
+CREATE TABLE IF NOT EXISTS amendments (  -- Phase 9 (PLAN.md 6.10): chat's changes to the laws
+    id INTEGER PRIMARY KEY,           -- its number: Amendment #id
+    name TEXT NOT NULL,               -- chat's name for the law: democracy_window
+    key TEXT NOT NULL,                -- the laws table's: democracy_window_s, tiers.rewind.threshold
+    value REAL NOT NULL,              -- the law's new value
+    proposed_by TEXT NOT NULL,        -- who proposed it ('' after a deletion request)
+    vote_id INTEGER REFERENCES votes(id),
+    at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS laws (
     key TEXT PRIMARY KEY,             -- a law, or tiers.ACTION.SETTING (referee/laws.py)
     value TEXT NOT NULL,              -- JSON number, over the ruleset's
@@ -500,6 +509,7 @@ class Store:
             self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
             self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
             self.db.execute("UPDATE macros SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
+            self.db.execute("UPDATE amendments SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
             self._forget_in_runs(user_id)
             for achievement_id, credited in self.db.execute(
                 "SELECT id, credited_users_json FROM achievements WHERE instr(credited_users_json, ?)",
@@ -717,6 +727,29 @@ class Store:
                 (json.dumps(blow_data) if blow_data else None, json.dumps(last_data),
                  json.dumps(kept) if kept is not None else None, run_id),
             )  # fmt: skip
+
+    # --- amendments (PLAN.md 6.10) ------------------------------------------------------------
+
+    def add_amendment(
+        self, ts: float, name: str, key: str, value: float, by: str, vote_id: int | None
+    ) -> int:
+        """Keep a passed amendment; its number. (The law itself is set_law's.)"""
+        with self.db:
+            self.db.execute("BEGIN")
+            cursor = self.db.execute(
+                "INSERT INTO amendments (name, key, value, proposed_by, vote_id, at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (name, key, value, by, vote_id, ts),
+            )
+            number = int(cursor.lastrowid or 0)
+            self._event(ts, "amendment", {"number": number, "law": key, "value": value})
+        return number
+
+    def amendments(self) -> list[dict[str, Any]]:
+        """Every amendment, first first: {"number", "name", "key", "value", "by", "at"}."""
+        rows = self.db.execute("SELECT id, name, key, value, proposed_by, at FROM amendments ORDER BY id")
+        keys = ("number", "name", "key", "value", "by", "at")
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     # --- macros (PLAN.md 6.10) ---------------------------------------------------------------
 

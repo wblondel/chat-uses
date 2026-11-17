@@ -20,6 +20,10 @@ pipeline, referee and lockdown, on a simulated clock.
   it, as one command that rate-limits like one; a macro can't hold macros,
   take a command's name or hold more than 8 commands; a slur in one is
   refused before the vote; a vote takes it out again.
+- **amendments:** 60 % can't amend a law (it takes 75 %); 12 of 30 who
+  agree can, through the veto countdown, and the law changes; another
+  amendment waits an hour; what the constitution doesn't allow (out of
+  bounds, `!newrun`'s rules, an unknown law) is refused before any vote.
 
 Every scenario is seeded and checks what happened; `python -m chatuses.sim
 --scenarios` runs them all (CI does) and fails if one check does.
@@ -34,8 +38,19 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 
-from chatuses.commands import InputCommand, Load, MacroDefine, MacroRemove, Meta, Rewind, Save, StepCommand
+from chatuses.commands import (
+    Amend,
+    InputCommand,
+    Load,
+    MacroDefine,
+    MacroRemove,
+    Meta,
+    Rewind,
+    Save,
+    StepCommand,
+)
 from chatuses.pipeline import ChatMessage, Pipeline
+from chatuses.referee.constitution import UNKNOWN
 from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
 from chatuses.referee.votes import NOT_ELIGIBLE, Proposal, Vote
@@ -136,6 +151,11 @@ class Room:
             self.macros[str(proposal.arg)] = proposal.steps
         elif proposal.action == "unmacro":
             self.macros.pop(str(proposal.arg), None)
+        elif proposal.action == "amend":
+            vote = self.referee.votes.current
+            return True, self.referee.amend(
+                str(proposal.arg), proposal.value or 0, vote.proposer if vote else "", None
+            )[1]
         return True, "done"
 
     # --- people ----------------------------------------------------------------------
@@ -164,7 +184,7 @@ class Room:
                 if self.referee.democracy:
                     self.referee.ballot(user, user, command, self.now)
                 self.inputs += 1
-            elif isinstance(command, (Rewind, Load, Save, MacroDefine, MacroRemove)) or (
+            elif isinstance(command, (Rewind, Load, Save, MacroDefine, MacroRemove, Amend)) or (
                 isinstance(command, Meta) and command.name not in OVERLAY_ONLY
             ):
                 answer = self.referee.handle(user, user, command, self.now)
@@ -407,6 +427,44 @@ async def macros(room: Room, result: Result) -> None:
     result.check("!hello is unknown again", room.say("u12", "!hello").startswith("unknown command"))
 
 
+async def amendments(room: Room, result: Result) -> None:
+    people = room.settled(30)
+    room.say("u0", "!amend democracy_window 20")
+    room.each(people[1:6], "!yes", (1, 80))  # 6 yes, 4 no: 60 %
+    room.each(people[6:10], "!no", (1, 80))
+    await room.wait(91)
+    first = room.votes[0]
+    result.check("60 % can't amend a law (75 % needed)", first.phase == "failed", (first.yes, first.no))
+    result.check("the law didn't change", room.referee.laws.democracy_window_s == 12)
+    room.now += 3601  # !amend's cooldown: an hour, chat talking all along
+    room.settled(30)
+    room.say("u10", "!amend democracy_window 20")
+    room.each(people[11:22], "!yes", (1, 80))  # 12 yes, 2 no
+    room.each(people[22:24], "!no", (1, 80))
+    await room.wait(91)
+    second = room.votes[-1]
+    result.check("12 to 2 passes to the veto countdown", second.phase == "veto", (second.yes, second.no))
+    room.each(people[24:26], "!veto", (1, 30))  # 2 vetoes: 4 needed
+    await room.wait(61)
+    result.check("2 vetoes don't stop it", second.phase == "done", second.result)
+    result.check(
+        "Amendment #1: the law changed",
+        room.referee.laws.democracy_window_s == 20 and second.result.startswith("Amendment #1"),
+        second.result,
+    )
+    result.check("another amendment waits an hour", "just voted on" in room.say("u26", "!amend lives 4"))
+    room.now += 3601
+    room.settled(30)
+    for text, what, why in (
+        ("!amend democracy_window 99", "out of bounds", "democracy_window can be 8 to 30 s"),
+        ("!amend newrun_threshold 50", "!newrun's rules", UNKNOWN),
+        ("!amend quorum 2", "an unknown law", UNKNOWN),
+    ):
+        votes = len(room.votes)
+        reply = room.say("u27", text)
+        result.check(f"refused before any vote: {what}", reply == why and len(room.votes) == votes, reply)
+
+
 def _a_listed_word() -> str:
     """A word the text filter refuses, read from its own lists."""
     for path in sorted(LISTS.glob("*.txt")):
@@ -426,6 +484,7 @@ SCENARIOS: dict[str, Scenario] = {
     "low population": low_population,
     "ties": ties,
     "macros": macros,
+    "amendments": amendments,
 }
 
 
