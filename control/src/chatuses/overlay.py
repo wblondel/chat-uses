@@ -196,6 +196,10 @@ class OverlayHub:
         gone = time.monotonic() - self._chaos_at
         return {**self._chaos, "ends_in": round(max(0.0, self._chaos["ends_in"] - gone), 1)}
 
+    def help(self, title: str, lines: list[str], seconds: float) -> None:
+        """!help and !rules: a panel over the log for a while."""
+        self._send({"type": "help", "title": title, "lines": lines, "seconds": seconds})
+
     def achievement(self, data: dict[str, Any]) -> None:
         self._send({"type": "achievement", **data})
 

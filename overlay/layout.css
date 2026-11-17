@@ -269,6 +269,24 @@ body.chaos-quake #screen, body.chaos-quake #cols, body.chaos-quake #rows {
 .badge.lockdown { background: #3a1018; color: #ff8a8a; white-space: nowrap; }
 .badge[hidden] { display: none; }
 
+/* --- !help and !rules ---------------------------------------------------------------- */
+
+#help {
+  position: absolute; left: 20px; bottom: 18px; width: 1560px;
+  box-sizing: border-box; padding: 16px 26px 18px;
+  background: #101a2e; border: 3px solid var(--democracy); border-radius: 12px;
+  z-index: 5;
+}
+#help[hidden] { display: none; }
+.help-title { font-size: 30px; font-weight: bold; color: var(--democracy); margin-bottom: 8px; }
+.help-lines {
+  margin: 0; padding: 0; list-style: none;
+  display: grid; grid-template-columns: 1fr; row-gap: 4px;
+  font-family: var(--mono); font-size: 21px; line-height: 28px;
+}
+.help-lines li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.help-lines.prose { font-family: var(--font); font-size: 22px; }
+
 /* --- an achievement's toast ------------------------------------------------------- */
 
 #toast {

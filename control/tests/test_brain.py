@@ -1210,3 +1210,32 @@ def test_banned_youtube_channels_are_checked_with_youtube(monkeypatch: pytest.Mo
             assert store.youtube_bans(now, now - brain_module.YOUTUBE_REFRESH) == []
 
     run(test)
+
+
+def test_help_and_rules_show_a_panel_on_stream() -> None:
+    async def test() -> None:
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.overlay.site = "https://chat.example"
+            sent: list[dict[str, Any]] = []
+            brain.overlay._send = sent.append  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+            store.seen_user("console:alice", "alice", time.time(), frozenset())
+            assert await brain.console_message("alice", "!help") == ("accepted", None)
+            [panel] = [m for m in sent if m["type"] == "help"]
+            assert panel["title"] == "Commands" and panel["seconds"] == brain_module.HELP_SECONDS
+            text = "\n".join(panel["lines"])
+            assert "!click F7" in text and '!click "Settings"' in text and "!buy quake" in text
+            assert panel["lines"][-1] == "!rules · everything: chat.example/rules.html"
+            assert [m["text"] for m in sent if m["type"] == "log"] == ["!help"]  # the log says it ran
+            assert await brain.console_message("alice", "!rules") == ("accepted", None)
+            rules = [m for m in sent if m["type"] == "help"][-1]
+            assert rules["title"] == "Rules" and rules["lines"][:4] == list(brain_module.RULES)
+            assert "chat.example/rules.html" in rules["lines"][-1]
+            brain.referee.ruleset = brain.referee.ruleset.__class__(
+                brain.referee.ruleset.name, features=frozenset({"anarchy"})
+            )
+            lines = brain.help_lines()
+            assert not any("!buy" in line or "!rewind" in line or "!democracy" in line for line in lines)
+            assert brain.help_markdown().startswith("**Commands**\n- !type hello")
+
+    run(test)

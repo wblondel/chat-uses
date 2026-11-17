@@ -133,6 +133,13 @@ ADMIN_USAGE = (
     "       | run | run end [CAUSE] | achievements | leaderboard"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
+HELP_SECONDS = 20.0  # !help and !rules: how long their panel stays on stream
+RULES = (
+    "Be decent: no slurs, hate speech or harassment, in commands, names or on screen.",
+    "No personal details: yours or anyone's (names, addresses, phone numbers, emails, links).",
+    "No sexual, violent or shocking content on screen.",
+    "Don't attack the stream, the server or other viewers. Moderators can pause, time out and ban.",
+)
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
 BALLOTS = ("yes", "no", "veto", "revive", "rip")
 PRESSED = {  # the Discord panel's answers to presses that went through
@@ -454,6 +461,10 @@ class Brain:
             self.overlay.add_line(name, platform, describe(command), "done")
             if command == Meta("grid"):
                 self.overlay.grid()
+            elif command == Meta("help"):
+                self.overlay.help("Commands", self.help_lines(), HELP_SECONDS)
+            elif command == Meta("rules"):
+                self.overlay.help("Rules", self.rules_lines(), HELP_SECONDS)
         elif outcome.kind == "accepted" and isinstance(
             command, (Meta, Rewind, Load, Save, MacroDefine, MacroRemove, Amend, Buy)
         ):  # referee/
@@ -479,6 +490,50 @@ class Brain:
             minutes = round((outcome.timed_out_until - msg.ts) / 60)
             self.overlay.add_line(name, platform, None, "refused", f"timed out for {minutes} minutes")
         return outcome.kind, outcome.reason
+
+    def help_lines(self) -> list[str]:
+        """What !help shows (on stream, and on Discord): the commands this ruleset allows."""
+        ruleset = self.referee.ruleset
+        features = ruleset.features
+        lines = [
+            "!type hello · !enter · !key ctrl+alt+t · !bksp 3 · !up 2",
+            '!click F7 · !click F7.5 · !rclick · !dclick · !click "Settings"',
+            "!move K3 · !drag B2 H6 · !scroll down 3 · !grid shows the cells",
+        ]
+        if "power_votes" in features:
+            votes = [
+                w for w in ("rewind", "save NAME", "load NAME", "reboot") if ruleset.allows(w.split()[0])
+            ]
+            if votes:
+                lines.append(" · ".join(f"!{w}" for w in votes) + " start a vote: !yes / !no")
+        if {"anarchy", "democracy"} <= features:
+            lines.append("!anarchy / !democracy push the meter")
+        extras: list[str] = []
+        if ruleset.allows("macro"):
+            extras.append("!macro hi = type hi; enter")
+        if ruleset.allows("amend"):
+            extras.append("!amend LAW VALUE")
+        if "chaos" in features:
+            extras.append("!buy quake (points)")
+        if extras:
+            lines.append(" · ".join(extras))
+        lines.append(f"!rules · everything: {self._site_host() or 'the site'}/rules.html")
+        return lines
+
+    def rules_lines(self) -> list[str]:
+        """What !rules shows."""
+        site = self._site_host()
+        return [
+            *RULES,
+            f"Playing means accepting the rules and privacy notice: {site or 'the site'}/rules.html",
+        ]
+
+    def _site_host(self) -> str:
+        return self.overlay.site.removeprefix("https://").removeprefix("http://")
+
+    def help_markdown(self) -> str:
+        """!help on Discord: the same, as a reply in #control."""
+        return "**Commands**\n" + "\n".join(f"- {line}" for line in self.help_lines())
 
     def press(self, msg: ChatMessage) -> str:
         """A Discord panel button: as if they typed it in #control. The answer is theirs alone."""
@@ -1186,6 +1241,7 @@ class Brain:
                 press=self.press,
                 panel_state=self.panel_state,
                 me=self.me_text,
+                help_text=self.help_markdown,
             )
             self.discord.start()
         else:

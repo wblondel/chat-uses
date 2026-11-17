@@ -378,3 +378,41 @@ def test_the_panel_listens_from_the_start_and_counts_messages_under_it(
 def test_no_panel_without_brain_s_side_of_it() -> None:
     chat = DiscordChat("token", GUILD, "control", lambda _m: None, lambda: "")
     assert chat.panel is None and chat.status()["panel"] == "off"
+
+
+def test_help_in_control_gets_a_reply_now_and_then(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test() -> None:
+        got: list[ChatMessage] = []
+        replies: list[tuple[str, dict[str, Any]]] = []
+        chat = DiscordChat(
+            "token", GUILD, "control", got.append, lambda: "", help_text=lambda: "**Commands**"
+        )
+        client = discord_bot._Client(chat)  # pyright: ignore[reportPrivateUsage]
+
+        async def reply(text: str, **kwargs: Any) -> None:
+            replies.append((text, kwargs))
+
+        def fake(content: str) -> discord.Message:
+            return cast(
+                discord.Message,
+                SimpleNamespace(
+                    author=SimpleNamespace(id=42, display_name="Alice", bot=False),
+                    guild=SimpleNamespace(id=GUILD, owner_id=1),
+                    channel=SimpleNamespace(id=CHANNEL_ID, name="control"),
+                    content=content,
+                    reply=reply,
+                ),
+            )
+
+        await client.on_message(fake("!help"))
+        await client.on_message(fake("!HELP "))  # within HELP_GAP: the first answer is still there
+        await client.on_message(fake("!enter"))
+        assert [m.text for m in got] == ["!help", "!HELP ", "!enter"]  # brain still gets them all
+        assert len(replies) == 1 and replies[0][0] == "**Commands**"
+        assert replies[0][1]["mention_author"] is False
+        monkeypatch.setattr(discord_bot, "HELP_GAP", 0.0)
+        await client.on_message(fake("!help"))
+        assert len(replies) == 2
+        await client.close()
+
+    run(test)

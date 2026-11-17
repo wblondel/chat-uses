@@ -65,6 +65,7 @@ ROLE_NAMES = {"Owner": "owner", "Moderator": "moderator", "Regular": "regular"}
 MODERATOR_ROLE_NAMES = frozenset({"Owner", "Moderator"})
 RETRY = (5.0, 300.0)  # seconds between restarts after an unexpected failure
 MAX_PENDING_ALERTS = 20  # kept while Discord is unreachable; older ones are dropped
+HELP_GAP = 20.0  # seconds: !help in #control is answered once in this time
 NOT_A_MODERATOR = "Only moderators can do that."
 
 Deliver = Callable[[ChatMessage], None]
@@ -322,6 +323,8 @@ class _Client(discord.Client):
         if chat is not None:
             self.adapter.messages += 1
             self.adapter.deliver(chat)
+            if chat.text.strip().casefold() == "!help":
+                await self.adapter.answer_help(message)
 
 
 class DiscordChat:
@@ -337,6 +340,7 @@ class DiscordChat:
         press: Callable[[ChatMessage], str] | None = None,
         panel_state: Callable[[], PanelState | None] | None = None,
         me: Callable[[str], str] | None = None,
+        help_text: Callable[[], str] | None = None,
     ) -> None:
         self.token = token
         self.guild_id = guild_id
@@ -347,6 +351,8 @@ class DiscordChat:
         self.alerts_channel = alerts_channel.removeprefix("#")
         self.press = press  # a panel button: brain handles it as typed, returns the answer
         self.me = me  # /me: a user's points and rank (brain's me_text)
+        self.help_text = help_text  # !help in #control: brain's list of commands
+        self._helped = 0.0  # monotonic: when !help was last answered (once per HELP_GAP)
         self.panel = Panel(panel_state, self.pressed, self._ready) if press and panel_state else None
         self.presses = 0
         self.pinged: list[tuple[int, str]] = []  # (member ID, text): the driver's seat's pings
@@ -493,6 +499,20 @@ class DiscordChat:
             await channel.send(text, files=files, allowed_mentions=discord.AllowedMentions.none(), **extra)
         except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
             log.warning("Discord: couldn't post in #%s: %s", channel.name, err)
+
+    async def answer_help(self, message: discord.Message) -> None:
+        """!help in #control: the commands, as a reply (on stream the overlay shows them). Once
+        per HELP_GAP, so it can't be used to flood the channel."""
+        now = time.monotonic()
+        if self.help_text is None or now - self._helped < HELP_GAP:
+            return
+        self._helped = now
+        try:
+            await message.reply(
+                self.help_text(), mention_author=False, allowed_mentions=discord.AllowedMentions.none()
+            )
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
+            log.warning("Discord: couldn't answer !help: %s", err)
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
