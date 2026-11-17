@@ -415,6 +415,18 @@ function showToast(a) {
   }, TOAST_SECONDS * 1000);
 }
 
+// !help and !rules: brain's lines over the log for `seconds`; a new one replaces it.
+let helpTimer;
+function showHelp(msg) {
+  $("help-title").textContent = msg.title;
+  const list = $("help-lines");
+  list.className = msg.title === "Rules" ? "help-lines prose" : "help-lines";
+  list.replaceChildren(...msg.lines.map((line) => el("li", null, line)));
+  $("help").hidden = false;
+  clearTimeout(helpTimer);
+  helpTimer = setTimeout(() => { $("help").hidden = true; }, (msg.seconds || 20) * 1000);
+}
+
 let cardTimer;
 
 function showCard(card) {
@@ -580,6 +592,9 @@ function onMessage(msg) {
       break;
     case "achievement":
       showToast(msg);
+      break;
+    case "help":
+      showHelp(msg);
       break;
     case "mode":
       setMode(msg);
