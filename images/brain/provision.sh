@@ -67,6 +67,9 @@ PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'from pathlib import Path
 from chatuses.game import achievements
 found = achievements.load(Path("/usr/lib/chat-brain/achievements"))
 print(f"    achievements: {len(found)}")' # every achievements/*.yaml is valid
+for page in style.css pages/about.md pages/rules.md pages/privacy.md; do # the public site's sources
+	[[ -s /usr/lib/chat-brain/site/$page ]] || { echo "site/$page is missing from the image" >&2; exit 1; }
+done
 tesseract --list-langs 2>/dev/null | sed -n '2,$p' | tr '\n' ' ' | sed 's/^/    tesseract languages: /; s/$/\n/'
 
 log "Services"

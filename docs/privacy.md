@@ -2,76 +2,15 @@
 
 A draft of the notice PLAN.md section 11 asks for, written from what the
 code really stores and deletes. Not legal advice: have it read before
-publishing, fill in the placeholders, and publish it on the site (Phase 7)
-and link it from the YouTube description and Discord `#rules`.
+publishing, fill in the placeholders, and link it from the YouTube
+description and Discord `#rules`.
 
 ---
 
-## Privacy notice for chat-uses
-
-**Who:** chat-uses is run by [OPERATOR NAME], [COUNTRY]. Contact:
-[CONTACT ADDRESS].
-
-**What this is:** a live stream where chat controls a computer. To run it,
-we process what you send in the stream's chat (YouTube) and in our Discord
-server's `#control` channel.
-
-### What we keep
-
-- **Who you are on the platform:** your YouTube channel ID or Discord user
-  ID, your display name as the platform shows it, when we first and last saw
-  you send a command, and your roles there (moderator, member, regular).
-- **Your commands:** each `!` command you send, when, and what became of it
-  (run, refused, and why). Pressing a button on the Discord control panel
-  counts as sending its command. Ordinary chat messages aren't stored.
-- **Moderation records:** timeouts and bans (with who decided and why), and
-  the moderation log (panics, lockdowns).
-- **Screenshots of the stream's computer** when its text matched our list of
-  slurs (screen OCR), for moderators to check.
-- **Session statistics:** for each stream session, counts only (how many
-  watched, how many were active in chat, how many commands and votes),
-  never who. These are kept after the 90 days.
-- **The Graveyard:** when a run of the machine ends, its card keeps its
-  last commands with the names of those who sent them (as the stream showed
-  them), including "probably killed by". It's kept as the run's history,
-  after the 90 days; a deletion request takes your name out of it.
-- **Points and achievements:** your points, and which of a run's
-  achievements you were credited with. The leaderboard shows the names
-  with the most points; a deletion request takes your points and credits.
-
-We don't collect anything the platforms don't already show in chat: no
-email, no IP address, no payment data.
-
-### Why
-
-To run the game (who sent which command, rate limits, votes and points),
-and to keep the stream safe (filtering, timeouts and bans, investigating
-incidents). Legal basis: our legitimate interest in running the stream and
-keeping it safe (GDPR art. 6(1)(f)).
-
-### How long
-
-- **Commands, the event log and screenshots:** 90 days, then deleted
-  automatically.
-- **Your platform ID, name and roles:** while you take part; leaderboards
-  and other aggregates stay until you ask us to delete them.
-- **Bans:** as long as the ban lasts.
-
-### Who sees it
-
-Our moderators, through private tools. What is public is what was public
-already: the stream shows commands and display names as chat sent them
-(names with slurs or personal details are shown as `viewer#1234`). Our
-server runs at netcup GmbH (data centre: [LOCATION]). YouTube and Discord process your data
-under their own policies.
-
-### Your rights
-
-You can ask to see, correct or delete your data, or object to its use:
-write to [CONTACT ADDRESS] or ask a moderator on Discord, with your channel
-or user ID. We delete your commands and log entries within 30 days (a ban
-in force is kept, without your name, so it can't be avoided this way). You
-can also complain to your data protection authority.
+The notice itself is **`site/pages/privacy.md`**: the public site publishes
+it as `privacy.html` (Phase 8), and `chat-brain-admin site` lists the
+placeholders still in it. Change it there, then rebuild brain's image
+(`images/build.sh brain && images/brain/deploy.sh --replace`).
 
 ---
 
@@ -84,6 +23,9 @@ can also complain to your data protection authority.
 | Ordinary chat not stored | the pipeline stores only `!` commands (`pipeline.py`) |
 | Names with slurs or personal details hidden | `TextFilter.safe_name` (D43) |
 | Moderators only | the dashboard needs its token over WireGuard; `#mod-alerts` is a private channel |
+| The site keeps no visitor log | Caddy's config (`infra/host/Caddyfile.tmpl`) has no `log` directive, so no access log; no cookies, no scripts (its Content-Security-Policy forbids them) |
+| Names on the site are the stream's | the site is rendered from the store with `TextFilter.safe_name` (`control/src/chatuses/site.py`) |
+| A deletion request reaches the site | brain renders the site again after `forget`; the host's copy follows within a minute (`infra/host/site_sync.py` deletes what brain no longer lists) |
 
 Backups: if you back up `brain.db` (Phase 8), keep the backups no longer than
 90 days, or the retention promise doesn't hold for them.

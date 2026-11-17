@@ -21,7 +21,7 @@ have_systemd() { [[ -d /run/systemd/system ]]; }
 # config, plus values derived at runtime.
 config_var_names() {
 	grep -oE '^[A-Z][A-Z0-9_]*=' "$CHAT_USES_HOST_DIR/host.env.example" | tr -d '='
-	printf '%s\n' PUBLIC_HTTPS_RULE
+	printf '%s\n' PUBLIC_HTTPS_RULE SITE_URL
 }
 
 # Load defaults, then the host's config, detect what was left empty and
@@ -49,7 +49,9 @@ load_config() {
 	else
 		PUBLIC_HTTPS_RULE='# Ports 80/443 closed (PUBLIC_HTTPS=0)'
 	fi
-	export WAN_IF WG_ENDPOINT PUBLIC_HTTPS_RULE
+	# brain links to the site's pages in #graveyard (brain.env's SITE_URL).
+	SITE_URL=${SITE_DOMAIN:+https://$SITE_DOMAIN}
+	export WAN_IF WG_ENDPOINT PUBLIC_HTTPS_RULE SITE_URL
 }
 
 # render TEMPLATE: print the template with ${VARS} from the config filled in.

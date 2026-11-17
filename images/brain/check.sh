@@ -57,7 +57,7 @@ if [[ -z $built || -z $repo || $built == unknown ]] ||
 	! git -C "$CHAT_USES_REPO" cat-file -e "$built^{commit}" 2>/dev/null; then
 	info "brain's code: built from ${built:-an unknown commit}, the repo at ${repo:-?}"
 elif git -C "$CHAT_USES_REPO" diff --quiet "$built" HEAD -- control/src control/requirements.txt \
-	rulesets achievements images/brain/rootfs images/brain/provision.sh 2>/dev/null; then
+	rulesets achievements site images/brain/rootfs images/brain/provision.sh 2>/dev/null; then
 	pass "brain runs the repo's code (built from $built)"
 else
 	fail "brain runs older code (built from $built, the repo is at $repo): images/build.sh brain && images/brain/deploy.sh --replace"
@@ -258,6 +258,33 @@ else
 fi
 if in_brain journalctl -u chat-brain -b --no-pager 2>/dev/null | grep -q "ruleset .*using the built-in defaults"; then
 	fail "brain couldn't load its ruleset and runs on the built-in defaults: journalctl -u chat-brain"
+fi
+
+log "Public site (Phase 8)"
+site=$(in_brain chat-brain-admin site 2>&1 || true)
+if [[ $site == "Site: "*" files in "* ]]; then
+	pass "brain renders it: ${site%%$'\n'*}"
+	while IFS= read -r line; do
+		[[ $line == "⚠️ "* ]] && info "to fill in before going public: ${line#⚠️ }"
+	done <<<"$site"
+else
+	fail "brain doesn't render the site: ${site:-no answer} (journalctl -u chat-brain)"
+fi
+if [[ -z $SITE_DOMAIN ]]; then
+	info "not published: SITE_DOMAIN is empty in $CHAT_USES_CONFIG (docs/phase8.md, step 3)"
+else
+	if fresh=$(/usr/local/sbin/chat-uses-site-sync --check 2>&1); then
+		pass "the host's copy: ${fresh#site: }"
+	else
+		fail "the host's copy: ${fresh#site: } (run: infra/host/bootstrap.sh site)"
+	fi
+	if systemctl is-active --quiet caddy 2>/dev/null; then pass "caddy active"; else fail "caddy isn't running: journalctl -u caddy"; fi
+	headers=$(curl -sS --max-time 15 -o /dev/null -D - "https://$SITE_DOMAIN/index.html" 2>&1 || true)
+	if [[ ${headers,,} == "http/"*" 200"* && ${headers,,} == *"content-security-policy: default-src 'none'"* ]]; then
+		pass "https://$SITE_DOMAIN/ answers, with its certificate and Content-Security-Policy"
+	else
+		fail "https://$SITE_DOMAIN/ doesn't answer as it should: ${headers%%$'\r'*} (DNS pointing here? PUBLIC_HTTPS=1? journalctl -u caddy)"
+	fi
 fi
 
 log "Result: $PASS passed, $FAIL failed"
