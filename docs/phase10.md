@@ -149,7 +149,8 @@ night back. A new brain counts as a moderator having just left.
 ### On the server
 
 Nothing to set up: it comes with brain's next deploy
-(`images/build.sh brain && images/brain/deploy.sh`), on by itself ("auto").
+(`images/build.sh brain && images/brain/deploy.sh --replace`: without
+`--replace` the running code stays), on by itself ("auto").
 Then:
 
 1. In Discord, the new `/here` and `/night` show up for moderators (the bot
@@ -216,7 +217,8 @@ that worked for 36 hours, no restore drill yet, or none for 3 months
 Do these in order (each needs the one before).
 
 1. **Redeploy brain** with this version, so it has `chat-brain-admin
-   backup`: `sudo images/build.sh brain && sudo images/brain/deploy.sh`.
+   backup`: `sudo images/build.sh brain && sudo images/brain/deploy.sh
+   --replace` (its store stays: it's on its own volume).
 
 2. **Install the tools:** `sudo infra/host/bootstrap.sh backup monitor`. It
    installs restic and rclone, makes restic's password and says Google
