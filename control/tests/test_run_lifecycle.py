@@ -125,12 +125,52 @@ def test_rip_ends_the_run_with_its_card_then_a_new_run_from_the_golden_snapshot(
             assert target.restored == ["golden"] and old.ref in target.deleted
             assert brain.snapshots.all() == []  # nothing of the dead run to load
             [graveyard] = posted(brain, "graveyard")
-            assert graveyard.startswith("💀 **Run #1** died: its display died.")
+            assert graveyard.startswith("💀 **Run #1** died: its display died.\nLived 0 min, 0 lives used.")
             assert "Run #2 begins" in posted(brain, "ops")[-1]
             ended = brain.store.runs()[1]
             assert (ended["number"], ended["cause"]) == (1, "its display died") and ended["ended"]
             assert brain.runs.current is not None and brain.runs.current["number"] == 2
             assert not brain.executor.frozen
+
+    run(test)
+
+
+def test_a_machine_switched_off_is_switched_on_again_for_the_next_run_and_by_a_revive() -> None:
+    """Found in the sandbox (Phase 8 step 4): Incus restores a stopped container's snapshot
+    without starting it, and won't restart a stopped one."""
+
+    async def test() -> None:
+        target = FakeTarget()
+        target.there.append("golden")
+        async with brain_with(target) as (brain, _sent):
+            assert brain.snapshots is not None
+            await brain.snapshots.take("auto")
+            await asyncio.sleep(0.05)
+            target.running = False  # chat ran poweroff
+            kill(brain, "it was switched off")
+            assert await verdict(brain) == "revive"  # silence: revive, to the snapshot
+            assert target.running and target.starts == 1 and brain.runs.lives_left() == 2
+            target.running = False
+            kill(brain, "it was switched off")
+            assert await brain.console_message("alice", "!rip") == ("accepted", None)
+            assert await verdict(brain) == "rip"
+            assert target.restored[-1] == "golden" and target.running and target.starts == 2
+            assert brain.runs.current is not None and brain.runs.current["number"] == 2
+
+    run(test)
+
+
+def test_a_revive_without_a_snapshot_switches_a_stopped_machine_on() -> None:
+    async def test() -> None:
+        target = FakeTarget()
+        async with brain_with(target) as (brain, _sent):
+            target.running = False
+            kill(brain, "it was switched off")
+            assert await verdict(brain) == "revive"
+            assert target.running and target.starts == 1 and target.restarts == []
+            assert "restarted (no snapshot from before)" in posted(brain, "ops")[-1]
+            ok, text = await brain._power(force=False)  # pyright: ignore[reportPrivateUsage]
+            assert (ok, text, target.restarts) == (True, "rebooted", [False])  # on: a real reboot
 
     run(test)
 

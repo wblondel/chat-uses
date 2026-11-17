@@ -567,10 +567,22 @@ class Brain:
         self.referee.modes.clear()
         try:
             await self.snapshots.restore(snap)
+            await self._switch_on()  # it was on when the snapshot was taken
         finally:
             self._travelling = False
             if not self.moderation.panicking:
                 self.executor.thaw()
+
+    async def _switch_on(self) -> bool:
+        """Start the target if it's off; whether it was. Incus restores a stopped container's
+        snapshot without starting it, and won't restart one that's stopped."""
+        assert self.incus is not None
+        instance = await self._instance()
+        if await self.incus.state(instance) == "Running":
+            return False
+        await self.incus.start(instance)
+        log.info("target %s was off: started", instance)
+        return True
 
     async def _power(self, force: bool) -> tuple[bool, str]:
         assert self.incus is not None
@@ -578,7 +590,8 @@ class Brain:
         self.executor.freeze()
         self.referee.modes.clear()
         try:
-            await self.incus.restart(await self._instance(), force=force)
+            if not await self._switch_on():  # a machine that's off: switching it on is the reboot
+                await self.incus.restart(await self._instance(), force=force)
         except IncusError as err:
             if not force and "shutting down" in str(err).lower():
                 return False, NO_REBOOT
@@ -1405,6 +1418,11 @@ class Brain:
                 f"⚠️ Run #{number + 1} starts on the same desktop: no fresh one ({err or type(err).__name__})."
                 " `images/debian-xfce/deploy.sh` takes the golden snapshot new runs start from."
             )
+        try:
+            await self._switch_on()  # a run that died switched off would start dead
+        except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
+            why = err or type(err).__name__
+            self.ops(f"⚠️ Run #{number + 1}: the machine is off and won't start ({why}).")
 
     def _graveyard(self, card: dict[str, Any], png: bytes | None) -> None:
         if self.discord is None:
@@ -1412,7 +1430,7 @@ class Brain:
         blow = card["final_blow"]
         lines = [
             f"💀 **Run #{card['number']}** died: {card['cause']}.",
-            f"Lived {uptime_text(card['lived'])}, {card['lives_used']} lives used.",
+            f"Lived {uptime_text(card['lived'])}, {_lives(card['lives_used'])} used.",
         ]
         if blow:
             lines.append(f"Probably killed by {blow['name']} (`{blow['text']}`). No offence.")
