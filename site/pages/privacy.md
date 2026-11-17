@@ -6,8 +6,8 @@
 
 # Privacy notice
 
-**Who:** chat-uses is run by [OPERATOR NAME], [COUNTRY]. Contact:
-[CONTACT ADDRESS].
+**Who:** chat-uses is run by William Blondel, France. Contact:
+[contact@127011.xyz](mailto:contact@127011.xyz).
 
 **What this is:** a live stream where chat controls a computer. To run it,
 we process what you send in the stream's chat on YouTube and in our Discord
@@ -100,13 +100,13 @@ already: the stream shows commands and display names as chat sent them
 (names with slurs or personal details are shown as `viewer#1234`), and this
 site shows the runs, the achievements and the leaderboard with the same
 names. We don't sell or share your data with anyone else. Our server runs at
-netcup GmbH (data centre: [LOCATION]). YouTube and Discord process your data
+netcup GmbH (data centre: Nuremberg, Germany). YouTube and Discord process your data
 under their own policies.
 
 ## Your rights
 
 You can ask to see, correct or delete your data, or object to its use:
-write to [CONTACT ADDRESS] or ask a moderator on Discord, with your channel
+write to [contact@127011.xyz](mailto:contact@127011.xyz) or ask a moderator on Discord, with your channel
 or user ID. **We delete your data within 7 days** (a ban in force is kept,
 without your name, so it can't be avoided this way). Deleting it here
 deletes only our copy: it doesn't affect what YouTube or Discord store. To

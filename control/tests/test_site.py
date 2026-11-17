@@ -14,7 +14,17 @@ from chatuses.executor import connect_to
 from chatuses.game.achievements import parse
 from chatuses.referee.laws import DEFAULT, Laws
 from chatuses.safety.textfilter import TextFilter
-from chatuses.site import Markup, Site, SiteData, esc, gather, inline, markdown, page, tag
+from chatuses.site import (
+    Markup,
+    Site,
+    SiteData,
+    esc,
+    gather,
+    inline,
+    markdown,
+    page,
+    tag,
+)
 from chatuses.store import Store
 
 REPO = Path(__file__).resolve().parents[2]
@@ -204,7 +214,7 @@ def test_placeholders_and_missing_texts_are_reported(tmp_path: Path, store: Stor
     assert b"written yet." in files["rules.html"]
     shipped = Site(tmp_path / "o2", REPO / "site", None)
     shipped.render(data(store))
-    assert any("privacy.md still has" in w and "[CONTACT ADDRESS]" in w for w in shipped.warnings)
+    assert not any("privacy.md" in w for w in shipped.warnings)  # filled in: an audit reads it
 
 
 def test_a_run_s_contributors_outlive_its_commands(store: Store) -> None:
@@ -232,7 +242,8 @@ def test_brain_renders_it_when_something_changes(tmp_path: Path) -> None:
             assert brain.overlay.site == "https://chat.example"  # the stream's notice links its rules
             status, text = await brain.admin(["site"])
             assert status == "ok" and "files changed just now" in text
-            assert "about.md still has" in text  # the shipped texts' placeholders
+            left = [w for w in site.warnings if "still has" in w]  # the shipped texts' placeholders
+            assert all(w in text for w in left) and ("still has" in text) == bool(left)
             assert (site.out / "runs/1.html").is_file() and not brain._site_dirty  # pyright: ignore[reportPrivateUsage]
             brain.runs.give_life("test")
             assert brain._site_dirty  # pyright: ignore[reportPrivateUsage]
