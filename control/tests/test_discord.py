@@ -192,11 +192,21 @@ class NoEffects:
     def set_mode(self, mode: str, by: str) -> tuple[bool, str]:
         return False, "no"
 
+    def __init__(self) -> None:
+        self.here: list[str] = []  # moderator_here's calls
+
+    def moderator_here(self, by: str, seconds: float) -> None:
+        self.here.append(f"{by} {seconds:g}")
+
+    def set_night(self, setting: str, by: str) -> tuple[bool, str]:
+        return True, f"Night mode: {setting}."
+
 
 def test_moderator_slash_commands_are_role_gated_and_private() -> None:
     async def test() -> None:
         with Store(":memory:") as store:
-            mod = Moderation(store, NoEffects(), Strikes())
+            effects = NoEffects()
+            mod = Moderation(store, effects, Strikes())
             chat = DiscordChat("token", GUILD, "control", lambda _m: None, lambda: "", mod)
             client = discord_bot._Client(chat)  # pyright: ignore[reportPrivateUsage]
             names = {c.name for c in client.tree.get_commands()}
@@ -210,6 +220,8 @@ def test_moderator_slash_commands_are_role_gated_and_private() -> None:
                 "lockdown",
                 "endvote",
                 "rewind-to",
+                "here",
+                "night",
             }
             panic = cast(app_commands.Command[Any, Any, None], client.tree.get_command("panic"))
             assert panic.default_permissions is not None and panic.default_permissions.moderate_members
@@ -232,6 +244,19 @@ def test_moderator_slash_commands_are_role_gated_and_private() -> None:
             lockdown = cast(app_commands.Command[Any, Any, None], client.tree.get_command("lockdown"))
             await lockdown.callback(owner, state="on")  # pyright: ignore[reportCallIssue]
             assert mod.locked
+            # Every moderator command counts as being around (night mode): 15 min; /here an hour.
+            mia = "Mia (dc:7) on Discord"
+            assert effects.here == [f"{mia} 900"] * 3  # panic, ban, lockdown; not the refused ones
+            here = cast(app_commands.Command[Any, Any, None], client.tree.get_command("here"))
+            await here.callback(owner)  # pyright: ignore[reportCallIssue]
+            assert effects.here[-1] == f"{mia} 3600"
+            said = ("You're around for the next 60 min: no night mode until then.", True)
+            assert owner.response.sent[-1] == said
+            night = cast(app_commands.Command[Any, Any, None], client.tree.get_command("night"))
+            await night.callback(owner, state="on")  # pyright: ignore[reportCallIssue]
+            assert owner.response.sent[-1] == ("Night mode: on.", True)
+            await here.callback(viewer)  # pyright: ignore[reportCallIssue]
+            assert len(effects.here) == 6  # a viewer's /here counts for nothing
             await client.close()
 
     run(test)

@@ -682,6 +682,14 @@ def laws_page(d: SiteData) -> bytes:
             tag("tbody", votes),
             class_="votes",
         ),
+        tag("h2", "Night mode"),
+        tag(
+            "p",
+            "When no moderator has been around for 15 minutes, night falls: every vote needs twice its "
+            "minimum quorum and half as large a share again, chat stays in democracy, commands come "
+            "slower (one every 4 seconds each) and nobody gets the driver's seat. The day comes back "
+            "as soon as a moderator does.",
+        ),
         tag("h2", "Amendments"),
         tag(
             "p",

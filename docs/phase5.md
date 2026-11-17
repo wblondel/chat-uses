@@ -186,6 +186,8 @@ did it:
 | Time out | `/timeout who [minutes]` | Ban, `10m` | | `timeout WHO [MINUTES]` |
 | Lift a ban | `/unban who` | Unban | | `unban WHO` |
 | Raid | `/lockdown on\|off` | Lockdown | | `lockdown on\|off` |
+| Watching quietly (night mode, Phase 10) | `/here` | | `!here` | |
+| Night mode | `/night auto\|on\|off` | | | `night [auto\|on\|off]` |
 | Look | `/status` | Audit, log | | `status`, `bans` |
 
 `!panic` and `!resume` in chat are for YouTube's moderators, who have no

@@ -126,6 +126,10 @@ function setLockdown(on) {
   $("lockdown").hidden = !on;
 }
 
+function setNight(on) {
+  $("night").hidden = !on;
+}
+
 function setControls() {
   const badge = $("controls");
   const [text, cls] = !brainUp
@@ -604,6 +608,7 @@ function onMessage(msg) {
       targetUp = msg.target;
       setControls();
       setLockdown(msg.lockdown === true);
+      setNight(msg.night === true);
       setVote(msg.vote);
       setTimeline(msg.timeline);
       setMode(msg.mode);
@@ -646,6 +651,9 @@ function onMessage(msg) {
       break;
     case "lockdown":
       setLockdown(msg.on === true);
+      break;
+    case "night":
+      setNight(msg.on === true);
       break;
     case "log":
       addLine(msg);

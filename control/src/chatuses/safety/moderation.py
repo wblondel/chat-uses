@@ -25,6 +25,8 @@ a ban, end a panic or end a lockdown.
 - **Lockdown** (raids): only trusted roles (owner, moderator, Discord
   regulars, YouTube members) and people brain has known for a day may send
   commands. Points (Phase 6) will join them.
+- **Night mode** (night.py): every moderator action counts as being around;
+  /here counts for an hour; /night sets it auto, on or off.
 """
 
 import json
@@ -35,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from chatuses.pipeline import LOCKED, ChatMessage
+from chatuses.safety.night import AWAY, HERE
 from chatuses.safety.strikes import Strikes
 from chatuses.store import PERMANENT, Store, User
 
@@ -100,6 +103,8 @@ class Effects(Protocol):
     def end_vote(self, why: str) -> tuple[bool, str]: ...  # ended?, what to say (referee/votes.py)
     def rewind_to(self, which: str, by: str) -> tuple[bool, str]: ...  # started?, what to say (snapshots.py)
     def set_mode(self, mode: str, by: str) -> tuple[bool, str]: ...  # anarchy or democracy (referee/modes.py)
+    def moderator_here(self, by: str, seconds: float) -> None: ...  # around for that long (night.py)
+    def set_night(self, setting: str, by: str) -> tuple[bool, str]: ...  # auto, on, off (night.py)
 
 
 class Moderation:
@@ -307,6 +312,24 @@ class Moderation:
         user = self.store.user(msg.user_id)
         first_seen = user["first_seen"] if user else msg.ts
         return msg.ts - first_seen < LOCKDOWN_AGE
+
+    # --- night mode -------------------------------------------------------------------
+
+    def seen(self, by: str) -> None:
+        """A moderator did something (a slash command): they're around (night.py)."""
+        self.effects.moderator_here(by, AWAY)
+
+    def here(self, by: str) -> Answer:
+        """/here, !here: watching without a word, for an hour."""
+        self.effects.moderator_here(by, HERE)
+        return Answer(True, f"You're around for the next {HERE / 60:.0f} min: no night mode until then.")
+
+    def night(self, by: str, setting: str, now: float | None = None) -> Answer:
+        now = time.time() if now is None else now
+        changed, text = self.effects.set_night(setting, by)
+        if changed:
+            self.store.event(now, "night_mode", {"setting": setting, "by": by})
+        return Answer(changed, text)
 
     # --- votes ------------------------------------------------------------------------
 

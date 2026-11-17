@@ -103,6 +103,7 @@ from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
 from chatuses.referee.votes import OPEN, Proposal, Reply
 from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
+from chatuses.safety.night import Change, Night
 from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import TextFilter
@@ -125,7 +126,7 @@ KEEP_SCREENS = 200  # OCR hits' screenshots kept on disk
 SECRETS = "/etc/chat-uses/secrets"
 ADMIN_USAGE = (
     "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off | youtube quota [UNITS]\n"
-    "       | panic [REASON] | resume | lockdown on|off | bans\n"
+    "       | panic [REASON] | resume | lockdown on|off | night [auto|on|off] | bans\n"
     "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
     "       | snapshots | snapshot | rewind-to NUMBER|SAVE\n"
@@ -347,6 +348,7 @@ class Brain:
             run_winner=self._democracy_won,
         )
         self.overlay.mode(self.referee.modes.view(time.time()))  # pages that connect get it
+        self.night = Night(store, time.time())  # safety/night.py: applied from the first tick
         self.runs = Runs(  # game/runs.py: lives, deaths, the next run
             store,
             lambda: self.referee.laws,
@@ -419,6 +421,7 @@ class Brain:
             self.panic_changed(True, self.moderation.kind)
         if self.moderation.locked:
             self.overlay.lockdown(True)
+        self.night_tick(time.time())  # a night outlives a restart too
 
     def handle(
         self, msg: ChatMessage, platform: Platform, *, private: bool = False
@@ -426,8 +429,11 @@ class Brain:
         """One chat message, start to finish. Returns its outcome and the reason chat sees.
 
         private: the reason goes back to them alone (a Discord panel press), not on stream."""
-        if msg.roles & MODERATOR_ROLES and (answer := self._chat_moderation(msg, platform)):
-            return ("moderation" if answer.ok else "invalid"), answer.text
+        if msg.roles & MODERATOR_ROLES:
+            self.night.saw(self.filter.safe_name(msg.user_id, msg.display_name), msg.ts)
+            self.night_tick(msg.ts)  # the day comes back with them
+            if answer := self._chat_moderation(msg, platform):
+                return ("moderation" if answer.ok else "invalid"), answer.text
         outcome = self.pipeline.handle(msg)
         name = self.filter.safe_name(msg.user_id, msg.display_name)
         command = outcome.command
@@ -563,14 +569,17 @@ class Brain:
         )
 
     def _chat_moderation(self, msg: ChatMessage, platform: Platform) -> Answer | None:
-        """`!panic [reason]` and `!resume` from moderators in chat: YouTube's have no slash commands."""
+        """`!panic [reason]`, `!resume` and `!here` from moderators in chat: YouTube's have no
+        slash commands."""
         word, _, rest = msg.text.strip().partition(" ")
-        if word.lower() not in ("!panic", "!resume"):
+        if word.lower() not in ("!panic", "!resume", "!here"):
             return None
         name = self.filter.safe_name(msg.user_id, msg.display_name)
         by = f"{name} ({msg.user_id}) in {CHAT_PLATFORMS[platform]} chat"
         if word.lower() == "!panic":
             return self.moderation.panic(by, rest)
+        if word.lower() == "!here":
+            return self.moderation.here(name)
         return self.moderation.resume(by)
 
     # --- what moderation does to the stream (safety/moderation.Effects) --------------
@@ -613,6 +622,41 @@ class Brain:
         reply = self.referee.set_mode("democracy" if mode == "democracy" else "anarchy", by)
         return reply.ok, reply.text
 
+    # --- night mode (safety/night.py) ---------------------------------------------------
+
+    def moderator_here(self, by: str, seconds: float) -> None:
+        now = time.time()
+        self.night.saw(by, now, seconds)
+        self.night_tick(now)
+
+    def set_night(self, setting: str, by: str) -> tuple[bool, str]:
+        changed, text = self.night.set(setting, by)
+        if changed:
+            self.night_tick(time.time())
+        return changed, text
+
+    def night_tick(self, now: float) -> None:
+        if (change := self.night.tick(now)) is not None:
+            self._night_changed(change)
+
+    def _night_changed(self, change: Change) -> None:
+        """Night fell (stricter votes, democracy, slower commands) or the day came back."""
+        self.referee.set_night(change.on)
+        self.pipeline.limiter.set_night(change.on)
+        self.overlay.night(change.on)
+        self.store.event(time.time(), "night", {"on": change.on, "why": change.why})
+        if change.on:
+            self.overlay.add_line(
+                "night", "console", "🌙 Night mode: democracy only until a moderator is back", "done"
+            )
+            self.alert(
+                f"🌙 **Night mode** on ({change.why}): democracy only, votes need more people, commands "
+                "come slower. `/here` (or `!here` in chat) brings the day back."
+            )
+        else:
+            self.overlay.add_line("night", "console", "☀️ Day: a moderator is back", "done")
+            self.alert(f"☀️ Night mode off ({change.why}).")
+
     def _democracy_won(self, winner: Winner) -> None:
         """The window's most-voted command runs, as chat's (PLAN.md 6.3)."""
         label = f"democracy ({winner.votes}/{winner.total})"
@@ -639,7 +683,9 @@ class Brain:
             return None if self.driver.seat is not None else "nobody is driving"
         if action == "amend":
             try:
-                constitution.check(self.referee.ruleset, self.referee.laws, str(arg), proposal.value or 0)
+                constitution.check(
+                    self.referee.ruleset, self.referee.base_laws, str(arg), proposal.value or 0
+                )
             except constitution.AmendError as err:
                 return str(err)
             return None
@@ -861,7 +907,7 @@ class Brain:
 
     def driver_tick(self, now: float) -> None:
         on = "driver_seat" in self.referee.ruleset.features
-        stop = not on or self.referee.democracy or self.moderation.panicking
+        stop = not on or self.referee.democracy or self.moderation.panicking or self.night.on
         if self.driver.seat is not None and stop:
             self.driver.end(now, "stopped")
         can_offer = (
@@ -1282,6 +1328,7 @@ class Brain:
             )
         if lockdown := self.moderation.lockdown_state:
             lines.append(f"Lockdown on since {_clock(lockdown.get('since', 0))}, by {lockdown.get('by')}")
+        lines.append(self.night.status_line(time.time()))
         lines.append(self.referee.status_line())
         lines.append(self.run_line())
         lines.append(self.sessions.status())
@@ -1368,6 +1415,10 @@ class Brain:
                 return _answer(self.moderation.resume("console"))
             case ["lockdown", ("on" | "off") as state]:
                 return _answer(self.moderation.lockdown("console", state == "on"))
+            case ["night"]:
+                return "ok", self.night.status_line(time.time())
+            case ["night", setting]:
+                return _answer(self.moderation.night("console", setting))
             case ["ban", who, duration, *reason]:
                 return _answer(self.moderation.ban("console", who, duration, " ".join(reason)))
             case ["timeout", who]:
@@ -1629,6 +1680,7 @@ class Brain:
     async def _referee_ticks(self) -> None:
         """Close vote windows, veto countdowns and death votes on time. Never returns."""
         while True:
+            self.night_tick(time.time())
             self.referee.tick()
             self.driver_tick(time.time())
             self.chaos_tick(time.time())
@@ -1812,7 +1864,7 @@ class Brain:
                 self.store,
                 achievements=self.achievements,
                 ruleset=self.referee.ruleset,
-                laws=self.referee.laws,
+                laws=self.referee.base_laws,  # the night's are on the page in words
                 safe_name=self.filter.safe_name,
                 lives_left=self.runs.lives_left(),
             )

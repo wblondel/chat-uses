@@ -45,6 +45,13 @@ class Effects:
         self.done.append(f"mode {mode} by {by}")
         return True, f"Mode: {mode} (locked for 120 s)."
 
+    def moderator_here(self, by: str, seconds: float) -> None:
+        self.done.append(f"here {by} {seconds:g}")
+
+    def set_night(self, setting: str, by: str) -> tuple[bool, str]:
+        self.done.append(f"night {setting} by {by}")
+        return setting != "auto", f"Night mode: {setting}."
+
     def end_vote(self, why: str) -> tuple[bool, str]:
         self.done.append(f"end_vote {why}")
         ended, self.vote_open = self.vote_open, False

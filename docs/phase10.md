@@ -4,9 +4,10 @@ PLAN.md Phase 10. Done when the stream runs 7 days 24/7 without manual
 intervention. Built so far, in this order:
 
 1. **The host's monitor: alerts in `#ops`** (below).
+2. **Night mode** (below): stricter laws while no moderator is around.
 
-Still to build: night mode (PLAN.md 7.6), backups to Google Drive with a
-restore drill, event clips, VOD rotation, the timelapse.
+Still to build: backups to Google Drive with a restore drill, event clips,
+VOD rotation, the timelapse.
 
 ## Step 1: the host's monitor
 
@@ -96,3 +97,81 @@ failed, with the reason). Its memory: `/var/lib/chat-uses/monitor.json`.
 on its own; grace times, told once, back to normal, snooze; whole rounds
 against a fake `incus`, a fake brain and a fake Discord webhook (a refused
 post told again, the URL never printed).
+
+## Step 2: night mode
+
+`control/src/chatuses/safety/night.py`, PLAN.md 7.6. For the hours when no
+moderator is watching: stricter laws, by themselves.
+
+**When night falls.** A moderator is around for 15 minutes after anything
+they do that brain sees: a message in YouTube chat or `#control` (YouTube's
+moderator or owner badge, Discord's Moderator or Owner role), any slash
+command. A moderator who watches without typing says `/here` on Discord, or
+`!here` in chat: that counts for an hour. When 15 minutes pass with no
+moderator around, night falls.
+
+**What changes at night:**
+
+| | Day | Night |
+|---|---|---|
+| Votes | each its quorum (PLAN.md 6.4: `!rewind` 25 % of the active, at least 3) | twice the floor, half as large a share again (`!rewind`: 37.5 %, at least 6) |
+| Mode | the meter decides | democracy; `!anarchy` and `!democracy` are refused ("night mode: democracy only until a moderator is back") |
+| Commands | one every 2 s each (3 in a burst), 8 a second in all | one every 4 s each (2 in a burst), 4 a second in all |
+| Driver's seat | offered every 10 minutes | not offered |
+
+Thresholds, voting time, veto countdowns and cooldowns stay as they are. A
+vote already open keeps its quorum. The site's Laws page shows the day's
+numbers and says what the night changes.
+
+**When the day comes back:** the moment a moderator does (a message,
+`/here`, any slash command), with the mode chat had before the night
+(anarchy if it was anarchy). The stream shows a 🌙 Night mode badge in the
+corner and a line in the log each way; `#mod-alerts` gets "🌙 Night mode on
+(no moderator around since 02:14)…" and "☀️ Night mode off (Ana is here)".
+A moderator's `/mode` still works at night.
+
+**By hand.** `/night on` keeps the night whoever is around (a raid, a
+planned unmoderated stretch), `/night off` never brings it (testing alone),
+`/night auto` goes back to deciding by itself. Also `chat-brain-admin night
+[auto|on|off]`; `chat-brain-admin night` and `status` say where it stands:
+
+```
+Night mode: auto, day (a moderator seen: Ana, 21:40; night in 12 min without one)
+Night mode: auto, NIGHT since 02:14 (no moderator since 01:59): /here brings the day
+Night mode: on (by console): NIGHT since 21:52
+```
+
+The setting and when a moderator was last around are kept in brain's
+store: a restart (or a redeploy) doesn't bring the day back, nor push the
+night back. A new brain counts as a moderator having just left.
+
+### On the server
+
+Nothing to set up: it comes with brain's next deploy
+(`images/build.sh brain && images/brain/deploy.sh`), on by itself ("auto").
+Then:
+
+1. In Discord, the new `/here` and `/night` show up for moderators (the bot
+   syncs its commands when it starts).
+2. `chat-brain-admin night` says "auto, day" with your last message, or
+   "NIGHT" if no moderator has been around for 15 minutes.
+3. Try it: `chat-brain-admin night on`. The stream shows the badge and the
+   log line, `#mod-alerts` gets the post, `!anarchy` is refused, a quick
+   series of `!click` is slowed. `chat-brain-admin night auto`, then say
+   something in `#control`: the day is back.
+
+Testing alone at night? `chat-brain-admin night off`, and `night auto`
+afterwards.
+
+### Tests
+
+`control/tests/test_night.py`: night falling and lifting, `/here`'s hour,
+on and off kept across a restart, the night's laws, the rate limits, the
+referee (pushes refused, the mode forced and given back).
+`tests/test_brain.py`: the whole thing through brain (the overlay, the
+log, the status, `!here`, `chat-brain-admin night`). `tests/test_discord.py`:
+`/here` and `/night`, and every moderator command counting as being around.
+The simulator's `night` scenario (in CI): 12 people play while the
+moderator falls silent; 15 minutes later the night falls, a `!rewind` that
+5 of them would pass by day fails for want of 6, commands slow down; the
+moderator speaks and the day and anarchy come back.
