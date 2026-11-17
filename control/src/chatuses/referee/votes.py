@@ -49,6 +49,7 @@ class Proposal:
     text: str  # as chat writes it (commands.describe): "!rewind 2"
     arg: int | str | None = None  # rewind: how many back; save, load, macro, unmacro: the name
     steps: tuple[StepCommand, ...] = ()  # macro: what it will run
+    value: float | None = None  # amend: the law's new value, as chat wrote it
 
 
 @dataclass(frozen=True)

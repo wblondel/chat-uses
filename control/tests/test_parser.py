@@ -202,7 +202,7 @@ def test_rewind_save_load() -> None:
 
 def test_unknown_and_later_commands() -> None:
     assert "unknown command !discord" in reason("!discord")
-    assert "Phase 9" in reason("!amend quorum 3")
+    assert "needs a law and a number" in reason("!amend quorum")
 
 
 # --- refusals appear on stream: they must never repeat what chat wrote -------

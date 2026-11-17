@@ -36,6 +36,7 @@ from typing import Any, cast
 
 from chatuses.game.achievements import Achievement
 from chatuses.game.runs import uptime_text
+from chatuses.referee import constitution
 from chatuses.referee.laws import ACTIONS, Laws, Ruleset
 from chatuses.referee.referee import BUILT
 from chatuses.store import Store
@@ -190,6 +191,7 @@ class SiteData:
     lives_left: int | None  # the live run's (None: lives off)
     pictures: frozenset[str] | None = None  # the thumbs/ files the site carries (None: all)
     macros: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])  # chat's (store.macros)
+    amendments: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])  # store.amendments
 
     def shows(self, picture: str | None) -> bool:
         return (
@@ -225,6 +227,8 @@ def gather(
         listed: list[dict[str, Any]] = run["contributors"] or []
         wanted += [str(c["user"]) for c in listed]
     wanted += [user for keys in unlocked.values() for got in keys.values() for user in got["credited"]]
+    amendments = store.amendments()
+    wanted += [str(a["by"]) for a in amendments if a["by"]]
     names = {user: safe_name(user, name) for user, name in store.user_names(wanted).items()}
     board = [
         {"name": safe_name(row["user"], row["name"]), "points": row["points"]}
@@ -243,6 +247,7 @@ def gather(
         amended=store.laws(),
         lives_left=lives_left,
         macros=store.macros(),
+        amendments=amendments,
     )
 
 
@@ -583,14 +588,22 @@ def _number(value: float, unit: str) -> str:
     return f"{text} {unit}" if unit else text
 
 
+def _amendable(clause: constitution.Clause | None) -> object:
+    if clause is None:
+        return ""
+    return [tag("code", f"!amend {clause.name}"), f" {clause.bounds()}"]
+
+
 def laws_page(d: SiteData) -> bytes:
     laws, ruleset = d.laws, d.ruleset
+    by_key = {c.key: c for c in constitution.clauses(ruleset).values()}
     rows = [
         tag(
             "tr",
             tag("td", text),
             tag("td", _number(float(getattr(laws, key)), unit), class_="num"),
             tag("td", "amended" if key in d.amended else "", class_="note"),
+            tag("td", _amendable(by_key.get(key)), class_="by"),
         )
         for key, text, unit in LAW_TEXT
     ]
@@ -610,6 +623,7 @@ def laws_page(d: SiteData) -> bytes:
                 tag("td", f"{t.window_s} s", class_="num"),
                 tag("td", f"{t.veto_s} s" if t.veto_s else "—", class_="num"),
                 tag("td", f"{t.cooldown_min:g} min", class_="num"),
+                tag("td", _amendable(by_key.get(f"tiers.{action}.threshold")), class_="by"),
             )
         )
     features = sorted(f for f in ruleset.features if f in BUILT)
@@ -640,11 +654,46 @@ def laws_page(d: SiteData) -> bytes:
             "table",
             tag(
                 "thead",
-                tag("tr", [tag("th", h) for h in ("Vote", "Needs", "Quorum", "Voting", "Veto", "Cooldown")]),
+                tag(
+                    "tr",
+                    [
+                        tag("th", h)
+                        for h in ("Vote", "Needs", "Quorum", "Voting", "Veto", "Cooldown", "Chat may set")
+                    ],
+                ),
             ),
             tag("tbody", votes),
             class_="votes",
         ),
+        tag("h2", "Amendments"),
+        tag(
+            "p",
+            "Chat changes the laws above with ",
+            tag("code", "!amend LAW VALUE"),
+            ", a vote that needs three quarters of yes and can be vetoed, an hour apart.",
+        ),
+        tag(
+            "ol",
+            [
+                tag(
+                    "li",
+                    tag("strong", f"Amendment #{a['number']}"),
+                    ": ",
+                    tag("code", f"{a['name']} {_amended_value(a):g}"),
+                    tag(
+                        "span",
+                        f" · {when(a['at'])}",
+                        f", proposed by {d.names[a['by']]}" if a["by"] in d.names else "",
+                        class_="by",
+                    ),
+                    value=a["number"],
+                )
+                for a in d.amendments
+            ],
+            class_="amendments",
+        )
+        if d.amendments
+        else tag("p", "None yet.", class_="empty"),
         tag("h2", "Chat's macros"),
         tag(
             "table",
@@ -674,15 +723,23 @@ def laws_page(d: SiteData) -> bytes:
         tag(
             "p",
             "The filters, the rate limits, the network's rules, bans, the panic button and the moderators' "
-            "powers, and the rules of ",
+            "powers, who may vote, the rules of ",
             tag("code", "!newrun"),
-            ".",
+            " and of ",
+            tag("code", "!amend"),
+            " itself.",
         ),
     ]
     disabled = sorted(ruleset.disabled)
     if disabled:
         body.insert(2, tag("p", "Turned off in this ruleset: ", ", ".join(f"!{c}" for c in disabled), "."))
     return page("The Laws", body)
+
+
+def _amended_value(amendment: dict[str, Any]) -> float:
+    """As chat wrote it: thresholds are percentages."""
+    value = float(amendment["value"])
+    return round(value * 100, 2) if str(amendment["key"]).startswith("tiers.") else value
 
 
 def text_page(title: str, text: Markup) -> bytes:

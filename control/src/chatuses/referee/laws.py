@@ -22,7 +22,7 @@ import yaml
 MAX_FILE = 64 * 1024  # bytes: a ruleset is a page of YAML
 
 # Power votes (6.4): the actions chat can propose, and the commands that do.
-ACTIONS = ("reboot", "save", "reset", "rewind", "load", "newrun", "impeach", "macro", "unmacro")
+ACTIONS = ("reboot", "save", "reset", "rewind", "load", "newrun", "impeach", "macro", "unmacro", "amend")
 # What a ruleset may turn on. Not all are built yet: brain says which.
 FEATURES = frozenset(
     {"anarchy", "democracy", "power_votes", "snapshots", "lives", "achievements", "driver_seat", "chaos"}
@@ -70,6 +70,8 @@ DEFAULT_TIERS: dict[str, Tier] = {
     # Macros (6.4, 6.10): a minute to vote, five minutes apart.
     "macro": Tier(0.5, 0.15, 2, 60, 0, 5),
     "unmacro": Tier(0.5, 0.15, 2, 60, 0, 5),
+    # The constitution (6.10): changing the laws takes most of chat, and can be vetoed.
+    "amend": Tier(0.75, 0.30, 4, 90, 60, 60),
 }
 
 

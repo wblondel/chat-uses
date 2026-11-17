@@ -65,6 +65,7 @@ from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
 from chatuses.commands import (
+    Amend,
     Click,
     Drag,
     InputCommand,
@@ -89,7 +90,7 @@ from chatuses.incus import Incus, IncusError
 from chatuses.overlay import OverlayHub
 from chatuses.parser import parse
 from chatuses.pipeline import PAUSED, ChatMessage, Pipeline
-from chatuses.referee import laws
+from chatuses.referee import constitution, laws
 from chatuses.referee.laws import DEFAULT, Ruleset, RulesetError
 from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
@@ -421,7 +422,7 @@ class Brain:
             if command == Meta("grid"):
                 self.overlay.grid()
         elif outcome.kind == "accepted" and isinstance(
-            command, (Meta, Rewind, Load, Save, MacroDefine, MacroRemove)
+            command, (Meta, Rewind, Load, Save, MacroDefine, MacroRemove, Amend)
         ):  # referee/
             if isinstance(command, Meta) and command.name in ("revive", "rip"):  # game/runs.py
                 reply = self.runs.ballot(msg.user_id, command.name == "revive", msg.ts)
@@ -540,6 +541,12 @@ class Brain:
             return PAUSED
         if action in ("macro", "unmacro"):  # they don't touch the machine
             return self._macro_unavailable(action, str(arg))
+        if action == "amend":
+            try:
+                constitution.check(self.referee.ruleset, self.referee.laws, str(arg), proposal.value or 0)
+            except constitution.AmendError as err:
+                return str(err)
+            return None
         if self.runs.state != "alive" or self._ending:
             return DYING
         if action == "impeach":
@@ -561,6 +568,15 @@ class Brain:
         """What a passed vote does: a few words for chat."""
         if proposal.action in ("macro", "unmacro"):
             return self._macro_vote(proposal)
+        if proposal.action == "amend":
+            vote = self.referee.votes.current
+            by, vote_id = (vote.proposer, vote.id) if vote is not None else ("", None)
+            try:
+                _number, text = self.referee.amend(str(proposal.arg), proposal.value or 0, by, vote_id)
+            except constitution.AmendError as err:
+                return False, str(err)
+            self.site_changed()
+            return True, text
         if self.snapshots is None:
             return False, NO_INCUS
         snapshots = self.snapshots

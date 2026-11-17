@@ -21,6 +21,7 @@ import unicodedata
 from collections.abc import Callable, Mapping
 
 from chatuses.commands import (
+    Amend,
     Button,
     Click,
     Command,
@@ -54,6 +55,8 @@ MAX_STEPS = 8  # input commands in a macro
 _WORD = re.compile(r"[a-z]+")
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
 MACRO_NAME = re.compile(r"[a-z][a-z0-9]{1,11}")
+_LAW = re.compile(r"[a-z][a-z_]{1,31}")
+_AMOUNT = re.compile(r"\d{1,3}(?:\.\d{1,2})?")
 
 _SINGLE_KEYS = {"enter": "enter", "tab": "tab", "esc": "esc", "space": "space"}
 _REPEAT_KEYS = {"bksp": "bksp", "up": "up", "down": "down", "left": "left", "right": "right"}
@@ -82,7 +85,7 @@ _METAS: dict[str, MetaName] = {
         "rules",
     )
 }
-_LATER = {"amend": "Phase 9"}
+_LATER: dict[str, str] = {}  # commands coming in a later phase: word -> when
 
 Handler = Callable[[str, list[str], str, Grid], Command | ParseError]
 Macros = Mapping[str, tuple[StepCommand, ...]]
@@ -267,6 +270,12 @@ def _unmacro(word: str, args: list[str], rest: str, grid: Grid) -> Command | Par
     return MacroRemove(args[0].casefold())
 
 
+def _amend(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
+    if len(args) != 2 or not _LAW.fullmatch(args[0].casefold()) or not _AMOUNT.fullmatch(args[1]):
+        return ParseError("!amend needs a law and a number, like !amend democracy_window 15")
+    return Amend(args[0].casefold(), float(args[1]))
+
+
 def is_builtin(word: str) -> bool:
     """A command of ours (or one coming): a macro can't take its name."""
     return word in _HANDLERS or word in _LATER or word in ("wait", "buy", "chaos")
@@ -287,4 +296,5 @@ _HANDLERS: dict[str, Handler] = {
     "load": _named,
     "macro": _macro,
     "unmacro": _unmacro,
+    "amend": _amend,
 }
