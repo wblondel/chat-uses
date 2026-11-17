@@ -49,7 +49,7 @@ Sessions (PLAN.md Phase 7): infra/host/session.py runs these and adds the
 encoder and CPU; the report is posted in #ops and kept (counts only).
 
     chat-brain-admin session                    the session running, if any
-    chat-brain-admin session start NAME         brain notes viewers and chat every minute
+    chat-brain-admin session start NAME         brain notes who is active in chat every minute
     chat-brain-admin session end                the report: viewers, chat, commands, votes, panics, holds
     chat-brain-admin sessions                   the last 10 sessions
 

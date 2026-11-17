@@ -113,7 +113,7 @@ def test_the_report_adds_up_the_session() -> None:
 def test_an_empty_session_reads_well() -> None:
     report = build_report("Quiet", T, T + 125 * 60, [], numbers(outcomes={}, people={}, votes=[], events=[]))
     text = render(report)
-    assert "2 h 05 min" in text and "Viewers (YouTube): not known" in text
+    assert "2 h 05 min" in text and "Viewers (YouTube): in YouTube Studio" in text
     assert "Commands: 0 (0.0 a minute): 0 accepted, 0 refused" in text and "Votes: none" in text
 
 

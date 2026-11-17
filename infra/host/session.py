@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a stream session and report on it (PLAN.md Phase 7).
 
-    sudo infra/host/session.py start NAME   brain starts noting viewers and chat every minute;
+    sudo infra/host/session.py start NAME   brain starts noting who's active in chat every minute;
                                             the containers' and the host's CPU counters are read
     sudo infra/host/session.py end          brain's report (posted in #ops too), plus what only the
                                             host sees: the encoder's speed and dropped frames

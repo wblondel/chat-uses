@@ -111,7 +111,7 @@ from chatuses.screen import Frame
 from chatuses.sessions import SAMPLE_EVERY, Sessions, active_by_platform
 from chatuses.site import SITE_EVERY, SITE_REFRESH, Site
 from chatuses.snapshots import Snap, Snapshots
-from chatuses.store import RETENTION, Store, to_json
+from chatuses.store import RETENTION, YOUTUBE_VIEWER, Store, to_json
 from chatuses.vnc import VncInput
 
 log = logging.getLogger("chatuses.brain")
@@ -162,6 +162,7 @@ BCAST_CHECK = 15.0  # seconds between checks that bcast still reports
 BCAST_SILENT = 180.0  # seconds without a report before #ops hears it
 _SITE_URL = re.compile(r"https?://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/-]*)?")
 PRUNE_EVERY = 24 * 3600.0  # seconds between retention passes
+YOUTUBE_REFRESH = 20 * 86400.0  # a banned YouTube channel is checked again this long after (its 30 days)
 
 
 @dataclass(frozen=True)
@@ -307,6 +308,7 @@ class Brain:
         self.filter = TextFilter()
         self.strikes = Strikes()
         self.overlay = OverlayHub()
+        self.overlay.site = site.url if site is not None else ""  # the rules notice on stream
         self.executor = Executor(
             connect,
             report=self._executed,
@@ -1028,10 +1030,19 @@ class Brain:
         )
 
     async def keep_tidy(self) -> None:
-        """Retention (PLAN.md 11): raw logs and screenshots go after 90 days. Never returns."""
+        """Retention (PLAN.md 11): raw logs and screenshots go after 90 days, YouTube's data after
+        30 (store.expire_youtube; banned channels checked with YouTube meanwhile). Never returns."""
         while True:
             now = time.time()
             try:
+                expired = self.store.expire_youtube(now)
+                if any(expired.values()):
+                    log.info(
+                        "YouTube's 30 days: %(viewers)d viewers forgotten, %(commands)d commands and"
+                        " %(events)d events deleted",
+                        expired,
+                    )
+                    self.site_changed()
                 commands, events = self.store.prune(now)
                 shots = 0
                 if self.screens_dir and self.screens_dir.is_dir():
@@ -1045,7 +1056,27 @@ class Brain:
                     )
             except (OSError, sqlite3.Error) as err:
                 log.error("retention: %s", err)
+            await self.refresh_youtube_bans(now)
             await asyncio.sleep(PRUNE_EVERY)
+
+    async def refresh_youtube_bans(self, now: float) -> None:
+        """A banned YouTube viewer's channel ID is kept only while YouTube confirms the channel:
+        asked every YOUTUBE_REFRESH (channels.list, 1 unit for 50). A channel that's gone goes,
+        ban and all. If YouTube can't say, tomorrow; after 30 days the row is kept nameless."""
+        if self.youtube is None:
+            return
+        due = self.store.youtube_bans(now, now - YOUTUBE_REFRESH)
+        if not due:
+            return
+        found = await self.youtube.channels([user.removeprefix("yt:") for user in due])
+        if found is None:
+            log.warning("YouTube: couldn't check %d banned channels; tomorrow again", len(due))
+            return
+        try:
+            self.store.refreshed([u for u in due if u.removeprefix("yt:") in found], now)
+            self.store.drop_users(now, [u for u in due if u.removeprefix("yt:") not in found])
+        except sqlite3.Error as err:
+            log.error("YouTube bans: %s", err)
 
     def _keep_screenshot(self, hit: Hit) -> str | None:
         if self.screens_dir is None:
@@ -1503,13 +1534,13 @@ class Brain:
         return web.FileResponse(path, headers={"Cache-Control": "max-age=86400", "Content-Type": "image/png"})
 
     async def _session_samples(self) -> None:
-        """While a session runs: viewers and people active in chat, every minute. Never returns."""
+        """While a session runs: people active in chat, every minute. Never returns. (Not YouTube's
+        viewer counts: a YouTube statistic may be kept 30 days only, and YouTube Studio has them.)"""
         while True:
             await asyncio.sleep(SAMPLE_EVERY)
             if self.sessions.current is None:
                 continue
-            viewers = await self.youtube.viewers() if self.youtube else None
-            self.sessions.sample(viewers, active_by_platform(self.pipeline.presence, time.time()))
+            self.sessions.sample(None, active_by_platform(self.pipeline.presence, time.time()))
 
     def ocr_text(self) -> str:
         """Screen OCR's record (the last 90 days): what decides turning enforcing on."""
@@ -1874,8 +1905,9 @@ class Brain:
             f"💀 **Run #{card['number']}** died: {card['cause']}.",
             f"Lived {uptime_text(card['lived'])}, {_lives(card['lives_used'])} used.",
         ]
-        if blow:
-            lines.append(f"Probably killed by {blow['name']} (`{blow['text']}`). No offence.")
+        if blow:  # a post stays: a YouTube viewer's name is kept 30 days only (YouTube's rules)
+            who = YOUTUBE_VIEWER if str(blow.get("user", "")).startswith("yt:") else blow["name"]
+            lines.append(f"Probably killed by {who} (`{blow['text']}`). No offence.")
         if card["last_commands"]:
             lines.append("Last commands: " + ", ".join(f"`{c['text']}`" for c in card["last_commands"][:5]))
         if self.site is not None and (link := self.site.link(card["number"])):

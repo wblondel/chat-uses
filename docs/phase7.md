@@ -31,9 +31,10 @@ sudo infra/host/session.py status
 sudo infra/host/session.py end              # when it's over: the report
 ```
 
-**While it runs,** brain notes every minute how many people watch (YouTube's
-concurrent viewers: 1 quota unit a minute, so 60 an hour) and how many are
-active in chat (a message in the last 5 minutes), per platform. A brain
+**While it runs,** brain notes every minute how many are active in chat (a
+message in the last 5 minutes), per platform. Not YouTube's concurrent
+viewers any more (D75): YouTube's rules keep a statistic 30 days only, and
+YouTube Studio has them. A brain
 restart during a session doesn't end it; the minutes brain was down just
 have no samples.
 

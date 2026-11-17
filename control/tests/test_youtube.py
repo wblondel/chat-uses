@@ -540,28 +540,29 @@ def test_a_google_server_error_is_retried() -> None:
     run(test)
 
 
-def test_viewers_are_asked_of_youtube_while_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
-    watching = (
-        200,
-        {"items": [{"liveStreamingDetails": {"activeLiveChatId": "chat-1", "concurrentViewers": "42"}}]},
-    )
-    hidden = (200, {"items": [{"liveStreamingDetails": {"activeLiveChatId": "chat-1"}}]})
+def test_youtube_says_which_channels_still_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(youtube, "CHANNELS_PER_CALL", 2)
+    seen: list[dict[str, str]] = []
+
+    async def channels(request: web.Request) -> web.Response:
+        seen.append(dict(request.query))
+        if request.query["id"] == "UCbroken":
+            return web.json_response({"error": {"errors": [{"reason": "backendError"}]}}, status=503)
+        ids = [i for i in request.query["id"].split(",") if i != "UCgone"]
+        return web.json_response({"items": [{"id": i} for i in ids] + [{"id": "UCnotasked"}]})
 
     async def test() -> None:
-        fake = await FakeYouTube([Session(hang=True)]).start()
-        seen: list[dict[str, str]] = []
-        async with test_utils.TestServer(videos_api([watching, watching, hidden], seen)) as api:
-            chat = adapter(fake, str(api.make_url("")).rstrip("/"), [])
-            assert await chat.viewers() is None  # no video followed: YouTube isn't asked
-            chat.follow(VIDEO)
-            await until(lambda: chat.state == "streaming")
-            assert await chat.viewers() == 42
-            assert await chat.viewers() is None  # the channel hides its count
-            assert len(seen) == 3 and chat.status()["quota_used_today"] == 1 + 5 + 1 + 1
-            monkeypatch.setattr(youtube, "QUOTA_STOP", 8)
-            assert await chat.viewers() is None and len(seen) == 3  # no quota left for it
-            await chat.close()
-        await fake.stop()
+        app = web.Application()
+        app.router.add_get("/channels", channels)
+        async with test_utils.TestServer(app) as api:
+            chat = YouTubeChat(KEY, lambda _m: None, api=str(api.make_url("")).rstrip("/"))
+            assert await chat.channels(["UCa", "UCgone", "UCb"]) == {"UCa", "UCb"}
+            assert [q["id"] for q in seen] == ["UCa,UCgone", "UCb"]  # 2 a call here, 50 for real
+            assert seen[0]["part"] == "id" and seen[0]["key"] == KEY
+            assert chat.quota.spent() == 2  # 1 unit a call
+            assert await chat.channels(["UCbroken"]) is None  # YouTube can't say: nothing assumed
+            monkeypatch.setattr(youtube, "QUOTA_STOP", 3)
+            assert await chat.channels(["UCa"]) is None and len(seen) == 3  # no quota left for it
 
     run(test)
 

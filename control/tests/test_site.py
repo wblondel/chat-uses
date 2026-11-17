@@ -14,7 +14,7 @@ from chatuses.executor import connect_to
 from chatuses.game.achievements import parse
 from chatuses.referee.laws import DEFAULT, Laws
 from chatuses.safety.textfilter import TextFilter
-from chatuses.site import Markup, Site, SiteData, esc, gather, inline, markdown, tag
+from chatuses.site import Markup, Site, SiteData, esc, gather, inline, markdown, page, tag
 from chatuses.store import Store
 
 REPO = Path(__file__).resolve().parents[2]
@@ -229,6 +229,7 @@ def test_brain_renders_it_when_something_changes(tmp_path: Path) -> None:
             site = site_in(tmp_path)
             brain = Brain(store, lambda: connect_to("127.0.0.1", 1), site=site, achievements=ACHIEVEMENTS)
             assert brain._site_dirty  # pyright: ignore[reportPrivateUsage]
+            assert brain.overlay.site == "https://chat.example"  # the stream's notice links its rules
             status, text = await brain.admin(["site"])
             assert status == "ok" and "files changed just now" in text
             assert "about.md still has" in text  # the shipped texts' placeholders
@@ -237,6 +238,7 @@ def test_brain_renders_it_when_something_changes(tmp_path: Path) -> None:
             assert brain._site_dirty  # pyright: ignore[reportPrivateUsage]
             assert await brain.render_site() == 2  # the home page and the run's
             assert site.link(4) == "https://chat.example/runs/4.html"
+            assert Brain(store, lambda: connect_to("127.0.0.1", 1)).overlay.site == ""
             assert await Brain(store, lambda: connect_to("127.0.0.1", 1)).admin(["site"]) == (
                 "error",
                 "no public site in this brain",
@@ -281,3 +283,22 @@ def test_the_site_s_address_is_checked() -> None:
     for bad in ("chat.example", "https://chat.example/<x>", "javascript:alert(1)", "https://a b"):
         with pytest.raises(SystemExit):
             Config.from_env({**base, "SITE_URL": bad})
+
+
+def test_the_shipped_pages_say_what_youtube_s_api_rules_ask() -> None:
+    """YouTube API Services Developer Policies III.A (terms, privacy) and III.E.4 (30 days,
+    deletion within 7 days): an audit reads these pages."""
+    privacy = (REPO / "site/pages/privacy.md").read_text()
+    rules = (REPO / "site/pages/rules.md").read_text()
+    for text in (
+        "YouTube API Services",
+        "https://www.youtube.com/t/terms",
+        "https://www.google.com/policies/privacy",
+        "30 days",
+        "within 7 days",
+        "doesn't affect what YouTube or Discord store",
+    ):
+        assert text in privacy, text
+    assert "https://www.youtube.com/t/terms" in rules and "agree to be bound" in rules
+    footer = page("x", []).decode()
+    assert 'href="https://www.youtube.com/t/terms"' in footer and 'href="privacy.html"' in footer

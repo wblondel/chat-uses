@@ -7,7 +7,8 @@ what the stream shows), so the feed needs no password. Messages:
     {"type": "hello", "log": [line...], "target": bool,     on connect
      "panic": bool, "panic_kind": str, "lockdown": bool,
      "vote": {...} | null, "timeline": {...} | null, "mode": {...} | null,
-     "run": {...} | null, "card": {...} | null}
+     "run": {...} | null, "card": {...} | null, "site": str}  site: the public site's address
+                                                            ("" if none), for the rules notice
     {"type": "log", ...line}                                a command, as chat sees it
     {"type": "log-state", "id": int, "state": str}          what became of it
     {"type": "pointer", "x": int, "y": int, "user": str}    who moved the pointer
@@ -73,6 +74,7 @@ class OverlayHub:
         self.target_online = False
         self.panic_on = False
         self.panic_kind = "panic"
+        self.site = ""  # the public site (SITE_URL): the stream says playing means accepting its rules
         self.lockdown_on = False
         self._vote: dict[str, Any] | None = None
         self._vote_at = 0.0  # when it was last sent (monotonic): a new page gets the time left
@@ -252,6 +254,7 @@ class OverlayHub:
             "card": self._card_now(),
             "driver": self._driver_now(),
             "chaos": self._chaos_now(),
+            "site": self.site,
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)

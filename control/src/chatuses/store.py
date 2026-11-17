@@ -6,12 +6,22 @@ be changed, and can be deleted only once they're past the retention period
 (90 days, PLAN.md 11) or for someone's deletion request (`forget`): triggers
 in the schema refuse anything else. Votes and laws are here (referee/), and
 chat's snapshots (snapshots.py); later phases add theirs (runs...).
+
+What YouTube's API gave us (a viewer's channel ID, name and badges, and
+their messages tied to them) is kept 30 days at most unless YouTube gave it
+again since (YouTube API Services Developer Policies III.E.4: delete or
+refresh after 30 days): `expire_youtube`, daily. A viewer YouTube hasn't
+told us about for 30 days is forgotten, as for a deletion request; older
+records of the others lose them. `refreshed` is when YouTube last gave us a
+viewer's data: each message, and for a banned viewer, brain's check that
+the channel still exists (channels.list).
 """
 
 import json
 import sqlite3
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -26,7 +36,8 @@ CREATE TABLE IF NOT EXISTS users (
     last_seen REAL NOT NULL,
     banned_until REAL,
     roles TEXT NOT NULL DEFAULT '',  -- space-separated, as the platform last said
-    points INTEGER NOT NULL DEFAULT 0 -- PLAN.md 6.11 (game/points.py)
+    points INTEGER NOT NULL DEFAULT 0, -- PLAN.md 6.11 (game/points.py)
+    refreshed REAL                    -- when the platform last gave us this user's data (YouTube: 30 days)
 );
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY,
@@ -136,6 +147,8 @@ CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
 
 PERMANENT = 253402300799.0  # 9999-12-31: when a ban without an end ends
 RETENTION = 90 * 86400.0  # seconds raw logs are kept (PLAN.md 11; the trigger says 7776000)
+YOUTUBE_KEEP = 30 * 86400.0  # seconds YouTube's API data is kept unless refreshed (III.E.4)
+YOUTUBE_VIEWER = "a YouTube viewer"  # what's left of a YouTube viewer's name after that
 
 User = dict[str, Any]  # id, display_name, first_seen, last_seen, banned_until (0 if none), roles
 
@@ -163,6 +176,9 @@ class Store:
             self.db.execute("ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT ''")
         if "points" not in columns:  # Phase 8
             self.db.execute("ALTER TABLE users ADD COLUMN points INTEGER NOT NULL DEFAULT 0")
+        if "refreshed" not in columns:  # YouTube's 30 days
+            self.db.execute("ALTER TABLE users ADD COLUMN refreshed REAL")
+            self.db.execute("UPDATE users SET refreshed = last_seen")
         if "contributors_json" not in {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}:
             self.db.execute("ALTER TABLE runs ADD COLUMN contributors_json TEXT")  # Phase 8 step 3
         (trigger,) = self.db.execute(
@@ -185,10 +201,12 @@ class Store:
         self, user_id: str, display_name: str, ts: float, roles: frozenset[str] = frozenset()
     ) -> None:
         self.db.execute(
-            """INSERT INTO users (id, display_name, first_seen, last_seen, roles) VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO users (id, display_name, first_seen, last_seen, roles, refreshed)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name,
-                                             last_seen = excluded.last_seen, roles = excluded.roles""",
-            (user_id, display_name, ts, ts, " ".join(sorted(roles))),
+                                             last_seen = excluded.last_seen, roles = excluded.roles,
+                                             refreshed = excluded.refreshed""",
+            (user_id, display_name, ts, ts, " ".join(sorted(roles)), ts),
         )
 
     def banned_until(self, user_id: str) -> float:
@@ -213,10 +231,10 @@ class Store:
         with self.db:
             self.db.execute("BEGIN")
             self.db.execute(
-                """INSERT INTO users (id, display_name, first_seen, last_seen, banned_until)
-                   VALUES (?, '', ?, ?, ?)
+                """INSERT INTO users (id, display_name, first_seen, last_seen, banned_until, refreshed)
+                   VALUES (?, '', ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET banned_until = excluded.banned_until""",
-                (user_id, ts, ts, until),
+                (user_id, ts, ts, until, ts),
             )
             self._event(ts, kind, {"user": user_id, "until": until, "by": by, "reason": reason})
 
@@ -494,38 +512,136 @@ class Store:
         otherwise the user goes too. Logged, without the ID."""
         with self.db:
             self.db.execute("BEGIN")
-            commands = self.db.execute("DELETE FROM commands WHERE user_id = ?", (user_id,)).rowcount
-            ids = [
+            commands, events = self._forget(ts, user_id)
+            self._event(ts, "forget", {"commands": commands, "events": events})
+        return commands, events
+
+    def _forget(
+        self, ts: float, user_id: str, keep_ban: bool = True, name: str = "someone"
+    ) -> tuple[int, int]:
+        """forget's work, in the caller's transaction (name: what the Graveyard says instead)."""
+        commands = self.db.execute("DELETE FROM commands WHERE user_id = ?", (user_id,)).rowcount
+        events = self._erase_events(
+            "SELECT id FROM events WHERE json_extract(payload_json, '$.user') = ?", (user_id,)
+        )
+        self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
+        self.db.execute("UPDATE macros SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
+        self.db.execute("UPDATE amendments SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
+        self._scrub_runs(lambda user: user == user_id, name, "1", ())
+        self._scrub_credits(
+            lambda user: user == user_id, "instr(credited_users_json, ?)", (json.dumps(user_id),)
+        )
+        if keep_ban and self.banned_until(user_id) > ts:
+            self.db.execute("UPDATE users SET display_name = '', roles = '' WHERE id = ?", (user_id,))
+        else:
+            self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return commands, events
+
+    def _erase_events(self, select: str, params: tuple[Any, ...]) -> int:
+        """Delete the events the query names (the append-only trigger lets each through)."""
+        ids = [row[0] for row in self.db.execute(select, params).fetchall()]
+        for event_id in ids:
+            self.db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('erasing', ?)", (event_id,))
+            self.db.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
+        return len(ids)
+
+    def _scrub_credits(self, match: Callable[[str], bool], where: str, params: tuple[Any, ...]) -> None:
+        """Take users out of the achievements they were credited with."""
+        for achievement_id, credited in self.db.execute(
+            f"SELECT id, credited_users_json FROM achievements WHERE {where}", params
+        ).fetchall():
+            kept = [u for u in json.loads(credited) if not match(u)]
+            self.db.execute(
+                "UPDATE achievements SET credited_users_json = ? WHERE id = ?",
+                (json.dumps(kept), achievement_id),
+            )
+
+    def expire_youtube(self, now: float) -> dict[str, int]:
+        """YouTube's API data, 30 days on (YOUTUBE_KEEP): viewers YouTube hasn't told us about
+        since are forgotten (a ban in force keeps a nameless row: brain refreshes those); older
+        records of the others lose them. What chat built (runs, macros, laws) stays, nameless.
+        How many of each; logged without IDs."""
+        cutoff = now - YOUTUBE_KEEP
+        with self.db:
+            self.db.execute("BEGIN")
+            stale = [
                 row[0]
                 for row in self.db.execute(
-                    "SELECT id FROM events WHERE json_extract(payload_json, '$.user') = ?", (user_id,)
+                    "SELECT id FROM users WHERE id LIKE 'yt:%' AND coalesce(refreshed, last_seen) < ?",
+                    (cutoff,),
                 )
             ]
-            for event_id in ids:
-                self.db.execute(
-                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('erasing', ?)", (event_id,)
-                )
-                self.db.execute("DELETE FROM events WHERE id = ?", (event_id,))
-            self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
-            self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
-            self.db.execute("UPDATE macros SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
-            self.db.execute("UPDATE amendments SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
-            self._forget_in_runs(user_id)
-            for achievement_id, credited in self.db.execute(
-                "SELECT id, credited_users_json FROM achievements WHERE instr(credited_users_json, ?)",
-                (json.dumps(user_id),),
-            ).fetchall():
-                kept = [u for u in json.loads(credited) if u != user_id]
-                self.db.execute(
-                    "UPDATE achievements SET credited_users_json = ? WHERE id = ?",
-                    (json.dumps(kept), achievement_id),
-                )
-            if self.banned_until(user_id) > ts:
-                self.db.execute("UPDATE users SET display_name = '', roles = '' WHERE id = ?", (user_id,))
-            else:
-                self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-            self._event(ts, "forget", {"commands": commands, "events": len(ids)})
-        return commands, len(ids)
+            forgotten = [self._forget(now, user_id, name=YOUTUBE_VIEWER) for user_id in stale]
+            commands = (
+                sum(c for c, _e in forgotten)
+                + self.db.execute(
+                    "DELETE FROM commands WHERE user_id LIKE 'yt:%' AND ts < ?", (cutoff,)
+                ).rowcount
+            )
+            events = sum(e for _c, e in forgotten) + self._erase_events(
+                "SELECT id FROM events WHERE ts < ? AND instr(payload_json, '\"yt:')", (cutoff,)
+            )
+            self.db.execute(
+                "UPDATE votes SET proposer = '' WHERE proposer LIKE 'yt:%' AND opened_at < ?", (cutoff,)
+            )
+            self.db.execute(
+                "UPDATE macros SET proposed_by = '' WHERE proposed_by LIKE 'yt:%' AND added_at < ?", (cutoff,)
+            )
+            self.db.execute(
+                "UPDATE amendments SET proposed_by = '' WHERE proposed_by LIKE 'yt:%' AND at < ?", (cutoff,)
+            )
+            self.db.execute(
+                "UPDATE laws SET amended_by = '' WHERE amended_by LIKE 'yt:%' AND amended_at < ?", (cutoff,)
+            )
+            youtube: Callable[[str], bool] = lambda user: user.startswith("yt:")  # noqa: E731
+            self._scrub_runs(youtube, YOUTUBE_VIEWER, "ended_at < ?", (cutoff,))
+            self._scrub_credits(youtube, "at < ? AND instr(credited_users_json, '\"yt:')", (cutoff,))
+            self._scrub_session_viewers(cutoff)
+            counts = {"viewers": len(stale), "commands": commands, "events": events}
+            if any(counts.values()):
+                self._event(now, "youtube-expiry", counts)
+        return counts
+
+    def _scrub_session_viewers(self, cutoff: float) -> None:
+        """YouTube's concurrent viewers, in sessions older than the cutoff (a YouTube statistic:
+        30 days too). brain no longer asks for them; older sessions may hold some."""
+        for session_id, samples, report in self.db.execute(
+            "SELECT id, samples_json, report_json FROM sessions WHERE started_at < ?", (cutoff,)
+        ).fetchall():
+            kept = [[s[0], None, *s[2:]] for s in json.loads(samples)]
+            data = json.loads(report) if report else None
+            if data is not None and "viewers" in data:
+                data["viewers"] = {"peak": None, "average": None}
+            self.db.execute(
+                "UPDATE sessions SET samples_json = ?, report_json = ? WHERE id = ?",
+                (json.dumps(kept), json.dumps(data) if data is not None else None, session_id),
+            )
+
+    def youtube_bans(self, now: float, older_than: float) -> list[str]:
+        """Banned YouTube viewers whose data YouTube last gave us before `older_than`: brain asks
+        YouTube whether their channels still exist, which refreshes them (YouTube's 30 days)."""
+        return [
+            row[0]
+            for row in self.db.execute(
+                "SELECT id FROM users WHERE id LIKE 'yt:%' AND banned_until > ?"
+                " AND coalesce(refreshed, last_seen) < ? ORDER BY refreshed",
+                (now, older_than),
+            )
+        ]
+
+    def refreshed(self, user_ids: list[str], ts: float) -> None:
+        """YouTube gave us these users' data again (they're still there)."""
+        self.db.executemany("UPDATE users SET refreshed = ? WHERE id = ?", [(ts, u) for u in user_ids])
+
+    def drop_users(self, ts: float, user_ids: list[str]) -> None:
+        """Channels that are gone: forgotten, bans and all."""
+        with self.db:
+            self.db.execute("BEGIN")
+            for user_id in user_ids:
+                self._forget(ts, user_id, keep_ban=False, name=YOUTUBE_VIEWER)
+            if user_ids:
+                self._event(ts, "youtube-gone", {"viewers": len(user_ids)})
 
     # --- sessions (sessions.py) ------------------------------------------------------------
 
@@ -705,22 +821,23 @@ class Store:
             for ts, user, name, parsed in rows
         ]
 
-    def _forget_in_runs(self, user_id: str) -> None:
-        """Dead runs keep their last commands and final blow (the Graveyard): take a name out."""
+    def _scrub_runs(
+        self, match: Callable[[str], bool], name: str, where: str, params: tuple[Any, ...]
+    ) -> None:
+        """Dead runs keep their last commands and final blow (the Graveyard): take names out
+        (the commands stay, as chat's), and the matching users out of their contributors."""
 
         def scrub(entry: dict[str, Any]) -> dict[str, Any]:
-            return {**entry, "user": "", "name": "someone"} if entry.get("user") == user_id else entry
+            return {**entry, "user": "", "name": name} if match(str(entry.get("user", ""))) else entry
 
-        quoted = json.dumps(user_id)
         rows = self.db.execute(
-            "SELECT id, final_blow_json, last_commands_json, contributors_json FROM runs"
-            " WHERE instr(final_blow_json, ?) OR instr(last_commands_json, ?) OR instr(contributors_json, ?)",
-            (quoted, quoted, quoted),
+            "SELECT id, final_blow_json, last_commands_json, contributors_json FROM runs WHERE " + where,
+            params,
         ).fetchall()
         for run_id, blow, last, contributors in rows:
             blow_data = scrub(json.loads(blow)) if blow else None
             last_data = [scrub(e) for e in json.loads(last)] if last else []
-            kept = [c for c in json.loads(contributors) if c["user"] != user_id] if contributors else None
+            kept = [c for c in json.loads(contributors) if not match(c["user"])] if contributors else None
             self.db.execute(
                 "UPDATE runs SET final_blow_json = ?, last_commands_json = ?, contributors_json = ?"
                 " WHERE id = ?",

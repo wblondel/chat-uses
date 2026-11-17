@@ -285,7 +285,11 @@ def page(title: str, body: object, up: str = "", description: str = "") -> bytes
         tag(
             "footer",
             "Everything here was on the stream already. ",
+            tag("a", "Rules", href=f"{up}rules.html"),
+            " · ",
             tag("a", "Privacy", href=f"{up}privacy.html"),
+            " · ",
+            tag("a", "YouTube Terms of Service", href="https://www.youtube.com/t/terms"),
         ),
     )
     return ("<!doctype html>\n" + tag("html", head, body_, lang="en") + "\n").encode()
@@ -502,6 +506,14 @@ def leaderboard(d: SiteData) -> bytes:
             "and the points of the achievements you helped unlock. ",
             tag("code", "/me"),
             " on Discord tells you yours.",
+        ),
+        tag(
+            "p",
+            "Points are this game's own, counted here: not YouTube's. A YouTube viewer's name and points"
+            " go 30 days after they last played (YouTube's rules); see ",
+            tag("a", "Privacy", href="privacy.html"),
+            ".",
+            class_="credit",
         ),
     ]
     if d.leaderboard:
