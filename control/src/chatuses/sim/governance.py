@@ -374,8 +374,8 @@ async def ties(room: Room, result: Result) -> None:
 async def macros(room: Room, result: Result) -> None:
     people = room.settled(20)
     room.say("u0", "!macro hello = type hello world; enter")
-    room.each(people[1:8], "!yes", (1, 25))
-    await room.wait(31)
+    room.each(people[1:8], "!yes", (1, 50))
+    await room.wait(61)  # a minute to vote
     vote = room.votes[0]
     result.check(
         "8 of 20 vote a macro in (the proposer and 7)",
@@ -400,10 +400,9 @@ async def macros(room: Room, result: Result) -> None:
     word = _a_listed_word()  # from the filter's own lists: no slur is written here
     reply = room.say("u18", f"!macro ab = type {word}")
     result.check("a slur in a macro is refused before any vote", reply == HATE and len(room.votes) == 1)
-    room.now += 200  # the macro vote's cooldown (2 min) is over
     room.say("u1", "!unmacro hello")
-    room.each(people[2:9], "!yes", (1, 25))
-    await room.wait(31)
+    room.each(people[2:9], "!yes", (1, 50))
+    await room.wait(61)
     result.check("a vote takes it out again", "hello" not in room.macros, room.votes[-1].result)
     result.check("!hello is unknown again", room.say("u12", "!hello").startswith("unknown command"))
 

@@ -164,7 +164,8 @@ async def vote(brain: Brain, text: str) -> str:
     current = brain.referee.votes.current
     assert current is not None
     opened = current.opened
-    brain.referee.clock = lambda: opened + 31
+    window = current.tier.window_s
+    brain.referee.clock = lambda: opened + window + 1
     brain.referee.tick()
     for _ in range(20):
         await asyncio.sleep(0.01)

@@ -31,10 +31,10 @@ their usual limits. No macro inside a macro, no vote inside one. A refusal
 says which command of the macro is wrong, by its number, never repeating
 what chat typed.
 
-**The vote.** `!macro` and `!unmacro` are power votes: 60 % yes and a
-quorum of 20 % of those active (3 at least), 30 seconds, no veto
-countdown, 2 minutes before another (a ruleset can change that, like any
-vote's tier, or turn them off). A macro can't take a name in use, and
+**The vote.** `!macro` and `!unmacro` are power votes (PLAN.md 6.4): 50 %
+yes and a quorum of 15 % of those active (2 at least), a minute to vote,
+no veto countdown, 5 minutes before another of the same (a ruleset can
+change that, like any vote's tier, or turn them off). A macro can't take a name in use, and
 there are 64 at most: `!unmacro` one first. The text filter checks the
 name and every typed text when it's proposed (the vote panel shows it),
 and the typed text again, with what was typed just before, each time it

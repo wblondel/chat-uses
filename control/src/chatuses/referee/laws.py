@@ -67,9 +67,9 @@ DEFAULT_TIERS: dict[str, Tier] = {
     "load": Tier(0.66, 0.25, 3, 30, 30, 10),
     "newrun": Tier(0.75, 0.35, 4, 45, 60, 60),
     "impeach": Tier(0.5, 0.20, 2, 20, 0, 5),
-    # Macros (6.10) shape chat's language for good: a clear majority, and no flood of them.
-    "macro": Tier(0.6, 0.20, 3, 30, 0, 2),
-    "unmacro": Tier(0.6, 0.20, 3, 30, 0, 2),
+    # Macros (6.4, 6.10): a minute to vote, five minutes apart.
+    "macro": Tier(0.5, 0.15, 2, 60, 0, 5),
+    "unmacro": Tier(0.5, 0.15, 2, 60, 0, 5),
 }
 
 
