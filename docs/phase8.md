@@ -8,7 +8,7 @@ rewinds → death → Graveyard on the site and Discord.
 1. **Runs, lives, deaths, new runs** (below).
 2. **Achievements and points** (below).
 3. **The public site** (below).
-4. The end-to-end test.
+4. **The whole lifecycle, end to end** (below), and what to do on the server.
 
 ## Step 1: runs, lives, deaths, new runs
 
@@ -291,3 +291,70 @@ sudo images/brain/check.sh                     # the "Public site" section
 Then open `https://chat.example.org/`. The certificate comes once DNS points
 at the server and 80/443 are open; `journalctl -u caddy` says if Let's
 Encrypt couldn't reach it.
+
+## Step 4: the whole lifecycle, end to end
+
+On the sandbox's real Incus, the real Brain and its Incus client drove a
+container (`desk`, project infra) through a whole run; only the clocks of
+votes and deaths were sped up, and the screen was a stand-in (the sandbox's
+busybox containers have no desktop):
+
+1. `desk` gets its golden snapshot, as `deploy.sh` does; run #1 starts with
+   3 lives.
+2. Chat's commands are recorded (as the pipeline records them).
+3. **An achievement:** checked through Incus exec, it isn't there, then a
+   file appears in the target and the next round unlocks it: +25 points to
+   each of the 3 who played, +1 life, the toast, the `#achievements` post.
+4. **A rewind:** an auto snapshot (and its thumbnail), a change, `!rewind`
+   voted through: the change is gone and a life spent.
+5. **A death:** the container is stopped; the watchdog sees it ("it was
+   switched off"), the run dies, chat votes `!rip` 3 to 0.
+6. **The Graveyard on Discord:** the death card, then `💀 **Run #1** died:
+   it was switched off. Lived 0 min, 1 life used. Last commands: … Its page:
+   <https://chat.example/runs/1.html>`; no last screen (a machine that's
+   off has none).
+7. **The next run:** run #2 with 3 lives on the golden desktop: the change
+   and the achievement's file gone, run #1's snapshot deleted, the golden
+   one kept, and the machine **running**.
+8. **The Graveyard on the site:** brain renders it; pushed into the
+   sandbox's `brain` container, `site_sync.py` copies it through `incus exec
+   brain` (busybox tar there, GNU tar on the server), identical, and again
+   with nothing to do; Caddy serves the copy: the Graveyard lists run #1,
+   its page has the cause, the last commands, the achievement and who it
+   thanks, who played most and the timeline, with no console error under
+   the CSP.
+
+**What it found.** Incus restores a stopped container's snapshot without
+starting it, and refuses to restart a stopped container ("The instance is
+already stopped"). So a run that died switched off began its next run on a
+machine still off (it would have died again at once), a revive left it off,
+and a revive without a snapshot failed. Now brain switches the target on
+after any restore and at a new run's start, and a reboot or reset of a
+machine that's off starts it (D66). `tests/test_run_lifecycle.py` has both
+cases, and the fake Incus behaves as the real one does. The `#graveyard`
+post also said "1 lives used".
+
+### On the server: Phase 8 as a whole
+
+After the chatpc switch and brain's deploy from `docs/phase6.md`:
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo images/debian-xfce/deploy.sh             # says if chatpc has no golden snapshot (then: --replace)
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace
+admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
+admin run                                      # Run #1: 3 of 3 lives left, …
+admin achievements                             # Run #1: 0 of 15 achievements. …
+admin site                                     # Site: N files in /var/lib/chat-brain/site, …
+```
+
+Then the public site (step 3's "On the server"): DNS, `PUBLIC_HTTPS=1` and
+`SITE_DOMAIN` in host.env, `sudo infra/host/bootstrap.sh firewall site`, and
+`sudo images/build.sh brain && sudo images/brain/deploy.sh --replace` again
+so brain's `SITE_URL` links `#graveyard` to the pages.
+
+To see a whole lifecycle on the real machine, off stream: run `cmatrix` in
+a terminal on chatpc (Terminal Aesthetic within 30 s: the toast and
+`#achievements`), then `admin run end testing`: the death card,
+`#graveyard` with the last screen and the page's link, run #2 from the
+golden snapshot, and within a minute the run's page on the site.

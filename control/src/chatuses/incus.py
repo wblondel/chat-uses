@@ -170,6 +170,13 @@ class Incus:
             path = f"/1.0/instances/{quote(instance, safe='')}/snapshots/{quote(name, safe='')}"
             await self._operation(session, "DELETE", path, None, "deleting the snapshot")
 
+    async def start(self, instance: str) -> None:
+        """Switch a stopped instance on (a restore leaves a stopped container stopped)."""
+        async with self._session() as session:
+            path = f"/1.0/instances/{quote(instance, safe='')}/state"
+            body = {"action": "start", "timeout": RESTART_TIMEOUT}
+            await self._operation(session, "PUT", path, body, "the start")
+
     async def restart(self, instance: str, *, force: bool) -> None:
         """Reboot (force=False: the system shuts down cleanly, within the timeout) or reset (force=True)."""
         async with self._session() as session:

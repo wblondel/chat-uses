@@ -2,7 +2,8 @@
 
 Its answers follow what the real one does (checked against Incus 6.0 in the
 sandbox): a missing snapshot is an IncusError "Snapshot desk/NAME does not
-exist"; a graceful restart the guest ignores fails after the timeout.
+exist"; a graceful restart the guest ignores fails after the timeout; a
+stopped container stays stopped when restored, and can't be restarted.
 """
 
 from chatuses.incus import Incus, IncusError
@@ -16,6 +17,8 @@ class FakeTarget(Incus):
         self.restarts: list[bool] = []  # force?
         self.deleted: list[str] = []
         self.ignores_shutdown = False  # a graceful reboot times out, as with an init that ignores it
+        self.running = True  # False: switched off (poweroff from chat, incus stop)
+        self.starts = 0
         self.error: Exception | None = None  # every call fails with it
 
     def _check(self, instance: str) -> None:
@@ -31,7 +34,14 @@ class FakeTarget(Incus):
 
     async def state(self, instance: str) -> str:
         self._check(instance)
-        return "Running"
+        return "Running" if self.running else "Stopped"
+
+    async def start(self, instance: str) -> None:
+        self._check(instance)
+        if self.running:
+            raise IncusError("The instance is already running")
+        self.running = True
+        self.starts += 1
 
     async def snapshot(self, name: str, *, instance: str = "", address: str = "") -> str:
         instance = instance or self.instance
@@ -58,6 +68,8 @@ class FakeTarget(Incus):
 
     async def restart(self, instance: str, *, force: bool) -> None:
         self._check(instance)
+        if not self.running:
+            raise IncusError("The instance is already stopped")
         if not force and self.ignores_shutdown:
             raise IncusError('Failed shutting down instance, status is "Running": context deadline exceeded')
         self.restarts.append(force)
