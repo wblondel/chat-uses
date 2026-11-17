@@ -28,8 +28,16 @@ really do (docs/phase5.md).
 > Three refused slurs in 10 minutes earn a 10-minute timeout. Moderators can
 > cover the stream at once, time out and ban, here and on Discord alike.
 >
-> What we keep and for how long: [privacy notice](LINK TO THE SITE'S
-> privacy.html).
+> **By taking part you accept our rules and privacy notice:** SITE/rules.html
+> and SITE/privacy.html. This stream reads its chat with YouTube API
+> Services: sending commands here also means you agree to be bound by the
+> YouTube Terms of Service (https://www.youtube.com/t/terms); Google's
+> Privacy Policy: https://www.google.com/policies/privacy. What YouTube
+> gives us about you is kept 30 days at most.
+
+(Replace SITE with the site's address. YouTube's API rules ask that players
+can see the terms and the privacy notice before taking part: this paragraph,
+the stream's notice bottom right, and the site's footer do that.)
 
 ## Discord `#rules` and the site
 

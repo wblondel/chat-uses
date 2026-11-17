@@ -242,3 +242,26 @@ def test_newrun_and_run_from_chat_brain_admin() -> None:
             assert brain.runs.current is not None and brain.runs.current["number"] == 3
 
     run(test)
+
+
+def test_the_graveyard_post_names_no_youtube_viewer() -> None:
+    """A Discord post stays for good, and YouTube's rules keep a viewer's name 30 days only."""
+
+    async def test() -> None:
+        async with brain_with(FakeTarget()) as (brain, _sent):
+            card: dict[str, Any] = {
+                "number": 7,
+                "cause": "it froze",
+                "lived": 600,
+                "lives_used": 1,
+                "final_blow": {"user": "yt:UCx", "name": "Carol", "text": "!key alt+f4"},
+                "last_commands": [{"user": "yt:UCx", "name": "Carol", "text": "!key alt+f4", "ts": 0}],
+            }
+            brain._graveyard(card, None)  # pyright: ignore[reportPrivateUsage]
+            card["final_blow"] = {"user": "dc:1", "name": "Dave", "text": "!enter"}
+            brain._graveyard(card, None)  # pyright: ignore[reportPrivateUsage]
+            youtube, discord_ = posted(brain, "graveyard")
+            assert "Probably killed by a YouTube viewer (`!key alt+f4`)" in youtube and "Carol" not in youtube
+            assert "Probably killed by Dave (`!enter`)" in discord_
+
+    run(test)

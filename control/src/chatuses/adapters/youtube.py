@@ -70,6 +70,8 @@ GRPC_TARGET = "youtube.googleapis.com:443"
 STREAM_LIST = "/youtube.api.v3.V3DataLiveChatMessageService/StreamList"
 
 COST_VIDEOS_LIST = 1
+COST_CHANNELS_LIST = 1
+CHANNELS_PER_CALL = 50  # channels.list takes up to 50 IDs a call
 COST_STREAM_LIST = 5
 QUOTA_DAILY = 10_000  # YouTube's default daily quota (Quota.daily: what Google gives us)
 QUOTA_STOP = 9000  # of the default: we pause here, before Google refuses (scaled to Quota.daily)
@@ -319,29 +321,32 @@ class YouTubeChat:
             "recent_errors": list(c.errors),
         }
 
-    async def viewers(self) -> int | None:
-        """How many watch the followed video now (videos.list, 1 unit): None if not known."""
-        if self.video_id is None or self.state != "streaming":
-            return None
-        try:
-            self.quota.spend(COST_VIDEOS_LIST)
-        except QuotaOut:
-            return None
-        params = {"part": "liveStreamingDetails", "id": self.video_id, "key": self.api_key}
-        try:
-            async with (
-                aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session,
-                session.get(f"{self.api}/videos", params=params) as response,
-            ):
-                data: dict[str, Any] = await response.json(content_type=None)
-                if response.status != 200:
-                    return None
-        except (aiohttp.ClientError, TimeoutError, ValueError):
-            return None
-        items: list[dict[str, Any]] = data.get("items") or []
-        details: dict[str, Any] = (items[0].get("liveStreamingDetails") or {}) if items else {}
-        count = details.get("concurrentViewers")  # a string; absent when YouTube hides it
-        return int(count) if isinstance(count, str) and count.isdigit() else None
+    async def channels(self, channel_ids: list[str]) -> set[str] | None:
+        """Which of these channels still exist (channels.list, 1 unit for up to 50): what
+        refreshes a banned viewer's channel ID (YouTube's 30 days). None if YouTube can't say."""
+        found: set[str] = set()
+        for start in range(0, len(channel_ids), CHANNELS_PER_CALL):
+            batch = channel_ids[start : start + CHANNELS_PER_CALL]
+            try:
+                self.quota.spend(COST_CHANNELS_LIST)
+            except QuotaOut:
+                return None
+            params = {"part": "id", "id": ",".join(batch), "maxResults": str(len(batch)), "key": self.api_key}
+            try:
+                async with (
+                    aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session,
+                    session.get(f"{self.api}/channels", params=params) as response,
+                ):
+                    data: dict[str, Any] = await response.json(content_type=None)
+                    if response.status != 200:
+                        self._error(f"channels.list: HTTP {response.status} {_google_reason(data)}")
+                        return None
+            except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+                self._error(f"channels.list: {type(err).__name__}")
+                return None
+            items: list[dict[str, Any]] = data.get("items") or []
+            found |= {str(item.get("id")) for item in items} & set(batch)
+        return found
 
     # --- the work ---------------------------------------------------------------
 

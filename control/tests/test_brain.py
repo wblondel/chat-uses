@@ -1178,3 +1178,35 @@ def test_the_retention_pass_deletes_old_logs_and_screenshots(tmp_path: Path) -> 
             assert store.recent_commands() == []
 
     run(test)
+
+
+def test_banned_youtube_channels_are_checked_with_youtube(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[list[str]] = []
+    answer: list[set[str] | None] = [{"UCstill"}]
+
+    async def channels(_self: YouTubeChat, ids: list[str]) -> set[str] | None:
+        asked.append(ids)
+        return answer[0]
+
+    monkeypatch.setattr(YouTubeChat, "channels", channels)
+
+    async def test() -> None:
+        now = time.time()
+        with Store(":memory:") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            await brain.refresh_youtube_bans(now)  # no YouTube: nothing to ask
+            brain.youtube = YouTubeChat("key", lambda _m: None)
+            for user in ("yt:UCstill", "yt:UCgone", "yt:UCfresh"):
+                store.seen_user(user, user, now - 21 * 86400)
+                store.ban(now - 21 * 86400, user, now + 86400 * 365, "mod", "spam")
+            store.refreshed(["yt:UCfresh"], now - 86400)  # checked yesterday: not due
+            answer[0] = None
+            await brain.refresh_youtube_bans(now)  # YouTube can't say: nothing changes
+            assert store.banned_until("yt:UCgone") > now
+            answer[0] = {"UCstill"}
+            await brain.refresh_youtube_bans(now)
+            assert sorted(asked[-1]) == ["UCgone", "UCstill"]
+            assert store.banned_until("yt:UCstill") > now and store.user("yt:UCgone") is None
+            assert store.youtube_bans(now, now - brain_module.YOUTUBE_REFRESH) == []
+
+    run(test)

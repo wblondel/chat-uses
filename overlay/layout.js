@@ -144,6 +144,14 @@ function el(tag, cls, text) {
   return e;
 }
 
+// The public site's rules page, bottom right: playing means accepting them.
+function setNotice(site) {
+  const notice = $("notice");
+  const host = typeof site === "string" ? site.replace(/^https?:\/\//, "") : "";
+  notice.hidden = !host;
+  $("notice-site").textContent = host ? `${host}/rules.html` : "";
+}
+
 function renderLine(line) {
   const row = el("div", `log-line ${line.state}`);
   row.append(el("span", `plat ${line.platform}`), el("span", "who", line.user));
@@ -556,6 +564,7 @@ function onMessage(msg) {
       showCard(msg.card);
       setDriver(msg.driver);
       setChaos(msg.chaos);
+      setNotice(msg.site);
       break;
     case "chaos":
       setChaos(msg.chaos);

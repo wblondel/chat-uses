@@ -2,11 +2,12 @@
 
 `chat-brain-admin session start NAME`, then `session end` (infra/host/session.py
 does both, and adds what only the host sees). While a session runs, brain
-notes every SAMPLE_EVERY seconds how many people watch (YouTube's concurrent
-viewers) and how many are active in chat (spoke in the last 5 minutes, per
-platform). At the end it adds up, from the store, the session's commands,
-votes, panics, content holds and screen OCR hits, keeps the report and posts
-it in #ops.
+notes every SAMPLE_EVERY seconds how many are active in chat (spoke in the
+last 5 minutes, per platform). Not YouTube's concurrent viewers: YouTube's
+rules let a statistic be kept 30 days only, and YouTube Studio has them
+(older sessions may hold some, until store.expire_youtube clears them). At
+the end it adds up, from the store, the session's commands, votes, panics,
+content holds and screen OCR hits, keeps the report and posts it in #ops.
 
 Only counts are kept, never who: a session's report outlives the 90-day
 logs (PLAN.md 11). A session survives a brain restart (it's in the store);
@@ -52,7 +53,7 @@ class Sessions:
             return False, f"Session {running['name']!r} is running: end it first (session end)."
         self.store.open_session(name, self.clock())
         return True, (
-            f"Session {name!r} started: brain notes viewers and chat every minute."
+            f"Session {name!r} started: brain notes who's active in chat every minute."
             " `session end` when it's over."
         )
 
@@ -201,7 +202,7 @@ def render(report: dict[str, Any]) -> str:
         f"({day}, {_clock(report['started'])} to {_clock(report['ended'])})"
     ]
     if v["peak"] is None:
-        lines.append("Viewers (YouTube): not known (no live video followed, or the quota)")
+        lines.append("Viewers (YouTube): in YouTube Studio (YouTube's numbers aren't kept here)")
     else:
         lines.append(f"Viewers (YouTube): peak {v['peak']}, average {v['average']}")
     peaks = f" ({_platforms(a['peaks'])} at their peaks)" if a["peaks"] else ""

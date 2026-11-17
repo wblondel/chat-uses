@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from chatuses.commands import Click
-from chatuses.store import Store
+from chatuses.store import PERMANENT, Store
 
 
 def test_users_commands_and_events(tmp_path: Path) -> None:
@@ -178,6 +178,115 @@ def test_a_banned_user_stays_banned_when_forgotten() -> None:
         user = store.user("yt:a")
         assert user is not None and user["display_name"] == "" and user["roles"] == ""
         assert store.banned_until("yt:a") == now + 3600
+
+
+DAY = 86400.0
+
+
+def test_youtube_data_goes_after_30_days_unless_youtube_gave_it_again() -> None:
+    now = time.time()
+    old = now - 40 * DAY
+    with Store(":memory:") as store:
+        for user, name in (("yt:gone", "Gone"), ("yt:back", "Back"), ("dc:friend", "Friend")):
+            store.seen_user(user, name, old)
+            store.record_command(old, user, "!key alt+f4", None, "accepted", None)
+        store.seen_user("yt:back", "Back", now - DAY)  # came back yesterday: YouTube gave it again
+        store.record_command(now - DAY, "yt:back", "!enter", None, "accepted", None)
+        store.add_points(["yt:gone", "yt:back", "dc:friend"], 50)
+        run = store.open_run(old - DAY, "roguelike", "chatpc", 3)
+        blow = {"user": "yt:gone", "name": "Gone", "text": "!key alt+f4"}
+        last = [blow, {"user": "dc:friend", "name": "Friend", "text": "!key alt+f4"}]
+        store.end_run(run["id"], old, "it froze", blow, last, None)
+        store.unlock(
+            store.open_run(old, "roguelike", "chatpc", 3)["id"], "hello", old, ["yt:back", "dc:friend"], 10
+        )
+        vote = store.open_vote("save", "yt:back", old, {"text": "!save x"}, 3)
+        store.add_macro(old, "term", "key ctrl+alt+t", "yt:back", vote)
+        store.add_amendment(old, "democracy_window", "democracy_window_s", 20, "yt:back", vote)
+
+        counts = store.expire_youtube(now)
+
+        assert counts == {"viewers": 1, "commands": 2, "events": counts["events"]} and counts["events"] >= 3
+        assert store.user("yt:gone") is None  # with its points
+        back = store.user("yt:back")
+        assert back is not None and back["display_name"] == "Back" and store.standing("yt:back")[0] == 60
+        assert store.user("dc:friend") is not None and store.standing("dc:friend")[0] == 60
+        assert [(c["user"], c["raw"]) for c in store.recent_commands()] == [
+            ("yt:back", "!enter"),  # yesterday's stays
+            ("dc:friend", "!key alt+f4"),  # Discord's: 90 days, as before
+        ]
+        for _id, ts, _type, payload in store.events():
+            assert ts >= now - 30 * DAY or "yt:" not in json.dumps(payload)
+        dead = store.run(run["id"])
+        assert dead is not None
+        assert dead["final_blow"] == {"user": "", "name": "a YouTube viewer", "text": "!key alt+f4"}
+        assert [e["name"] for e in dead["last_commands"]] == ["a YouTube viewer", "Friend"]
+        assert all(not c["user"].startswith("yt:") for c in dead["contributors"])
+        assert ["yt:back" in json.dumps(a) for a in store.unlocked(run["id"] + 1).values()] == [False]
+        assert store.macros()[0]["by"] == "" and store.amendments()[0]["by"] == ""
+        assert store.db.execute("SELECT proposer FROM votes").fetchone() == ("",)
+        [log] = store.recent_events(("youtube-expiry",))
+        assert log[3] == counts and "yt:" not in json.dumps(log[3])
+        assert store.expire_youtube(now) == {"viewers": 0, "commands": 0, "events": 0}  # nothing left to do
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            store.db.execute("DELETE FROM events")  # protected again
+
+
+def test_a_banned_youtube_viewer_stays_banned_while_youtube_confirms_the_channel() -> None:
+    now = time.time()
+    with Store(":memory:") as store:
+        store.seen_user("yt:troll", "Troll", now - 25 * DAY)
+        store.ban(now - 25 * DAY, "yt:troll", PERMANENT, "mod", "spam")
+        store.seen_user("yt:fine", "Fine", now - 25 * DAY)
+        assert store.youtube_bans(now, older_than=now - 20 * DAY) == ["yt:troll"]  # due a check
+        store.refreshed(["yt:troll"], now)  # the channel's still there
+        assert store.youtube_bans(now, older_than=now - 20 * DAY) == []
+        store.expire_youtube(now + 10 * DAY)
+        assert store.banned_until("yt:troll") == PERMANENT
+        assert store.user("yt:fine") is None
+        store.drop_users(now, ["yt:troll"])  # the channel's gone: so is the ban
+        assert store.user("yt:troll") is None
+        # Never confirmed again (YouTube down for a month): nameless, the ban kept.
+        store.seen_user("yt:other", "Other", now)
+        store.ban(now, "yt:other", PERMANENT, "mod", "spam")
+        store.expire_youtube(now + 31 * DAY)
+        other = store.user("yt:other")
+        assert (
+            other is not None and other["display_name"] == "" and store.banned_until("yt:other") == PERMANENT
+        )
+
+
+def test_youtube_s_viewer_counts_go_from_sessions_after_30_days() -> None:
+    now = time.time()
+    with Store(":memory:") as store:
+        old = store.open_session("beta", now - 40 * DAY)
+        store.add_session_sample(old, [now - 40 * DAY, 42, {"yt": 3}])
+        store.close_session(
+            old, now - 40 * DAY + 3600, {"viewers": {"peak": 42, "average": 42.0}, "minutes": 60}
+        )
+        recent = store.open_session("later", now - DAY)
+        store.add_session_sample(recent, [now - DAY, 7, {"yt": 1}])
+        store.expire_youtube(now)
+        samples = {
+            row[0]: json.loads(row[1]) for row in store.db.execute("SELECT id, samples_json FROM sessions")
+        }
+        assert samples[old] == [[now - 40 * DAY, None, {"yt": 3}]]  # chat's own count stays
+        assert samples[recent] == [[now - DAY, 7, {"yt": 1}]]
+        (report,) = store.db.execute("SELECT report_json FROM sessions WHERE id = ?", (old,)).fetchone()
+        assert json.loads(report) == {"viewers": {"peak": None, "average": None}, "minutes": 60}
+
+
+def test_an_older_database_gets_the_refreshed_column(tmp_path: Path) -> None:
+    db = sqlite3.connect(tmp_path / "old.db")
+    db.executescript(
+        """CREATE TABLE users (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, first_seen REAL NOT NULL,
+                               last_seen REAL NOT NULL, banned_until REAL, roles TEXT NOT NULL DEFAULT '',
+                               points INTEGER NOT NULL DEFAULT 0);
+           INSERT INTO users (id, display_name, first_seen, last_seen) VALUES ('yt:a', 'A', 1.0, 5.0);"""
+    )
+    db.close()
+    with Store(tmp_path / "old.db") as store:
+        assert store.db.execute("SELECT refreshed FROM users").fetchone() == (5.0,)
 
 
 def test_a_database_from_step_3_gets_the_new_trigger(tmp_path: Path) -> None:

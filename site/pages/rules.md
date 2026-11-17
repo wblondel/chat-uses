@@ -36,5 +36,12 @@ reaches the screen; three refused slurs in 10 minutes are a 10-minute
 timeout. Moderators get the screen's text read to them (screen OCR) and
 can stop everything in a second.
 
-**Your data:** see the [privacy notice](privacy.html). Ask a moderator, or write to
-the contact address there, to have your data deleted.
+**Taking part means accepting these rules and our [privacy
+notice](privacy.html).** Sending commands from YouTube chat also means you
+agree to be bound by the [YouTube Terms of Service](https://www.youtube.com/t/terms):
+chat-uses reads YouTube chat with YouTube API Services.
+
+**Your data:** see the [privacy notice](privacy.html). YouTube viewers'
+names, points and commands go 30 days after they last played (YouTube's
+rules). Ask a moderator, or write to the contact address there, to have your
+data deleted: it's done within 7 days.
