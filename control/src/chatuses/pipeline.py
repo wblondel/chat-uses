@@ -136,7 +136,9 @@ class Pipeline:
         if isinstance(parsed, InputCommand):
             verdict = self.limiter.allow(msg.user_id, msg.ts)
             if verdict == "user":
-                return Outcome("rate_limited", parsed, "slow down: one command every 2 seconds")
+                return Outcome(
+                    "rate_limited", parsed, f"slow down: one command every {self.limiter.every:g} seconds"
+                )
             if verdict == "global":
                 return Outcome("rate_limited", parsed, "chat is busy: try again in a moment")
         kind = self._filter(parsed)

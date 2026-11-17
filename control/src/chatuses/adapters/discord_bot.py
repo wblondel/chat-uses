@@ -19,7 +19,7 @@ a moderator's verdict on each hit is what decides when enforcing is safe
 (Phase 7). The latest press counts, and the post says whose it is.
 
 Moderators (the Moderator or Owner role, or the server's owner) get /panic,
-/resume, /ban, /timeout, /unban and /lockdown. Discord shows them only to
+/resume, /ban, /timeout, /unban, /lockdown, /here and /night. Discord shows them only to
 members who may time people out (the Moderator role can); brain checks the
 role again on every use. Answers are private; what was done is posted in
 #mod-alerts (DISCORD_ALERTS_CHANNEL), with mentions turned off.
@@ -183,7 +183,8 @@ class _Client(discord.Client):
 
     def _moderator_commands(self, mod: "Moderation") -> None:
         """Moderators' tools: /panic, /resume, /ban, /timeout, /unban, /lockdown (PLAN.md 7.5,
-        7.6); /endvote, /rewind-to, /mode (6.1)."""
+        7.6); /endvote, /rewind-to, /mode (6.1); /here, /night (night mode, 7.6). Any of them
+        counts as the moderator being around (safety/night.py)."""
         tree = self.tree
         hidden = app_commands.default_permissions(moderate_members=True)  # shown to moderators only
 
@@ -195,7 +196,9 @@ class _Client(discord.Client):
             if guild is None or guild.id != self.adapter.guild_id or not is_moderator(roles, owns):
                 await interaction.response.send_message(NOT_A_MODERATOR, ephemeral=True)
                 return
-            answer = act(moderator_label(member.display_name, member.id))
+            by = moderator_label(member.display_name, member.id)
+            mod.seen(by)
+            answer = act(by)
             await interaction.response.send_message(answer.text, ephemeral=True)
 
         @tree.command(name="panic", description="Cover the stream, mute the machine, freeze input")
@@ -259,6 +262,18 @@ class _Client(discord.Client):
             interaction: discord.Interaction, state: Literal["on", "off"]
         ) -> None:
             await run(interaction, lambda by: mod.lockdown(by, state == "on"))
+
+        @tree.command(name="here", description="Watching without typing: no night mode for an hour")
+        @hidden
+        async def here(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
+            await run(interaction, mod.here)
+
+        @tree.command(name="night", description="Night mode: auto (no moderator around), on or off")
+        @hidden
+        async def night(  # pyright: ignore[reportUnusedFunction]
+            interaction: discord.Interaction, state: Literal["auto", "on", "off"]
+        ) -> None:
+            await run(interaction, lambda by: mod.night(by, state))
 
     async def setup_hook(self) -> None:
         if self.adapter.panel is not None:  # presses on any panel, from the start

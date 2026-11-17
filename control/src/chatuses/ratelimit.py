@@ -1,5 +1,6 @@
 """Rate limits for input commands (PLAN.md 6.3): per user one command every
-2 s with a burst of 3, and 8 inputs per second for everyone together.
+2 s with a burst of 3, and 8 inputs per second for everyone together. At
+night (safety/night.py), one every 4 s with a burst of 2, and 4 a second.
 
 Token buckets on an injected clock (seconds), so tests and the simulator
 control time. A command takes a token from both buckets or from neither:
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Verdict = Literal["ok", "user", "global"]
+NIGHT = (0.25, 2.0, 4.0, 4.0)  # user rate, user burst, global rate, global burst
 
 
 @dataclass
@@ -43,9 +45,26 @@ class RateLimiter:
     _users: dict[str, TokenBucket] = field(default_factory=dict[str, TokenBucket])
     _global: TokenBucket = field(init=False)
     _pruned_at: float = float("-inf")
+    _day: tuple[float, float, float, float] = field(init=False)
 
     def __post_init__(self) -> None:
         self._global = TokenBucket(self.global_rate, self.global_burst)
+        self._day = (self.user_rate, self.user_burst, self.global_rate, self.global_burst)
+
+    @property
+    def every(self) -> float:
+        """Seconds between one person's commands, once their burst is spent."""
+        return 1 / self.user_rate
+
+    def set_night(self, on: bool) -> None:
+        """Night mode's slower limits, or the day's again. Buckets keep what they hold, up to
+        the new burst."""
+        self.user_rate, self.user_burst, self.global_rate, self.global_burst = NIGHT if on else self._day
+        for bucket in self._users.values():
+            bucket.rate, bucket.burst = self.user_rate, self.user_burst
+            bucket.tokens = min(bucket.tokens, bucket.burst)
+        self._global.rate, self._global.burst = self.global_rate, self.global_burst
+        self._global.tokens = min(self._global.tokens, self._global.burst)
 
     def allow(self, user_id: str, now: float) -> Verdict:
         bucket = self._users.get(user_id)

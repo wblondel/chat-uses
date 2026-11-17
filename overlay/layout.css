@@ -275,6 +275,7 @@ body.chaos-quake #screen, body.chaos-quake #cols, body.chaos-quake #rows {
 .badge.offline { background: #3a2a10; color: #ffb547; }
 .badge.online { background: #10392f; color: var(--accent); }
 .badge.lockdown { background: #3a1018; color: #ff8a8a; white-space: nowrap; }
+.badge.night { background: #161a3a; color: #a9b4ff; white-space: nowrap; }
 .badge[hidden] { display: none; }
 
 /* --- !help and !rules ---------------------------------------------------------------- */

@@ -34,7 +34,9 @@ chat is offered the driver's seat: a minute when only their commands run
 shakes the stream): the site lists what's in the shop. Refused text never
 reaches the screen; three refused slurs in 10 minutes are a 10-minute
 timeout. Moderators get the screen's text read to them (screen OCR) and
-can stop everything in a second.
+can stop everything in a second. When no moderator is around, night mode:
+chat stays in democracy, votes need more people and commands come
+slower, until one is back.
 
 **Taking part means accepting these rules and our [privacy
 notice](privacy.html).** Sending commands from YouTube chat also means you

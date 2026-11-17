@@ -7,8 +7,11 @@ proposals for power votes, ballots and vetoes go to the vote engine
 are ballots, and brain runs each window's winner.
 
 The ruleset comes from rulesets/NAME.yaml (laws.py); the laws are its laws
-with the store's `laws` table on top. Switching rulesets or changing a law
-applies to votes opened from then on.
+with the store's `laws` table on top (`base_laws`). At night
+(safety/night.py) every vote needs more people and chat can't push the
+meter: the mode goes to democracy, and back to what it was at dawn.
+Switching rulesets, changing a law or night falling applies to votes opened
+from then on.
 """
 
 import asyncio
@@ -37,6 +40,7 @@ from chatuses.referee import laws as laws_module
 from chatuses.referee.laws import DEFAULT, Laws, Ruleset, RulesetError
 from chatuses.referee.modes import Mode, Modes, Winner
 from chatuses.referee.votes import Proposal, Reply, Vote, VoteEngine
+from chatuses.safety.night import stricter
 from chatuses.store import Store
 
 log = logging.getLogger(__name__)
@@ -46,6 +50,7 @@ BUILT = frozenset(
     {"anarchy", "democracy", "power_votes", "snapshots", "lives", "achievements", "driver_seat"}
 )
 NEEDS_FEATURE = {"save": "snapshots", "rewind": "snapshots", "load": "snapshots"}
+NIGHT_MODE = "night mode: democracy only until a moderator is back"
 
 
 class Actions(Protocol):
@@ -74,11 +79,18 @@ class Referee:
         self.rulesets = rulesets
         self.clock = clock
         self.ruleset = ruleset
-        self.laws = self._laws(ruleset)
+        self.base_laws = self._laws(ruleset)  # the ruleset's, with the laws table on top
+        self.night = False  # safety/night.py: brain sets it with set_night
+        self._before_night: Mode | None = None  # the mode chat had when night fell
         self.votes = VoteEngine(presence, lambda: self.laws, store, self._changed, self._passed)
         self.show_mode = show_mode  # the overlay's meter and tally
         self.modes = Modes(presence, lambda: self.laws, self._mode_changed, run_winner, now=clock())
         self._running: set[asyncio.Task[None]] = set()
+
+    @property
+    def laws(self) -> Laws:
+        """The laws in force: the base laws, stricter at night."""
+        return stricter(self.base_laws) if self.night else self.base_laws
 
     def _laws(self, ruleset: Ruleset) -> Laws:
         try:
@@ -102,6 +114,8 @@ class Referee:
             case Meta(name=("anarchy" | "democracy") as toward):
                 if "democracy" not in self.ruleset.features:
                     return Reply(False, "democracy is off in this ruleset")
+                if self.night:
+                    return Reply(False, NIGHT_MODE)
                 return self.modes.push(user, toward, now)
             case Meta(name=("reboot" | "reset" | "newrun" | "impeach") as action):
                 return self._propose(user, name, Proposal(action, describe(command)), now)
@@ -117,7 +131,7 @@ class Referee:
                 return self._propose(user, name, Proposal("unmacro", describe(command), macro), now)
             case Amend(law=law, value=value):
                 try:
-                    constitution.check(self.ruleset, self.laws, law, value)
+                    constitution.check(self.ruleset, self.base_laws, law, value)
                 except constitution.AmendError as err:
                     return Reply(False, str(err))
                 return self._propose(user, name, Proposal("amend", describe(command), law, value=value), now)
@@ -160,12 +174,27 @@ class Referee:
             self.store.event(self.clock(), "mode", {"mode": mode, "by": by})
         return reply
 
+    def set_night(self, on: bool) -> None:
+        """Night fell (stricter votes, democracy) or the day came back (the mode chat had)."""
+        if on == self.night:
+            return
+        self.night = on
+        now = self.clock()
+        if on:
+            self._before_night = self.modes.mode
+            if "democracy" in self.ruleset.features and self.modes.mode != "democracy":
+                self.modes.set_mode("democracy", now)
+            return
+        before, self._before_night = self._before_night, None
+        if before == "anarchy" and self.modes.mode == "democracy":
+            self.modes.set_mode("anarchy", now)
+
     def set_ruleset(self, name: str, by: str) -> str:
         """Switch to rulesets/NAME.yaml; raises RulesetError (the old one stays)."""
         if self.rulesets is None:
             raise RulesetError("no rulesets directory")
         ruleset = laws_module.load(self.rulesets, name)
-        self.ruleset, self.laws = ruleset, self._laws(ruleset)
+        self.ruleset, self.base_laws = ruleset, self._laws(ruleset)
         self.store.set_setting("ruleset", name)
         self.store.event(self.clock(), "ruleset", {"name": name, "by": by})
         return f"Ruleset: {name}"
@@ -176,24 +205,24 @@ class Referee:
             if key not in self.store.laws():
                 raise RulesetError(f"{key} is already the ruleset's")
             self.store.set_law(self.clock(), key, None, by)
-            self.laws = self._laws(self.ruleset)
+            self.base_laws = self._laws(self.ruleset)
             return f"{key}: back to the ruleset's"
         try:
             number = float(value)
         except ValueError as err:
             raise RulesetError(f"{value!r} isn't a number") from err
-        laws = laws_module.apply(self.laws, {key: int(number) if number.is_integer() else number})
+        laws = laws_module.apply(self.base_laws, {key: int(number) if number.is_integer() else number})
         self.store.set_law(self.clock(), key, number, by)
-        self.laws = laws
+        self.base_laws = laws
         return f"{key} = {value} (until the ruleset's comes back with `law {key} default`)"
 
     def amend(self, law: str, value: float, by: str, vote_id: int | None) -> tuple[int, str]:
         """A passed !amend: numbered, kept, applied. Raises AmendError if it can't be any more."""
-        clause, new = constitution.check(self.ruleset, self.laws, law, value)
+        clause, new = constitution.check(self.ruleset, self.base_laws, law, value)
         now = self.clock()
         number = self.store.add_amendment(now, clause.name, clause.key, new, by, vote_id)
         self.store.set_law(now, clause.key, new, f"amendment #{number}")
-        self.laws = self._laws(self.ruleset)
+        self.base_laws = self._laws(self.ruleset)
         unit = f" {clause.unit}" if clause.unit else ""
         later = " from the next run" if clause.key == "lives_start" else ""
         return number, f"Amendment #{number}: {clause.name} is {value:g}{unit}{later}"

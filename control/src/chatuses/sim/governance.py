@@ -33,6 +33,11 @@ pipeline, referee and lockdown, on a simulated clock.
   agree can, through the veto countdown, and the law changes; another
   amendment waits an hour; what the constitution doesn't allow (out of
   bounds, `!newrun`'s rules, an unknown law) is refused before any vote.
+- **night:** 15 minutes after the last moderator spoke, night falls
+  (PLAN.md 7.6, safety/night.py): democracy, `!anarchy` refused, a
+  `!rewind` that 5 of 12 would pass by day fails for want of 6, commands
+  come one every 4 seconds; a moderator's message brings the day back, and
+  anarchy with it. (Every other scenario runs with night mode off.)
 
 Every scenario is seeded and checks what happened; `python -m chatuses.sim
 --scenarios` runs them all (CI does) and fails if one check does.
@@ -66,9 +71,10 @@ from chatuses.game.driver import DriverSeat
 from chatuses.pipeline import ChatMessage, Pipeline
 from chatuses.referee.constitution import UNKNOWN
 from chatuses.referee.modes import Winner
-from chatuses.referee.referee import Referee
+from chatuses.referee.referee import NIGHT_MODE, Referee
 from chatuses.referee.votes import NOT_ELIGIBLE, Proposal, Vote
-from chatuses.safety.moderation import Moderation
+from chatuses.safety.moderation import MODERATOR_ROLES, Moderation
+from chatuses.safety.night import Change, Night
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import HATE, LISTS
 from chatuses.store import Store
@@ -123,6 +129,10 @@ class _Quiet:
     def set_mode(self, mode: str, by: str) -> tuple[bool, str]:
         return False, ""
 
+    def moderator_here(self, by: str, seconds: float) -> None: ...
+    def set_night(self, setting: str, by: str) -> tuple[bool, str]:
+        return False, ""
+
 
 class Room:
     """Chat around the real pipeline and referee, routed as brain routes it."""
@@ -159,6 +169,9 @@ class Room:
         self.said: list[Said] = []
         self.inputs = 0  # input commands that ran (anarchy) or were counted (democracy)
         self.votes: list[Vote] = []  # every vote opened, as it ended
+        self.night = Night(self.store, self.now)
+        self.night.set("off", "the simulator")  # the night scenario sets it auto
+        self.nights: list[Change] = []  # night falling, day coming back
         self._events: list[tuple[float, int, str, str]] = []
         self._order = itertools.count()
 
@@ -207,6 +220,9 @@ class Room:
 
     def say(self, user: str, text: str) -> str:
         msg = ChatMessage(user, user, text, self.now, self.roles.get(user, frozenset()))
+        if msg.roles & MODERATOR_ROLES:  # as brain: a moderator is around
+            self.night.saw(user, self.now)
+            self.night_tick()
         outcome = self.pipeline.handle(msg)
         command = outcome.command
         reply = outcome.reason or outcome.kind
@@ -234,6 +250,13 @@ class Room:
                     self.votes.append(vote)
         self.said.append(Said(self.now, user, text, reply))
         return reply
+
+    def night_tick(self) -> None:
+        """As brain's: night falls on the referee and the rate limits, or lifts."""
+        if (change := self.night.tick(self.now)) is not None:
+            self.referee.set_night(change.on)
+            self.pipeline.limiter.set_night(change.on)
+            self.nights.append(change)
 
     def later(self, delay: float, user: str, text: str) -> None:
         heapq.heappush(self._events, (self.now + delay, next(self._order), user, text))
@@ -264,12 +287,21 @@ class Room:
                 self.say(user, text)
             else:
                 self.now = tick
+                self.night_tick()
                 self.referee.tick()
-                self.driver.tick(self.now, not self.referee.democracy, lambda u: u)
+                self.driver.tick(self.now, not self.referee.democracy and not self.night.on, lambda u: u)
                 self.chaos.tick(self.now, chance=False)  # chance's own timing: tests/test_chaos.py
                 tick += TICK
                 await asyncio.sleep(0)  # a passed vote's action runs
         self.now = end
+
+    async def burst(self, user: str, text: str, times: int) -> list[str]:
+        """They say it `times` times, 0.3 s apart: what each got."""
+        replies: list[str] = []
+        for _ in range(times):
+            replies.append(self.say(user, text))
+            await self.wait(0.3)
+        return replies
 
     def replies(self, text: str, users: Iterable[str] | None = None) -> Counter[str]:
         """How what they said was answered."""
@@ -612,6 +644,43 @@ async def amendments(room: Room, result: Result) -> None:
         result.check(f"refused before any vote: {what}", reply == why and len(room.votes) == votes, reply)
 
 
+async def night(room: Room, result: Result) -> None:
+    room.night.set("auto", "the simulator")
+    people = room.settled(12)
+    room.arrive(["mod"], 600, {"moderator"})
+    room.say("mod", "evening, chat")
+    room.play(people, 17 * 60)  # chat plays all along
+    await room.wait(10 * 60)
+    result.check("a moderator 10 minutes ago: still day", not room.night.on and not room.nights)
+    result.check("by day a !rewind needs 3 yes of 12", room.referee.laws.tier("rewind").quorum(12) == 3)
+    await room.wait(5 * 60 + 1)
+    result.check("15 minutes without a moderator: night falls", room.night.on, room.nights)
+    result.check("democracy only", room.referee.democracy)
+    result.check("chat can't push the meter", room.say("u0", "!anarchy") == NIGHT_MODE)
+    result.check("u1 proposes !rewind", room.say("u1", "!rewind") == "ok")
+    vote = room.votes[-1]
+    result.check("at night it needs 6 yes", vote.quorum == 6, vote.quorum)
+    room.each(people[2:6], "!yes", (1, 20))  # 5 yes in all
+    await room.wait(31)
+    result.check("5 yes aren't enough at night", vote.phase == "failed", vote.result)
+    [late] = room.settled(1, "late")
+    replies = await room.burst(late, "!click F7", 3)
+    result.check(
+        "commands come slower: a burst of 2, then one every 4 s",
+        replies == ["ok", "ok", "slow down: one command every 4 seconds"],
+        replies,
+    )
+    room.say("mod", "back!")
+    result.check(
+        "a moderator speaks: the day is back",
+        not room.night.on and room.nights[-1] == Change(False, "mod is here"),
+    )
+    result.check("anarchy, as before the night", not room.referee.democracy)
+    [early] = room.settled(1, "early")
+    replies = await room.burst(early, "!click F7", 3)
+    result.check("commands at the day's pace again", replies == ["ok"] * 3, replies)
+
+
 def _a_listed_word() -> str:
     """A word the text filter refuses, read from its own lists."""
     for path in sorted(LISTS.glob("*.txt")):
@@ -634,6 +703,7 @@ SCENARIOS: dict[str, Scenario] = {
     "driver": driver,
     "chaos": chaos,
     "amendments": amendments,
+    "night": night,
 }
 
 

@@ -5,7 +5,7 @@ sends nothing that brain reads. Everything in them is already public (it is
 what the stream shows), so the feed needs no password. Messages:
 
     {"type": "hello", "log": [line...], "target": bool,     on connect
-     "panic": bool, "panic_kind": str, "lockdown": bool,
+     "panic": bool, "panic_kind": str, "lockdown": bool, "night": bool,
      "vote": {...} | null, "timeline": {...} | null, "mode": {...} | null,
      "run": {...} | null, "card": {...} | null, "site": str}  site: the public site's address
                                                             ("" if none), for the rules notice
@@ -17,6 +17,8 @@ what the stream shows), so the feed needs no password. Messages:
     {"type": "panic", "on": bool, "kind": str}              cover the stream at once (PLAN.md 7.5);
                                                             kind "hold": a content hold
     {"type": "lockdown", "on": bool}                        only regulars may send commands
+    {"type": "night", "on": bool}                           night mode: no moderator around
+                                                            (safety/night.py)
     {"type": "vote", "vote": {...} | null}                  the power vote, its count and time left
                                                             (referee/votes.py view()); null: none
     {"type": "mode", "mode": ..., "meter": int, ...}         anarchy or democracy, the meter, democracy's
@@ -76,6 +78,7 @@ class OverlayHub:
         self.panic_kind = "panic"
         self.site = ""  # the public site (SITE_URL): the stream says playing means accepting its rules
         self.lockdown_on = False
+        self.night_on = False
         self._vote: dict[str, Any] | None = None
         self._vote_at = 0.0  # when it was last sent (monotonic): a new page gets the time left
         self._timeline: dict[str, Any] | None = None
@@ -144,6 +147,10 @@ class OverlayHub:
     def lockdown(self, on: bool) -> None:
         self.lockdown_on = on
         self._send({"type": "lockdown", "on": on})
+
+    def night(self, on: bool) -> None:
+        self.night_on = on
+        self._send({"type": "night", "on": on})
 
     def vote(self, view: dict[str, Any] | None) -> None:
         self._vote, self._vote_at = view, time.monotonic()
@@ -258,6 +265,7 @@ class OverlayHub:
             "panic": self.panic_on,
             "panic_kind": self.panic_kind,
             "lockdown": self.lockdown_on,
+            "night": self.night_on,
             "vote": self._vote_now(),
             "timeline": self._timeline,
             "mode": self._mode_now(),

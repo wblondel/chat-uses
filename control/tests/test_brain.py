@@ -25,6 +25,7 @@ from chatuses.brain import Brain, Config
 from chatuses.executor import connect_to
 from chatuses.incus import Incus, IncusError
 from chatuses.pipeline import PAUSED, ChatMessage
+from chatuses.referee.referee import NIGHT_MODE
 from chatuses.referee.votes import Vote
 from chatuses.safety.screen_ocr import Hit
 from chatuses.safety.textfilter import HATE, LISTS
@@ -1018,6 +1019,46 @@ def test_moderation_over_chat_brain_admin() -> None:
             assert brain.store.recent_events(("panic",))[0][3]["by"] == "console"
             status, usage = await brain.admin(["ban", "yt:x"])
             assert status == "error" and "ban WHO DURATION" in usage
+
+    run(test)
+
+
+def test_night_mode_falls_without_moderators_and_lifts_when_one_speaks() -> None:
+    async def test() -> None:
+        async with running() as (brain, feed):
+            brain.night.until = time.time() - 1  # nobody around for 15 minutes
+            brain.night_tick(time.time())
+            assert await feed.next("night") == {"type": "night", "on": True}
+            assert (await feed.next("log"))[
+                "text"
+            ] == "🌙 Night mode: democracy only until a moderator is back"
+            assert brain.referee.democracy and brain.pipeline.limiter.every == 4
+            assert brain.referee.laws.tier("rewind").quorum_floor == 6
+            assert brain.driver.seat is None
+            assert "Night mode: auto, NIGHT since" in brain.status_text()
+            assert brain.store.recent_events(("night",))[0][3]["on"] is True
+            assert await brain.console_message("viv", "!anarchy") == ("refused", NIGHT_MODE)
+            mod = ChatMessage("yt:UCm", "Mo", "evening!", time.time(), frozenset({"moderator"}))
+            brain.handle(mod, "yt")
+            assert await feed.next("night") == {"type": "night", "on": False}
+            assert not brain.referee.democracy and brain.pipeline.limiter.every == 2
+            assert "day (a moderator seen: Mo, " in brain.status_text()
+            here = ChatMessage("yt:UCm", "Mo", "!here", time.time(), frozenset({"moderator"}))
+            assert brain.handle(here, "yt") == (
+                "moderation",
+                "You're around for the next 60 min: no night mode until then.",
+            )
+            assert brain.night.until > time.time() + 59 * 60
+            assert await brain.admin(["night", "on"]) == (
+                "ok",
+                "Night mode: on, whoever is around (`night auto` to go back).",
+            )
+            assert await feed.next("night") == {"type": "night", "on": True}
+            assert (await brain.admin(["night"]))[1].startswith("Night mode: on (by console): NIGHT")
+            assert (await brain.admin(["night", "auto"]))[0] == "ok"  # Mo is around: day
+            assert await feed.next("night") == {"type": "night", "on": False}
+            assert (await brain.admin(["night", "dusk"]))[0] == "error"
+            assert brain.store.recent_events(("night_mode",))[0][3] == {"setting": "auto", "by": "console"}
 
     run(test)
 
