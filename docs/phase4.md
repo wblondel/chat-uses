@@ -241,21 +241,37 @@ me the numbers and I'll write them down in PLAN.md.
   where it stopped, so nothing is missed or read twice.
 - **The quota** is 10,000 units a day, reset at midnight Pacific (08:00 or
   09:00 UTC). Every connection costs 5 units however long YouTube keeps it
-  open, so what a day of chat costs depends on how often YouTube closes it:
-  `admin status` shows the units spent today, the calls in the last hour,
-  how long the closed ones lasted on average and how long the open one has
-  been open (`… quota units today (N calls in the last hour, 5 units each;
-  closed ones lasted S s on average; open for T min)`). brain keeps the day's count in its store, so a restart doesn't
-  start it again, and pauses at 9,000. When the quota is used up (by that
-  count, or because Google refuses: `quotaExceeded`), YouTube chat waits for
-  the reset and goes on by itself; `#ops` is told once, and `admin status`
-  says until when (D60). Reading a chat all day can cost more than the
-  default quota: stop following it when the stream is off (`admin youtube
-  off`), or ask Google for more (Google Cloud console → APIs → YouTube Data
-  API v3 → Quotas, the YouTube API Services quota extension form).
+  open, and YouTube closes them after about 10 s: reconnecting at once
+  would spend the day's quota in about 5 hours (it did, on 17 November).
+  So brain paces its connections (D73). The day's quota builds up, a
+  little at midnight Pacific and evenly through the day to 9,000 by the
+  next, and a new connection waits until it's covered. While chat is
+  quiet (no message for 3 minutes) it also waits about a minute (66 s
+  with the default quota, 90 s at most), so quiet hours leave quota for
+  busy ones. With the default quota and the stream on all day, a busy
+  chat waits between nothing (after quiet hours) and about 40 s (busy all
+  day) before each reconnection. What's said meanwhile comes when it
+  reconnects, late but not dropped. It never runs out before the reset.
+- `admin status` shows the units spent today, the calls in the last hour,
+  how long the closed ones lasted on average, how long the open one has
+  been open, or how long until the next (`… quota units today (N calls in
+  the last hour, 5 units each; closed ones lasted S s on average; next
+  call in T s)`). brain keeps the day's count in its store, so a restart
+  doesn't start it again, and stops at 9,000. If it's used up anyway (by
+  that count, or because Google refuses: `quotaExceeded`), YouTube chat
+  waits for the reset and goes on by itself; `#ops` is told once, and
+  `admin status` says until when (D60). Stop following the chat when the
+  stream is off (`admin youtube off`).
+- **For chat without waits, ask Google for more quota**: the YouTube API
+  Services audit and quota extension form (linked from Google Cloud
+  console → APIs & Services → YouTube Data API v3 → Quotas). It's free
+  and reviewed by Google, which can take a few weeks. With about 100,000
+  units a day, brain reconnects at once all day by itself: nothing to
+  change here.
 - **Commands older than 30 s are dropped**, on both the first connection
   (YouTube sends recent history) and after an outage: a command executed
-  minutes late would surprise everyone.
+  minutes late would surprise everyone. A wait brain chose doesn't count:
+  the 30 s start when it ends (90 s of it at most).
 - **Discord** reconnects by itself. A refused token or a missing intent stop
   it with the reason in `admin status` and in the check.
 - Roles come along with each message: YouTube owner, moderator, member and

@@ -1999,6 +1999,8 @@ def _calls(status: dict[str, Any]) -> str:
         parts.append(f"closed ones lasted {_duration(status['average_stream_s'])} on average")
     if status.get("open_s") is not None:
         parts.append(f"open for {_duration(status['open_s'])}")
+    if status.get("next_s") is not None:  # spreading the day's quota (adapters/youtube.py)
+        parts.append(f"next call in {_duration(status['next_s'])}")
     return "; ".join(parts)
 
 
