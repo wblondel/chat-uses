@@ -29,6 +29,7 @@ placeholders still in it. Change it there, then rebuild brain's image
 | Names with slurs or personal details hidden | `TextFilter.safe_name` (D43) |
 | Moderators only | the dashboard needs its token over WireGuard; `#mod-alerts` is a private channel |
 | The site keeps no visitor log | Caddy's config (`infra/host/Caddyfile.tmpl`) has no `log` directive, so no access log; no cookies, no scripts (its Content-Security-Policy forbids them) |
+| Behind Cloudflare, the contact address hidden from spam robots | Cloudflare's Email Address Obfuscation (keep it on) rewrites the address and adds a script that shows it to people; Caddy's Content-Security-Policy lets scripts run from `https://SITE_DOMAIN/cdn-cgi/scripts/` only (`infra/host/Caddyfile.tmpl`), Cloudflare's path, so the page's own content still can't run any. Without Cloudflare nothing is served there. Cloudflare's Web Analytics beacon (another host) stays blocked |
 | Names on the site are the stream's | the site is rendered from the store with `TextFilter.safe_name` (`control/src/chatuses/site.py`) |
 | A deletion request reaches the site | brain renders the site again after `forget`; the host's copy follows within a minute (`infra/host/site_sync.py` deletes what brain no longer lists) |
 

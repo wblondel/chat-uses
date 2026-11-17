@@ -4,7 +4,10 @@
 # Caddy gets the certificate for the domain from Let's Encrypt by itself (the
 # DNS name must point at this server, and ports 80 and 443 be open:
 # PUBLIC_HTTPS=1) and serves the copy infra/host/site_sync.py keeps in
-# /var/www/chat-uses. Static files only, no scripts allowed, no cookies.
+# /var/www/chat-uses. Static files only, no cookies, and no script but
+# Cloudflare's, when the site is behind it: its Email Address Obfuscation
+# hides the contact address from spam robots and adds a script, under
+# /cdn-cgi/scripts/, that shows it to people. Only that path may run.
 # No access log: the privacy notice says we keep no visitor's IP address.
 {
 	admin off
@@ -15,7 +18,7 @@ ${SITE_DOMAIN} {
 	file_server
 	encode zstd gzip
 	header {
-		Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; script-src https://${SITE_DOMAIN}/cdn-cgi/scripts/; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 		Strict-Transport-Security "max-age=31536000"

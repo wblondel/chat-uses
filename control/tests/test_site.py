@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -313,3 +314,15 @@ def test_the_shipped_pages_say_what_youtube_s_api_rules_ask() -> None:
     assert "https://www.youtube.com/t/terms" in rules and "agree to be bound" in rules
     footer = page("x", []).decode()
     assert 'href="https://www.youtube.com/t/terms"' in footer and 'href="privacy.html"' in footer
+
+
+def test_the_privacy_notice_s_contact_is_left_for_cloudflare_to_hide(tmp_path: Path, store: Store) -> None:
+    """Behind Cloudflare, its Email Address Obfuscation hides the address from spam robots and a
+    script of its own shows it to people: the page gives it a plain mailto link to work on, and
+    Caddy's policy lets that script (and only Cloudflare's path) run."""
+    files, _ = Site(tmp_path / "out", REPO / "site", None).render(data(store))
+    html = files["privacy.html"].decode()
+    assert re.findall(r'<a href="mailto:[^"]+">', html) and "email_off" not in html
+    caddy = (REPO / "infra/host/Caddyfile.tmpl").read_text()
+    [policy] = re.findall(r'Content-Security-Policy "([^"]+)"', caddy)
+    assert "default-src 'none'" in policy and "script-src https://${SITE_DOMAIN}/cdn-cgi/scripts/;" in policy
