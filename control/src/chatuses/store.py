@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS runs (  -- Phase 8 (game/runs.py)
     cause TEXT,                       -- how it ended
     final_blow_json TEXT,             -- {"user", "name", "text"}: a joke, not an accusation
     last_commands_json TEXT,          -- [{"user", "name", "text", "ts"}], its last commands
-    final_frame TEXT                  -- thumbs/<file> of its last screen, or null
+    final_frame TEXT,                 -- thumbs/<file> of its last screen, or null
+    contributors_json TEXT            -- [{"user", "commands"}]: who played most, kept with the run
 );
 CREATE TABLE IF NOT EXISTS achievements (  -- Phase 8 (game/achievements.py)
     id INTEGER PRIMARY KEY,
@@ -146,6 +147,8 @@ class Store:
             self.db.execute("ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT ''")
         if "points" not in columns:  # Phase 8
             self.db.execute("ALTER TABLE users ADD COLUMN points INTEGER NOT NULL DEFAULT 0")
+        if "contributors_json" not in {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}:
+            self.db.execute("ALTER TABLE runs ADD COLUMN contributors_json TEXT")  # Phase 8 step 3
         (trigger,) = self.db.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'events_no_delete'"
         ).fetchone()
@@ -585,7 +588,7 @@ class Store:
 
     _RUN = (
         "id, number, ruleset, instance, started_at, ended_at, lives_start, lives_bonus, lives_used,"
-        " cause, final_blow_json, last_commands_json, final_frame"
+        " cause, final_blow_json, last_commands_json, final_frame, contributors_json"
     )
 
     def _run(self, row: tuple[Any, ...] | None) -> dict[str, Any] | None:
@@ -593,11 +596,12 @@ class Store:
             return None
         keys = (
             "id", "number", "ruleset", "instance", "started", "ended", "lives_start", "lives_bonus",
-            "lives_used", "cause", "final_blow", "last_commands", "final_frame",
+            "lives_used", "cause", "final_blow", "last_commands", "final_frame", "contributors",
         )  # fmt: skip
         run: dict[str, Any] = dict(zip(keys, row, strict=True))
         run["final_blow"] = json.loads(run["final_blow"]) if run["final_blow"] else None
         run["last_commands"] = json.loads(run["last_commands"]) if run["last_commands"] else []
+        run["contributors"] = json.loads(run["contributors"]) if run["contributors"] else None
         return run
 
     def open_run(self, ts: float, ruleset: str, instance: str, lives: int) -> dict[str, Any]:
@@ -648,13 +652,24 @@ class Store:
     ) -> None:
         with self.db:
             self.db.execute("BEGIN")
+            (started,) = self.db.execute("SELECT started_at FROM runs WHERE id = ?", (run_id,)).fetchone()
+            contributors = self.contributors(started, ts)  # kept: commands go after 90 days
             self.db.execute(
                 "UPDATE runs SET ended_at = ?, cause = ?, final_blow_json = ?, last_commands_json = ?,"
-                " final_frame = ? WHERE id = ?",
+                " final_frame = ?, contributors_json = ? WHERE id = ?",
                 (ts, cause, json.dumps(final_blow) if final_blow else None, json.dumps(last_commands),
-                 final_frame, run_id),
+                 final_frame, json.dumps(contributors), run_id),
             )  # fmt: skip
             self._event(ts, "run", {"run": run_id, "phase": "end", "cause": cause})
+
+    def contributors(self, start: float, end: float, limit: int = 20) -> list[dict[str, Any]]:
+        """Who had the most commands accepted between start and end: [{"user", "commands"}]."""
+        rows = self.db.execute(
+            "SELECT user_id, COUNT(*) AS n FROM commands WHERE ts >= ? AND ts <= ? AND outcome = 'accepted'"
+            " GROUP BY user_id ORDER BY n DESC, user_id LIMIT ?",
+            (start, end, limit),
+        )
+        return [{"user": user, "commands": n} for user, n in rows]
 
     def last_inputs(self, start: float, end: float, limit: int = 10) -> list[dict[str, Any]]:
         """The last input commands accepted between start and end (not votes or meta commands),
@@ -678,18 +693,22 @@ class Store:
         def scrub(entry: dict[str, Any]) -> dict[str, Any]:
             return {**entry, "user": "", "name": "someone"} if entry.get("user") == user_id else entry
 
+        quoted = json.dumps(user_id)
         rows = self.db.execute(
-            "SELECT id, final_blow_json, last_commands_json FROM runs"
-            " WHERE instr(final_blow_json, ?) OR instr(last_commands_json, ?)",
-            (json.dumps(user_id), json.dumps(user_id)),
+            "SELECT id, final_blow_json, last_commands_json, contributors_json FROM runs"
+            " WHERE instr(final_blow_json, ?) OR instr(last_commands_json, ?) OR instr(contributors_json, ?)",
+            (quoted, quoted, quoted),
         ).fetchall()
-        for run_id, blow, last in rows:
+        for run_id, blow, last, contributors in rows:
             blow_data = scrub(json.loads(blow)) if blow else None
             last_data = [scrub(e) for e in json.loads(last)] if last else []
+            kept = [c for c in json.loads(contributors) if c["user"] != user_id] if contributors else None
             self.db.execute(
-                "UPDATE runs SET final_blow_json = ?, last_commands_json = ? WHERE id = ?",
-                (json.dumps(blow_data) if blow_data else None, json.dumps(last_data), run_id),
-            )
+                "UPDATE runs SET final_blow_json = ?, last_commands_json = ?, contributors_json = ?"
+                " WHERE id = ?",
+                (json.dumps(blow_data) if blow_data else None, json.dumps(last_data),
+                 json.dumps(kept) if kept is not None else None, run_id),
+            )  # fmt: skip
 
     # --- achievements and points (game/) ---------------------------------------------------
 
@@ -699,6 +718,43 @@ class Store:
             "SELECT key, at, credited_users_json FROM achievements WHERE run_id = ? ORDER BY at", (run_id,)
         ).fetchall()
         return {key: {"at": at, "credited": json.loads(credited)} for key, at, credited in rows}
+
+    def all_unlocked(self) -> dict[int, dict[str, dict[str, Any]]]:
+        """Every run's achievements: run id -> key -> {"at", "credited"} (the public site)."""
+        found: dict[int, dict[str, dict[str, Any]]] = {}
+        for run_id, key, at, credited in self.db.execute(
+            "SELECT run_id, key, at, credited_users_json FROM achievements ORDER BY at"
+        ):
+            found.setdefault(run_id, {})[key] = {"at": at, "credited": json.loads(credited)}
+        return found
+
+    def run_thumbnails(self) -> dict[int, list[dict[str, Any]]]:
+        """Every run's snapshots that had a thumbnail, deleted ones too (their thumbnails stay
+        for the site), oldest first: run id -> [{"id", "kind", "name", "created", "thumb"}]."""
+        found: dict[int, list[dict[str, Any]]] = {}
+        for snap_id, run_id, kind, name, created, thumb in self.db.execute(
+            "SELECT id, run_id, kind, name, created_at, thumb_path FROM snapshots"
+            " WHERE run_id IS NOT NULL AND thumb_path IS NOT NULL ORDER BY created_at, id"
+        ):
+            found.setdefault(run_id, []).append(
+                {"id": snap_id, "kind": kind, "name": name, "created": created, "thumb": thumb}
+            )
+        return found
+
+    def user_names(self, user_ids: list[str]) -> dict[str, str]:
+        """Display names of those still known (a deletion request takes the name)."""
+        names: dict[str, str] = {}
+        ids = sorted(set(user_ids))
+        for i in range(0, len(ids), 500):
+            chunk = ids[i : i + 500]
+            names.update(
+                self.db.execute(
+                    f"SELECT id, display_name FROM users WHERE display_name != '' AND id IN"
+                    f" ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+            )
+        return names
 
     def unlock(self, run_id: int, key: str, ts: float, credited: list[str], points: int) -> bool:
         """Record it and give each credited user its points; False if the run had it already."""

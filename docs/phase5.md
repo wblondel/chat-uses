@@ -441,11 +441,12 @@ What PLAN.md section 11 promises, brain now does (D49):
 
 Drafts to make yours before going public:
 
-- `docs/rules.md`: the one-liner for `!rules`, the YouTube description, and
-  Discord's `#rules`.
-- `docs/privacy.md`: the privacy notice, with placeholders (your name,
-  contact address, the data centre). It says what the code does; the table
-  at the end shows how each promise is kept. Not legal advice: have it read.
+- `docs/rules.md`: the one-liner for `!rules` and the YouTube description;
+  the full rules, for Discord's `#rules` and the public site, are
+  `site/pages/rules.md` (since Phase 8).
+- `site/pages/privacy.md`: the privacy notice, with placeholders (your
+  name, contact address, the data centre); `docs/privacy.md`'s table shows
+  how each promise is kept. Not legal advice: have it read.
 
 ### brain's store
 

@@ -1,0 +1,113 @@
+/* The public site (control/src/chatuses/site.py renders the pages). The
+   stream's colours (overlay/layout.css), no web fonts, no script. */
+
+:root {
+  --bg: #0a0e1a;
+  --panel: #121a2e;
+  --line: #22304f;
+  --text: #eef2fb;
+  --muted: #8f9ab5;
+  --accent: #4fd1c5;
+  --dead: #ff6b6b;
+  --gold: #f6c453;
+  --font: system-ui, "DejaVu Sans", "Noto Sans", sans-serif;
+  --mono: ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono", monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--bg); }
+
+body {
+  margin: 0 auto;
+  max-width: 64rem;
+  padding: 0 1rem 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 1rem/1.55 var(--font);
+}
+
+a { color: var(--accent); }
+a:hover { text-decoration-thickness: 2px; }
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1.5rem;
+  padding: 1.25rem 0 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  color: var(--accent);
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-decoration: none;
+  font-size: 1.3rem;
+}
+
+nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
+nav a { color: var(--text); text-decoration: none; }
+nav a:hover { color: var(--accent); }
+
+main { padding-top: 1rem; }
+
+h1 { font-size: 1.9rem; margin: 0.5rem 0 1rem; }
+h1.alive { color: var(--accent); }
+h1.dead { color: var(--dead); }
+h2 { font-size: 1.25rem; margin: 2rem 0 0.75rem; color: var(--muted); letter-spacing: 0.04em; }
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.25rem 1.25rem 1rem;
+  margin: 1rem 0;
+}
+section.about { background: none; border: 0; padding: 0; }
+section h2 { margin-top: 1rem; }
+
+code {
+  font-family: var(--mono);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 0.3em;
+  overflow-wrap: anywhere;
+}
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1.25rem; margin: 0.5rem 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+
+table { width: 100%; border-collapse: collapse; margin: 0.5rem 0; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td code { white-space: nowrap; overflow-wrap: normal; }
+td.note { color: var(--gold); font-size: 0.9em; }
+/* Wide tables scroll on their own, not the page. */
+table.graveyard, table.votes, table.achievements { display: block; overflow-x: auto; }
+
+.by { color: var(--muted); font-size: 0.9em; }
+.pts { color: var(--gold); font-variant-numeric: tabular-nums; }
+.blow { color: var(--dead); }
+.credit { color: var(--muted); font-size: 0.9em; }
+.unlocked strong { color: var(--gold); }
+.empty { color: var(--muted); }
+
+ol.commands li, ol.players li, ul.unlocked li { margin: 0.3rem 0; }
+
+figure { margin: 0; }
+figure img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }
+figcaption { color: var(--muted); font-size: 0.85em; margin-top: 0.25rem; }
+figure.last { margin: 1rem 0; max-width: 480px; }
+
+.timeline { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.75rem; }
+
+article.text { max-width: 44rem; }
+article.text h1 { margin-top: 0.5rem; }
+
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9em; }

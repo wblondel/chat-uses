@@ -7,7 +7,7 @@ rewinds → death → Graveyard on the site and Discord.
 
 1. **Runs, lives, deaths, new runs** (below).
 2. **Achievements and points** (below).
-3. The public site.
+3. **The public site** (below).
 4. The end-to-end test.
 
 ## Step 1: runs, lives, deaths, new runs
@@ -193,3 +193,101 @@ admin achievements                            # Run #1: 0 of 15 achievements. �
 To see one unlock: open a terminal on the stream and run `cmatrix`
 (Terminal Aesthetic) or type `hello world` in a text editor (Hello World);
 within 30 seconds the toast shows and `#achievements` gets the post.
+
+## Step 3: the public site
+
+`control/src/chatuses/site.py` renders it in brain; `infra/host/site_sync.py`
+copies it to the host; Caddy serves it (D65).
+
+**What it shows.** Static pages, no scripts, no cookies:
+
+| Page | What's on it |
+|---|---|
+| `index.html` | the about text (`site/pages/about.md`), the run going on now, the last 5 deaths, the top 5 |
+| `graveyard.html` | every dead run: when, how long it lived, how, lives used, the final blow |
+| `runs/N.html` | a run: its last screen, the final blow, its last commands, its achievements and who they credit, who played most, its timeline of snapshots |
+| `leaderboard.html` | the 100 with the most points (not the banned or timed out) |
+| `achievements.html` | each achievement, its reward, how many runs unlocked it and the first |
+| `laws.html` | The Laws: the ruleset's numbers in words (amended ones marked), each power vote's rules, what's never up for a vote |
+| `rules.html`, `privacy.html` | `site/pages/rules.md` and `site/pages/privacy.md` |
+
+Everything on it was on stream already: names as the overlay showed them
+(filtered), commands as the overlay writes them, pictures that were frames
+of the stream. Each run keeps who played most in it (20 at most, with how
+many commands) when it ends, since commands are deleted after 90 days. A
+deletion request takes the person's name off every page within a minute.
+
+**The texts.** The rules and the privacy notice moved from the drafts in
+`docs/` to `site/pages/`, which the site and Discord's `#rules` share; the
+home page's text is `site/pages/about.md`. They're Markdown (headings,
+paragraphs, lists, bold, `code`, links to https:, mailto: or the site's own
+pages; `<!-- comments -->` are left out). `chat-brain-admin site` lists the
+`[PLACEHOLDERS]` still in them. They're in brain's image: change them, then
+rebuild brain.
+
+**How it gets out.** brain renders the site into `/var/lib/chat-brain/site`
+(its data volume) within 10 seconds of a change (a run starting or ending,
+lives, an achievement, a snapshot, a law, a deletion request) and every 5
+minutes, writing only the files that changed, each atomically, then
+`manifest.json`: every file's size and SHA-256. On the host, a timer
+(`chat-uses-site-sync.timer`, every minute) reads the manifest through
+`incus exec`, fetches what differs as one tar, and puts each file in
+`/var/www/chat-uses` only if it matches the manifest; files no longer listed
+go. A manifest with a path that isn't a plain name under the site is refused
+whole, only regular files that were asked for are taken from the tar, sizes
+are bounded. Caddy serves `/var/www/chat-uses` with a Let's Encrypt
+certificate it gets by itself, a Content-Security-Policy that allows no
+script, and no access log. With `SITE_URL` set (from host.env's
+`SITE_DOMAIN`), `#graveyard`'s posts link to the run's page.
+
+**Moderators.** `chat-brain-admin site` renders it now and says where, and
+what's left to fill in. `chat-brain-admin site hide RUN` deletes a run's
+pictures (its last screen and timeline): its pages drop them, and so does the
+host's copy within a minute. The `#graveyard` post is Discord's: delete it
+there.
+
+### What was tested
+
+- `tests/test_site.py`: the tag builder escapes text and attributes; the
+  Markdown subset keeps its forms, escapes raw HTML and refuses
+  `javascript:` links; every page from a store with a dead run and a live
+  one, a name made of HTML shown as text on every page, no `<script` on any;
+  The Laws with an amended law; publishing writes only what changed, the
+  manifest matches the files, a stray file and a symlink are removed; a
+  deletion request takes the name off every page; placeholders and missing
+  texts reported; contributors outlive the commands; brain renders on a
+  change, `site` and `site hide`, an unwritable site doesn't stop brain;
+  `SITE_URL` checked.
+- `infra/host/test_site_sync.py`: a first copy, then only what changed;
+  files changed or added on the host put back or removed; ten kinds of path
+  outside the site refused; bad sizes and shapes; a symlink, a device, an
+  unasked path and a tampered file in the tar not written; a failed fetch
+  keeps the old copy; `--check`.
+- The sync against GNU tar's output: an identical copy, then nothing to do.
+- Caddy 2.6.2 (Debian 13's) with the rendered Caddyfile: it validates, and
+  serving the copy it sends the security headers and no `Server`, gzip, the
+  404 page with a 404, and logs no request.
+- The pages in Chromium at 1280 and 390 px wide: no page scrolls sideways.
+
+### On the server
+
+1. Choose the site's name, like `chat.example.org`, and point its DNS
+   record (A, and AAAA if the server has IPv6) at the server.
+2. In `/etc/chat-uses/host.env`: `PUBLIC_HTTPS=1` and
+   `SITE_DOMAIN="chat.example.org"`.
+3. Fill in the placeholders in `site/pages/about.md` and
+   `site/pages/privacy.md` in the repository (they're public pages anyway),
+   so the `git pull` below brings them; until then the site shows them as
+   they are, and `admin site` lists them.
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo infra/host/bootstrap.sh firewall site     # opens 80/443, installs Caddy, the copy timer
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace   # SITE_URL, the texts
+admin site                                     # Site: N files in /var/lib/chat-brain/site, …
+sudo images/brain/check.sh                     # the "Public site" section
+```
+
+Then open `https://chat.example.org/`. The certificate comes once DNS points
+at the server and 80/443 are open; `journalctl -u caddy` says if Let's
+Encrypt couldn't reach it.

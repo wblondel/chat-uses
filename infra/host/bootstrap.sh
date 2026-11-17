@@ -4,7 +4,7 @@
 # Turns a fresh Debian 13 server into the chat-uses host: SSH hardening,
 # automatic security updates, kernel settings, firewall, WireGuard admin
 # tunnel, Incus with its storage pool, networks, projects and profiles, and
-# brain's restricted access to the Incus API.
+# brain's restricted access to the Incus API, and the public site (Caddy).
 #
 # Idempotent: run it again after every change to infra/. Each step only
 # changes what differs from the repository.
@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck source=infra/host/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api summary)
+STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api site summary)
 
 PACKAGES=(
 	ca-certificates curl jq gettext-base sudo python3 openssl
@@ -496,6 +496,86 @@ step_incus_api() {
 	fi
 	install -m 0644 /var/lib/incus/server.crt "$secrets/incus-server.crt"
 	info "host certificate copied for brain to pin ($secrets/incus-server.crt)"
+}
+
+# The public site (Phase 8, D65): Caddy serves /var/www/chat-uses, which a
+# timer keeps a copy of the site brain renders (infra/host/site_sync.py).
+step_site() {
+	log "Public site (Caddy)"
+	if [[ -z $SITE_DOMAIN ]]; then
+		info "off: SITE_DOMAIN is empty in $CHAT_USES_CONFIG"
+		if have_systemd && systemctl is-enabled --quiet chat-uses-site-sync.timer 2>/dev/null; then
+			systemctl disable --now chat-uses-site-sync.timer >/dev/null 2>&1 || true
+			info "stopped copying the site from brain (Caddy still runs: systemctl disable --now caddy)"
+		fi
+		return
+	fi
+	[[ $SITE_DOMAIN =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] ||
+		die "SITE_DOMAIN '$SITE_DOMAIN' isn't a domain name (like chat.example.org)"
+	[[ $PUBLIC_HTTPS == 1 ]] ||
+		warn "PUBLIC_HTTPS=0: ports 80 and 443 are closed, so nobody (Let's Encrypt included) reaches the site. Set PUBLIC_HTTPS=1, then: bootstrap.sh firewall site"
+	if ! command -v caddy >/dev/null; then
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends caddy >/dev/null
+		info "installed caddy"
+	fi
+	install -d -m 0755 /var/www/chat-uses /var/lib/chat-uses
+	local changed=0 restart=0 rendered
+	rendered=$(mktemp)
+	render "$CHAT_USES_HOST_DIR/Caddyfile.tmpl" >"$rendered"
+	caddy validate --adapter caddyfile --config "$rendered" >/dev/null 2>&1 ||
+		{ rm -f "$rendered"; die "the rendered Caddyfile doesn't validate: caddy validate --config <(...) on infra/host/Caddyfile.tmpl"; }
+	write_file /etc/caddy/Caddyfile 0644 <"$rendered" && restart=1
+	rm -f "$rendered"
+	# Debian's caddy.service runs it as the caddy user; this takes away the
+	# rest of the system it doesn't need.
+	write_file /etc/systemd/system/caddy.service.d/chat-uses.conf 0644 <<'UNIT' && changed=1 restart=1
+[Service]
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/caddy
+ProtectHome=yes
+PrivateDevices=yes
+UNIT
+	write_file /usr/local/sbin/chat-uses-site-sync 0755 <"$CHAT_USES_HOST_DIR/site_sync.py" && changed=1
+	write_file /etc/systemd/system/chat-uses-site-sync.service 0644 <<'UNIT' && changed=1
+[Unit]
+Description=chat-uses: copy the public site brain renders, for Caddy
+After=incus.service
+Wants=incus.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chat-uses-site-sync
+TimeoutStartSec=10min
+Nice=10
+UNIT
+	write_file /etc/systemd/system/chat-uses-site-sync.timer 0644 <<'UNIT' && changed=1
+[Unit]
+Description=chat-uses: copy the public site from brain every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+UNIT
+	if have_systemd; then
+		((changed)) && systemctl daemon-reload
+		systemctl enable --quiet caddy chat-uses-site-sync.timer
+		if ((restart)) || ! systemctl is-active --quiet caddy; then
+			systemctl restart caddy
+		fi
+		systemctl start chat-uses-site-sync.timer
+		systemctl is-active --quiet caddy || warn "caddy isn't running: journalctl -u caddy"
+	fi
+	if /usr/local/sbin/chat-uses-site-sync; then
+		info "site: $(/usr/local/sbin/chat-uses-site-sync --check 2>&1 | sed 's/^site: //')"
+	else
+		warn "the site isn't copied yet (brain must run Phase 8's image): journalctl -u chat-uses-site-sync"
+	fi
+	info "https://$SITE_DOMAIN/ (the certificate comes once DNS points here and 80/443 are open)"
 }
 
 step_summary() {

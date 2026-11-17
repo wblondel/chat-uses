@@ -30,6 +30,9 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     SCREENS_DIR              where OCR hits' screenshots are kept (/var/lib/chat-brain/screens)
     RULESETS_DIR             the rulesets (/usr/lib/chat-brain/rulesets); which one is in the store
     THUMBS_DIR               snapshots' thumbnails for the overlay (/var/lib/chat-brain/thumbs)
+    SITE_DIR                 where the public site is rendered (/var/lib/chat-brain/site)
+    SITE_SOURCE              its stylesheet and texts (/usr/lib/chat-brain/site: the repo's site/)
+    SITE_URL                 its public address, for links in #graveyard (none by default)
 
 Which YouTube video's chat to read is set with chat-brain-admin, and kept in
 the store across restarts. Moderation (panic, bans, lockdown) is
@@ -55,6 +58,7 @@ import aiohttp
 from aiohttp import web
 
 from chatuses import console, dashboard
+from chatuses import site as site_module
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
@@ -80,6 +84,7 @@ from chatuses.safety.textfilter import TextFilter
 from chatuses.safety.watchdog import Watchdog
 from chatuses.screen import Frame
 from chatuses.sessions import SAMPLE_EVERY, Sessions, active_by_platform
+from chatuses.site import SITE_EVERY, SITE_REFRESH, Site
 from chatuses.snapshots import Snap, Snapshots
 from chatuses.store import RETENTION, Store, to_json
 from chatuses.vnc import VncInput
@@ -124,6 +129,7 @@ TRAVELLING = "wait: the machine is travelling in time"
 NO_INCUS = "time travel is off: brain has no Incus access"
 NO_REBOOT = "the machine didn't shut down within 30 s: !reset forces it"
 _THUMB = re.compile(r"\d{1,9}\.png")
+_SITE_URL = re.compile(r"https?://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/-]*)?")
 PRUNE_EVERY = 24 * 3600.0  # seconds between retention passes
 
 
@@ -157,6 +163,9 @@ class Config:
     screens_dir: str = "/var/lib/chat-brain/screens"
     rulesets_dir: str = "/usr/lib/chat-brain/rulesets"
     thumbs_dir: str = "/var/lib/chat-brain/thumbs"
+    site_dir: str = "/var/lib/chat-brain/site"
+    site_source: str = "/usr/lib/chat-brain/site"
+    site_url: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -169,6 +178,9 @@ class Config:
         ocr_mode = env.get("OCR_MODE", "").strip() or cls.ocr_mode
         if ocr_mode not in OCR_MODES:
             raise SystemExit(f"OCR_MODE must be one of {', '.join(OCR_MODES)}")
+        site_url = env.get("SITE_URL", "").strip().rstrip("/")
+        if site_url and not _SITE_URL.fullmatch(site_url):
+            raise SystemExit("SITE_URL must be the public site's address, like https://example.org")
         return cls(
             target_host=target,
             vnc_port=int(env.get("VNC_PORT", cls.vnc_port)),
@@ -200,6 +212,9 @@ class Config:
             screens_dir=env.get("SCREENS_DIR", "") or cls.screens_dir,
             rulesets_dir=env.get("RULESETS_DIR", "") or cls.rulesets_dir,
             thumbs_dir=env.get("THUMBS_DIR", "") or cls.thumbs_dir,
+            site_dir=env.get("SITE_DIR", "") or cls.site_dir,
+            site_source=env.get("SITE_SOURCE", "") or cls.site_source,
+            site_url=site_url,
         )
 
     def incus(self) -> tuple[Incus | None, str]:
@@ -242,8 +257,13 @@ class Brain:
         thumbs: Path | None = None,
         grab: Callable[[], Awaitable[Frame | None]] | None = None,
         achievements: list[Achievement] | None = None,
+        site: Site | None = None,
     ) -> None:
         self.store = store
+        self.site = site  # the public site (site.py): rendered when something changes
+        self._site_dirty = True
+        self._site_at = 0.0
+        self._site_lock = asyncio.Lock()
         self.filter = TextFilter()
         self.strikes = Strikes()
         self.overlay = OverlayHub()
@@ -596,6 +616,7 @@ class Brain:
     def _timeline_changed(self) -> None:
         if self.snapshots is not None:
             self.overlay.timeline(self.snapshots.view())
+        self.site_changed()
 
     def _auto_due(self, now: float) -> bool:
         """An auto snapshot now? Due, the target healthy, and its screen changed since the last (6.6)."""
@@ -897,6 +918,7 @@ class Brain:
                     return _answer(found)
                 commands, events = self.store.forget(time.time(), found)
                 self.strikes.forget(found)
+                self.site_changed()  # their name leaves the site too
                 return "ok", f"Forgot {found}: {commands} commands and {events} log entries deleted."
             case ["snapshots"]:
                 if self.snapshots is None:
@@ -925,6 +947,7 @@ class Brain:
                 names = ", ".join(laws.available(self.referee.rulesets)) if self.referee.rulesets else "?"
                 return "ok", f"Ruleset: {self.referee.ruleset.name} (available: {names})"
             case ["ruleset", name]:
+                self.site_changed()
                 try:
                     return "ok", self.referee.set_ruleset(name, "console")
                 except RulesetError as err:
@@ -935,6 +958,7 @@ class Brain:
                     return "ok", f"All laws are the ruleset's ({self.referee.ruleset.name})."
                 return "ok", "\n".join(f"{key} = {value:g}" for key, value in sorted(changed.items()))
             case ["law", key, value]:
+                self.site_changed()
                 try:
                     return "ok", self.referee.set_law(key, value, "console")
                 except RulesetError as err:
@@ -957,6 +981,15 @@ class Brain:
                 return "ok", self.achievements_text()
             case ["leaderboard"]:
                 return "ok", self.leaderboard_text()
+            case ["site", "hide", number] if number.isdigit():
+                return self.hide_pictures(int(number))
+            case ["site"]:
+                if self.site is None:
+                    return "error", "no public site in this brain"
+                changed = await self.render_site()
+                if changed is None:
+                    return "error", f"{self.site.status_text()}\nRendering failed: journalctl -u chat-brain"
+                return "ok", f"{self.site.status_text()}\n{changed} files changed just now."
             case ["run", "end", *why]:
                 if self.runs.current is None or self._ending:
                     return "error", "No run to end right now."
@@ -1135,6 +1168,7 @@ class Brain:
         self.overlay.achievement(
             {"name": achievement.name, "description": achievement.description, "rewards": rewards}
         )
+        self.site_changed()
         if self.discord is not None:
             text = f"🏆 **{achievement.name}** (run #{run['number']}): {achievement.description}."
             if rewards:
@@ -1184,6 +1218,65 @@ class Brain:
 
     def _run_changed(self) -> None:
         self.overlay.run(self.runs.view(time.time()))
+        self.site_changed()
+
+    # --- the public site (site.py) ------------------------------------------------------
+
+    def site_changed(self) -> None:
+        """Something the site shows changed: it's rendered again within SITE_EVERY seconds."""
+        self._site_dirty = True
+
+    async def _site_updates(self) -> None:
+        """Render the site when something changed, and every SITE_REFRESH seconds. Never returns."""
+        while True:
+            await asyncio.sleep(SITE_EVERY)
+            if self._site_dirty or time.time() - self._site_at >= SITE_REFRESH:
+                await self.render_site()
+
+    def hide_pictures(self, number: int) -> tuple[str, str]:
+        """A moderator's call: a run's pictures (its last screen, its timeline) off the site."""
+        run = next((r for r in self.store.runs(limit=1_000_000) if r["number"] == number), None)
+        if run is None:
+            return "error", f"no run #{number}"
+        names = [s["thumb"] for s in self.store.run_thumbnails().get(run["id"], [])]
+        if run["final_frame"]:
+            names.append(run["final_frame"])
+        gone = 0
+        for name in names:
+            if self.thumbs is not None and site_module.IMAGE.fullmatch(name):
+                path = self.thumbs / name
+                if path.is_file():
+                    path.unlink()
+                    gone += 1
+        self.store.event(time.time(), "site-hide", {"run": run["id"], "pictures": gone})
+        self.site_changed()
+        return "ok", (
+            f"Run #{number}: {gone} pictures deleted; the site drops them within a minute."
+            " Its post in #graveyard is Discord's: delete that there."
+        )
+
+    async def render_site(self) -> int | None:
+        """Render it now; how many files changed (None: no site, or it failed: logged)."""
+        if self.site is None:
+            return None
+        async with self._site_lock:
+            self._site_dirty, self._site_at = False, time.time()
+            data = site_module.gather(  # the store is read here, on the loop's thread
+                self.store,
+                achievements=self.achievements,
+                ruleset=self.referee.ruleset,
+                laws=self.referee.laws,
+                safe_name=self.filter.safe_name,
+                lives_left=self.runs.lives_left(),
+            )
+            try:
+                return await asyncio.to_thread(self.site.build, data)
+            except OSError as err:
+                log.error("site: can't write it to %s: %s", self.site.out, err)
+                return None
+            except Exception:
+                log.exception("site: rendering failed")
+                return None
 
     def run_line(self) -> str:
         run, left = self.runs.current, self.runs.lives_left()
@@ -1325,6 +1418,8 @@ class Brain:
             lines.append(f"Probably killed by {blow['name']} (`{blow['text']}`). No offence.")
         if card["last_commands"]:
             lines.append("Last commands: " + ", ".join(f"`{c['text']}`" for c in card["last_commands"][:5]))
+        if self.site is not None and (link := self.site.link(card["number"])):
+            lines.append(f"Its page: <{link}>")
         self.discord.alert("\n".join(lines), png, channel=self.graveyard_channel)
 
     async def serve(self, config: Config, stop: asyncio.Event) -> None:
@@ -1359,6 +1454,7 @@ class Brain:
             self._run_watch(),
             self._points_minutes(),
             self._achievement_checks(),
+            self._site_updates(),
         ):
             task = asyncio.create_task(job)
             self._background.add(task)
@@ -1431,6 +1527,7 @@ async def amain(config: Config) -> None:
             Path(config.thumbs_dir),
             grab,
             achievements,
+            Site(Path(config.site_dir), Path(config.site_source), Path(config.thumbs_dir), config.site_url),
         )
         brain.incus_off_reason = why_not
         await brain.serve(config, stop)
