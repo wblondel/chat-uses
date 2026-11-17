@@ -20,10 +20,22 @@ Reading a public chat only needs an API key, sent as `x-goog-api-key`.
   by us or as Google says (403 quotaExceeded, or a streamList refusal about
   quota), it waits for the reset and goes on by itself, and says so once
   (on_quota: #ops).
-- Each streamList call costs 5 units however long YouTube keeps it open, so
-  what a day of chat costs depends on how often YouTube closes the stream:
-  status shows the calls in the last hour, how long the closed ones lasted
-  on average, and how long the open one has been open.
+- Each streamList call costs 5 units however long YouTube keeps it open, and
+  YouTube closes streams after about 10 s: reconnecting at once spends the
+  default quota in about 5 hours. So the day's quota is an allowance that
+  builds up (Quota.ready_at): QUOTA_BURST units at midnight Pacific,
+  growing evenly to QUOTA_STOP by the next. After YouTube closes a stream,
+  the next call waits until the allowance covers it (`_pace`); while chat
+  is quiet (no message for ACTIVE_FOR seconds) it also waits PACE_QUIET
+  times the even interval (MAX_GAP at most), so quiet hours leave quota for
+  busy ones. It never runs out before the reset. With the default quota:
+  about 66 s between calls while chat is quiet, and while it's busy from
+  no wait (after quiet hours) to about 40 s (busy all day); with more
+  quota, no wait. Messages said meanwhile arrive when it reconnects, from
+  the page token, and aren't dropped as late: MAX_AGE counts from the end
+  of that wait (MAX_GAP of it at most). Status shows the calls in the last
+  hour, how long the closed ones lasted on average, how long the open one
+  has been open, and the wait before the next.
 
 The stream_list_pb2 module is generated from Google's proto
 (proto/stream_list.proto, proto/generate.sh).
@@ -60,12 +72,16 @@ COST_VIDEOS_LIST = 1
 COST_STREAM_LIST = 5
 QUOTA_DAILY = 10_000  # YouTube's default daily quota
 QUOTA_STOP = 9000  # of it: we pause here, before Google refuses
+QUOTA_BURST = 450  # of it, ready at midnight Pacific; the rest comes evenly through the day
 QUOTA_DAY = ZoneInfo("America/Los_Angeles")  # YouTube's quota resets at midnight Pacific
 QUOTA_RESUME_AFTER = 120.0  # seconds after the reset before trying again (clocks differ)
 QUOTA_REASONS = ("quotaExceeded", "dailyLimitExceeded")
 
-MAX_AGE = 30.0  # seconds: older commands are dropped
+MAX_AGE = 30.0  # seconds: older commands are dropped (counted from the end of a paced wait)
 MIN_CALL_GAP = 5.0  # seconds between two streamList calls, whatever happens
+ACTIVE_FOR = 180.0  # seconds: chat with a message this recent is active
+PACE_QUIET = 1.5  # times the even interval between calls, while chat is quiet
+MAX_GAP = 90.0  # seconds: the longest wait for a quiet chat, and how late MAX_AGE forgives
 WAIT_FOR_LIVE = 60.0  # seconds between checks while the video isn't live yet
 BACKOFF = (2.0, 120.0)  # after an error: first and longest wait
 TOO_SOON_WAIT = 30.0  # seconds after YouTube says a call came too soon after the last
@@ -169,9 +185,28 @@ class Quota:
 
     def resets_at(self) -> float:
         """The next midnight Pacific, as a Unix time."""
-        now = datetime.fromtimestamp(self.clock(), QUOTA_DAY)
-        midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), QUOTA_DAY)
-        return midnight.timestamp()
+        return self._day()[1]
+
+    def _day(self) -> tuple[float, float]:
+        """Today's quota day: its first and last moment (midnight Pacific to midnight, 23 to 25
+        hours around daylight saving changes)."""
+        today = datetime.fromtimestamp(self.clock(), QUOTA_DAY).date()
+        start, end = (
+            datetime.combine(d, datetime.min.time(), QUOTA_DAY) for d in (today, today + timedelta(1))
+        )
+        return start.timestamp(), end.timestamp()
+
+    def rate(self) -> float:
+        """Units a second the day's allowance grows by."""
+        start, end = self._day()
+        return (QUOTA_STOP - QUOTA_BURST) / (end - start)
+
+    def ready_at(self, units: int) -> float:
+        """When spending `units` more keeps to the day's allowance: QUOTA_BURST at midnight
+        Pacific, growing evenly to QUOTA_STOP at the next. What quiet hours don't spend, busy
+        ones can; the day never runs out early."""
+        self._roll()
+        return self._day()[0] + max(0, self.used + units - QUOTA_BURST) / self.rate()
 
 
 @dataclass
@@ -184,6 +219,7 @@ class Counters:
     stream_seconds: float = 0.0  # how long the closed ones stayed open, in all
     starts: deque[float] = field(default_factory=lambda: deque(maxlen=4096))  # monotonic
     open_since: float | None = None  # monotonic, while a call is open
+    next_call: float | None = None  # monotonic, while waiting to spread the quota
     errors: deque[str] = field(default_factory=lambda: deque(maxlen=5))
 
 
@@ -225,6 +261,8 @@ class YouTubeChat:
         self._seen: deque[str] = deque(maxlen=SEEN_IDS)
         self._seen_set: set[str] = set()
         self._last_call = 0.0
+        self._last_message = 0.0  # clock(): the last chat message delivered (active or quiet)
+        self._paced = 0.0  # seconds waited by choice before the call now open (MAX_AGE starts after)
 
     # --- control ---------------------------------------------------------------
 
@@ -261,6 +299,7 @@ class YouTubeChat:
             "calls_last_hour": sum(1 for t in c.starts if now - t <= 3600),
             "average_stream_s": round(c.stream_seconds / c.closed) if c.closed else None,  # closed ones
             "open_s": round(now - c.open_since) if c.open_since is not None else None,
+            "next_s": round(max(0.0, c.next_call - now)) if c.next_call is not None else None,
             "quota_used_today": self.quota.spent(),
             "recent_errors": list(c.errors),
         }
@@ -400,15 +439,36 @@ class YouTubeChat:
                             self.state = "ended"
                             raise Stop("the live stream went offline")
                 except grpc.aio.AioRpcError as err:
+                    self._paced = 0.0  # a backlog after an error is late: MAX_AGE as it is
                     backoff = self._rpc_error(err, backoff)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, BACKOFF[1])
                     continue
                 finally:
-                    self.counters.stream_seconds += time.monotonic() - self._last_call
+                    opened = time.monotonic() - self._last_call
+                    self.counters.stream_seconds += opened
                     self.counters.closed += 1
                     self.counters.open_since = None
-                # The server closed the stream normally: resume from the token.
+                # The server closed the stream normally: resume from the token, in a while.
+                self._paced = self._pace(opened)
+                if self._paced > 0:
+                    self.counters.next_call = time.monotonic() + self._paced
+                    try:
+                        await asyncio.sleep(self._paced)
+                    finally:
+                        self.counters.next_call = None
+
+    def _pace(self, opened: float) -> float:
+        """Seconds to wait before the next call, after one YouTube kept open `opened` seconds:
+        until the day's allowance covers it, and while chat is quiet, longer."""
+        if self.quota.spent() + COST_STREAM_LIST > QUOTA_STOP:
+            return 0.0  # the next spend() pauses until the reset
+        now = self.clock()
+        wait = max(0.0, self.quota.ready_at(COST_STREAM_LIST) - now)
+        if now - self._last_message >= ACTIVE_FOR:  # quiet: leave quota for when chat plays
+            even = COST_STREAM_LIST / self.quota.rate()
+            wait = max(wait, min(MAX_GAP, PACE_QUIET * even - opened))
+        return wait
 
     def _rpc_error(self, err: grpc.aio.AioRpcError, backoff: float) -> float:
         """Raise Stop for errors retrying can't fix; return how long to wait otherwise."""
@@ -444,9 +504,10 @@ class YouTubeChat:
             return  # memberships, bans, deletions...: later phases
         now = self.clock()
         published = _published(snippet.published_at)
-        if published is not None and now - published > MAX_AGE:
+        if published is not None and now - published > MAX_AGE + min(self._paced, MAX_GAP):
             self.counters.stale += 1
             return
+        self._last_message = now
         author = item.author_details
         try:
             uid = user_id("yt", author.channel_id or snippet.author_channel_id)

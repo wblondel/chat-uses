@@ -30,6 +30,7 @@ def fast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(youtube, "WAIT_FOR_LIVE", 0.05)
     monkeypatch.setattr(youtube, "BACKOFF", (0.01, 0.05))
     monkeypatch.setattr(youtube, "TOO_SOON_WAIT", 0.05)
+    monkeypatch.setattr(youtube, "MAX_GAP", 0.0)  # reconnect at once (pacing has its own tests)
 
 
 def iso(ts: float, z: bool = True) -> str:
@@ -563,3 +564,165 @@ def test_viewers_are_asked_of_youtube_while_streaming(monkeypatch: pytest.Monkey
         await fake.stop()
 
     run(test)
+
+
+# --- spreading the day's quota --------------------------------------------------------------
+
+EVEN = youtube.COST_STREAM_LIST / ((youtube.QUOTA_STOP - youtube.QUOTA_BURST) / 86_400)  # 50.5 s
+
+
+def pacific(at: str) -> float:
+    return datetime.fromisoformat(at).replace(tzinfo=QUOTA_DAY).timestamp()
+
+
+def pacer(at: str, spent: int, chatted_ago: float | None = None) -> YouTubeChat:
+    """An adapter at a Pacific time of day, with that much quota spent."""
+    now = pacific(at)
+    quota = Quota(lambda: now, load=lambda: f"{datetime.fromtimestamp(now, QUOTA_DAY).date()} {spent}")
+    chat = YouTubeChat(KEY, lambda _m: None, clock=lambda: now, quota=quota)
+    if chatted_ago is not None:
+        chat._last_message = now - chatted_ago  # pyright: ignore[reportPrivateUsage]
+    return chat
+
+
+def pace(chat: YouTubeChat, opened: float = 10.0) -> float:
+    return chat._pace(opened)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_day_s_quota_builds_up_and_busy_chat_spends_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(youtube, "MAX_GAP", 90.0)
+    # Midnight Pacific: the burst is there, chat that plays doesn't wait.
+    assert pace(pacer("2026-11-17T00:00:00", 0, chatted_ago=60)) == 0.0
+    # A quiet chat waits 1.5 times the even interval, less the time YouTube kept it open.
+    assert pace(pacer("2026-11-17T00:00:00", 0)) == pytest.approx(1.5 * EVEN - 10)
+    assert pace(pacer("2026-11-17T00:00:00", 0, chatted_ago=600)) == pytest.approx(1.5 * EVEN - 10)
+    # The burst spent: one call's worth comes every EVEN seconds.
+    assert pace(pacer("2026-11-17T00:00:00", youtube.QUOTA_BURST, chatted_ago=1)) == pytest.approx(EVEN)
+    # Noon, less than half spent: what the quiet morning left is there for chat now.
+    assert pace(pacer("2026-11-17T12:00:00", 4000, chatted_ago=1)) == 0.0
+    # Noon, more spent than the allowance (an older brain spent it): wait for it to catch up.
+    behind = pace(pacer("2026-11-17T12:00:00", 6000, chatted_ago=1))
+    assert behind == pytest.approx((6005 - youtube.QUOTA_BURST) * EVEN / 5 - 12 * 3600)
+    # Nothing left: no wait here, the next call pauses until the reset.
+    assert pace(pacer("2026-11-17T12:00:00", youtube.QUOTA_STOP)) == 0.0
+
+
+def test_a_quiet_chat_waits_no_longer_than_max_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(youtube, "MAX_GAP", 30.0)
+    assert pace(pacer("2026-11-17T00:00:00", 0)) == 30.0
+
+
+@pytest.mark.parametrize(
+    "busy_hours", [set[int](), set(range(24)), {h for h in range(24) if h % 3 == 0}, set(range(16, 22))]
+)
+def test_a_whole_day_never_runs_out(monkeypatch: pytest.MonkeyPatch, busy_hours: set[int]) -> None:
+    monkeypatch.setattr(youtube, "MAX_GAP", 90.0)
+    now = [pacific("2026-11-17T00:00:00")]
+    end = pacific("2026-11-18T00:00:00")
+    quota = Quota(lambda: now[0])
+    chat = YouTubeChat(KEY, lambda _m: None, clock=lambda: now[0], quota=quota)
+    calls = 0
+    while True:
+        now[0] += pace(chat, 10)
+        if now[0] >= end:
+            break
+        quota.spend(youtube.COST_STREAM_LIST)  # QuotaOut would fail the test
+        calls += 1
+        hour = datetime.fromtimestamp(now[0], QUOTA_DAY).hour
+        chat._last_message = now[0] if hour in busy_hours else 0.0  # pyright: ignore[reportPrivateUsage]
+        now[0] += 10  # YouTube closes it after 10 s
+    assert quota.spent() <= youtube.QUOTA_STOP
+    assert calls >= 1100  # chat was read all day: a call every 80 s at worst
+
+
+def test_daylight_saving_days_have_their_own_length() -> None:
+    spring = Quota(lambda: pacific("2026-03-08T12:00:00"))  # 23 hours
+    autumn = Quota(lambda: pacific("2026-11-01T12:00:00"))  # 25 hours
+    assert spring.rate() == pytest.approx((youtube.QUOTA_STOP - youtube.QUOTA_BURST) / (23 * 3600))
+    assert autumn.rate() == pytest.approx((youtube.QUOTA_STOP - youtube.QUOTA_BURST) / (25 * 3600))
+    assert spring.ready_at(youtube.QUOTA_STOP) == pytest.approx(spring.resets_at())
+
+
+def two_seconds(_opened: float) -> float:
+    return 2.0
+
+
+def test_what_was_said_during_the_wait_is_not_dropped_as_late(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(youtube, "MAX_AGE", 2.0)
+    monkeypatch.setattr(youtube, "MAX_GAP", 5.0)
+
+    async def test() -> None:
+        fake = await FakeYouTube(
+            [
+                Session(
+                    [
+                        pb.LiveChatMessageListResponse(
+                            items=[message("history", "!click A1", age=2.5)], next_page_token="t1"
+                        )
+                    ]
+                ),  # closed normally: the adapter waits 2 s before the next call
+                Session(
+                    [
+                        pb.LiveChatMessageListResponse(
+                            items=[
+                                message("waited", "!enter", age=1.5),  # about 3.5 s old when it comes
+                                message("ancient", "!type x", age=30),
+                            ],
+                            next_page_token="t2",
+                        )
+                    ],
+                    hang=True,
+                ),
+            ]
+        ).start()
+        got: list[ChatMessage] = []
+        async with test_utils.TestServer(videos_api([LIVE], [])) as api:
+            chat = adapter(fake, str(api.make_url("")).rstrip("/"), got)
+            monkeypatch.setattr(chat, "_pace", two_seconds)
+            chat.follow(VIDEO)
+            await until(lambda: chat.status()["next_s"] is not None)
+            assert chat.status()["next_s"] in (1, 2)
+            await until(lambda: chat.counters.stale + chat.counters.messages == 3, timeout=8)
+            assert [m.text for m in got] == ["!enter"]  # the history before we came is still too old
+            assert chat.status()["next_s"] is None and len(fake.requests) == 2
+            await chat.close()
+        await fake.stop()
+
+    run(test)
+
+
+def test_after_an_error_a_backlog_is_late_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(youtube, "MAX_AGE", 1.0)
+    monkeypatch.setattr(youtube, "MAX_GAP", 5.0)
+
+    async def test() -> None:
+        fake = await FakeYouTube(
+            [
+                Session([pb.LiveChatMessageListResponse(next_page_token="t1")]),  # closed normally
+                Session(abort=grpc.StatusCode.UNAVAILABLE),  # after the 4 s wait
+                Session(
+                    [
+                        pb.LiveChatMessageListResponse(
+                            items=[message("late", "!enter")],  # about 4 s old when it comes: within
+                            next_page_token="t2",  # MAX_AGE + the wait, but the wait ended in an error
+                        )
+                    ],
+                    hang=True,
+                ),
+            ]
+        ).start()
+        got: list[ChatMessage] = []
+        async with test_utils.TestServer(videos_api([LIVE], [])) as api:
+            chat = adapter(fake, str(api.make_url("")).rstrip("/"), got)
+            monkeypatch.setattr(chat, "_pace", four_seconds)
+            chat.follow(VIDEO)
+            await until(lambda: chat.counters.stale + chat.counters.messages == 1, timeout=8)
+            assert got == [] and chat.counters.stale == 1
+            await chat.close()
+        await fake.stop()
+
+    run(test)
+
+
+def four_seconds(_opened: float) -> float:
+    return 4.0
