@@ -123,7 +123,10 @@ def inline(text: str) -> Markup:
         elif m["code"] is not None:
             out.append(tag("code", m["code"]))
         elif _SAFE_URL.fullmatch(m["url"]):
-            out.append(tag("a", inline(m["text"]), href=m["url"]))
+            link = tag("a", inline(m["text"]), href=m["url"])
+            if m["url"].startswith("mailto:"):  # Cloudflare's email obfuscation needs a script: not here
+                link = Markup(f"<!--email_off-->{link}<!--/email_off-->")
+            out.append(link)
         else:  # a link we don't make (javascript:, a path, a placeholder): as typed
             out.append(esc(m[0]))
         at = m.end()
