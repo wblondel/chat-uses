@@ -8,18 +8,28 @@ Arguments are checked against the limits in PLAN.md; typed text may only
 hold characters the target can type, which rules out control characters,
 zero-width tricks and bidi overrides. Content filtering (PLAN.md 7.4) comes
 after parsing, in the pipeline.
+
+Macros (PLAN.md 6.10): `!macro NAME = STEP; STEP` proposes one, each step an
+input command as chat would type it (the "!" is optional), parsed by these
+same rules: at most MAX_STEPS, no macros inside macros, no name a built-in
+command has. Once chat votes it in, `!NAME` runs it: the caller hands the
+macros that exist to parse().
 """
 
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from chatuses.commands import (
     Button,
     Click,
     Command,
     Drag,
+    InputCommand,
     Load,
+    MacroDefine,
+    MacroRemove,
+    MacroRun,
     Meta,
     MetaName,
     Move,
@@ -28,6 +38,7 @@ from chatuses.commands import (
     Rewind,
     Save,
     Scroll,
+    StepCommand,
     TypeText,
 )
 from chatuses.grid import Grid
@@ -38,9 +49,11 @@ MAX_TYPE = 40  # characters per !type
 MAX_COUNT = 10  # !bksp, arrows, !scroll
 MAX_COMBOS = 4  # per !key
 MAX_REWIND = 10
+MAX_STEPS = 8  # input commands in a macro
 
 _WORD = re.compile(r"[a-z]+")
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
+MACRO_NAME = re.compile(r"[a-z][a-z0-9]{1,11}")
 
 _SINGLE_KEYS = {"enter": "enter", "tab": "tab", "esc": "esc", "space": "space"}
 _REPEAT_KEYS = {"bksp": "bksp", "up": "up", "down": "down", "left": "left", "right": "right"}
@@ -69,13 +82,16 @@ _METAS: dict[str, MetaName] = {
         "rules",
     )
 }
-_LATER = {"macro": "Phase 9", "amend": "Phase 9"}
+_LATER = {"amend": "Phase 9"}
 
 Handler = Callable[[str, list[str], str, Grid], Command | ParseError]
+Macros = Mapping[str, tuple[StepCommand, ...]]
 
 
-def parse(message: str, grid: Grid) -> Command | ParseError | None:
-    """Parse one chat message. None means ordinary chat, not a command."""
+def parse(message: str, grid: Grid, macros: Macros | None = None) -> Command | ParseError | None:
+    """Parse one chat message. None means ordinary chat, not a command.
+
+    macros: those chat voted in, by name; `!NAME` runs one."""
     text = unicodedata.normalize("NFKC", message).strip()
     if not text.startswith("!"):
         return None
@@ -88,6 +104,10 @@ def parse(message: str, grid: Grid) -> Command | ParseError | None:
     rest = rest.strip()
     args = rest.split()
     handler = _HANDLERS.get(word)
+    if handler is None and macros and word in macros:
+        if args:
+            return ParseError(f"!{word} is a macro: it takes nothing after it")
+        return MacroRun(word, macros[word])
     if handler is None:
         if word in _LATER:
             return ParseError(f"!{word} isn't available yet ({_LATER[word]})")
@@ -215,6 +235,43 @@ def _named(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
     return Save(name) if word == "save" else Load(name)
 
 
+def _macro(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
+    name, equals, body = rest.partition("=")
+    name = name.strip().casefold()
+    if not equals or not name or not body.strip():
+        return ParseError("!macro needs a name and its commands, like !macro term = key ctrl+alt+t")
+    if not MACRO_NAME.fullmatch(name):
+        return ParseError("a macro's name is 2 to 12 letters and digits, starting with a letter")
+    if is_builtin(name):
+        return ParseError(f"!{name} is already a command")
+    parts = [part.strip() for part in body.split(";")]
+    if any(not part for part in parts):
+        return ParseError("a macro's commands are separated by ; with none empty")
+    if len(parts) > MAX_STEPS:
+        return ParseError(f"a macro holds at most {MAX_STEPS} commands")
+    steps: list[StepCommand] = []
+    for i, part in enumerate(parts, 1):
+        step = parse(part if part.startswith("!") else f"!{part}", grid)  # no macros: none inside one
+        if step is None or isinstance(step, ParseError):
+            why = step.reason if step else "not a command"
+            return ParseError(f"the macro's command {i}: {why}")
+        if not isinstance(step, InputCommand) or isinstance(step, MacroRun):
+            return ParseError("a macro holds input commands only (type, key, click…)")
+        steps.append(step)
+    return MacroDefine(name, tuple(steps))
+
+
+def _unmacro(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
+    if len(args) != 1 or not MACRO_NAME.fullmatch(args[0].casefold()):
+        return ParseError("!unmacro needs the macro's name, like !unmacro term")
+    return MacroRemove(args[0].casefold())
+
+
+def is_builtin(word: str) -> bool:
+    """A command of ours (or one coming): a macro can't take its name."""
+    return word in _HANDLERS or word in _LATER or word in ("wait", "buy", "chaos")
+
+
 _HANDLERS: dict[str, Handler] = {
     "type": _type,
     **dict.fromkeys(_SINGLE_KEYS, _single),
@@ -228,4 +285,6 @@ _HANDLERS: dict[str, Handler] = {
     "rewind": _rewind,
     "save": _named,
     "load": _named,
+    "macro": _macro,
+    "unmacro": _unmacro,
 }

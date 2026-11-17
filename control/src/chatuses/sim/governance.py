@@ -16,6 +16,10 @@ pipeline, referee and lockdown, on a simulated clock.
 - **ties:** democracy's tie goes to the command voted first, a changed
   ballot counts once, and a power vote split exactly in half passes a vote
   that needs 50% (the threshold is "at least").
+- **macros:** chat votes a macro in (Phase 9, PLAN.md 6.10); anyone can run
+  it, as one command that rate-limits like one; a macro can't hold macros,
+  take a command's name or hold more than 8 commands; a slur in one is
+  refused before the vote; a vote takes it out again.
 
 Every scenario is seeded and checks what happened; `python -m chatuses.sim
 --scenarios` runs them all (CI does) and fails if one check does.
@@ -30,13 +34,14 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 
-from chatuses.commands import InputCommand, Load, Meta, Rewind, Save
+from chatuses.commands import InputCommand, Load, MacroDefine, MacroRemove, Meta, Rewind, Save, StepCommand
 from chatuses.pipeline import ChatMessage, Pipeline
 from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
 from chatuses.referee.votes import NOT_ELIGIBLE, Proposal, Vote
 from chatuses.safety.moderation import Moderation
 from chatuses.safety.strikes import Strikes
+from chatuses.safety.textfilter import HATE, LISTS
 from chatuses.store import Store
 
 T0 = 1_000_000.0  # the simulated clock's start (seconds)
@@ -98,7 +103,10 @@ class Room:
         self.now = T0
         self.store = Store(":memory:")
         self.moderation = Moderation(self.store, _Quiet(), Strikes())
-        self.pipeline = Pipeline(self.store, locked_out=self.moderation.held_by_lockdown)
+        self.macros: dict[str, tuple[StepCommand, ...]] = {}
+        self.pipeline = Pipeline(
+            self.store, locked_out=self.moderation.held_by_lockdown, macros=lambda: self.macros
+        )
         self.won: list[Winner] = []  # democracy's winners
         self.referee = Referee(
             self.store, self.pipeline.presence, self, clock=lambda: self.now, run_winner=self.won.append
@@ -124,6 +132,10 @@ class Room:
 
     async def run(self, proposal: Proposal) -> tuple[bool, str]:
         self.ran.append(proposal.text)
+        if proposal.action == "macro":
+            self.macros[str(proposal.arg)] = proposal.steps
+        elif proposal.action == "unmacro":
+            self.macros.pop(str(proposal.arg), None)
         return True, "done"
 
     # --- people ----------------------------------------------------------------------
@@ -152,7 +164,7 @@ class Room:
                 if self.referee.democracy:
                     self.referee.ballot(user, user, command, self.now)
                 self.inputs += 1
-            elif isinstance(command, (Rewind, Load, Save)) or (
+            elif isinstance(command, (Rewind, Load, Save, MacroDefine, MacroRemove)) or (
                 isinstance(command, Meta) and command.name not in OVERLAY_ONLY
             ):
                 answer = self.referee.handle(user, user, command, self.now)
@@ -359,6 +371,52 @@ async def ties(room: Room, result: Result) -> None:
     )
 
 
+async def macros(room: Room, result: Result) -> None:
+    people = room.settled(20)
+    room.say("u0", "!macro hello = type hello world; enter")
+    room.each(people[1:8], "!yes", (1, 50))
+    await room.wait(61)  # a minute to vote
+    vote = room.votes[0]
+    result.check(
+        "8 of 20 vote a macro in (the proposer and 7)",
+        vote.phase == "done" and "hello" in room.macros,
+        vote.result,
+    )
+    inputs = room.inputs
+    result.check("anyone runs it: !hello", room.say("u12", "!hello") == "ok" and room.inputs == inputs + 1)
+    result.check(
+        "it counts as one command for the rate limit",
+        [room.say("u13", "!hello") for _ in range(4)].count("ok") == 3,
+        room.replies("!hello", ["u13"]),
+    )
+    refused = {
+        "!macro again = hello": "a macro inside a macro",
+        "!macro click = enter": "a built-in's name",
+        "!macro long = " + "; ".join(["enter"] * 9): "nine commands",
+        "!macro ab = rewind": "a vote inside a macro",
+    }
+    for i, (text, what) in enumerate(refused.items()):
+        result.check(f"refused: {what}", room.say(f"u{14 + i}", text) not in ("ok", "accepted"), text)
+    word = _a_listed_word()  # from the filter's own lists: no slur is written here
+    reply = room.say("u18", f"!macro ab = type {word}")
+    result.check("a slur in a macro is refused before any vote", reply == HATE and len(room.votes) == 1)
+    room.say("u1", "!unmacro hello")
+    room.each(people[2:9], "!yes", (1, 50))
+    await room.wait(61)
+    result.check("a vote takes it out again", "hello" not in room.macros, room.votes[-1].result)
+    result.check("!hello is unknown again", room.say("u12", "!hello").startswith("unknown command"))
+
+
+def _a_listed_word() -> str:
+    """A word the text filter refuses, read from its own lists."""
+    for path in sorted(LISTS.glob("*.txt")):
+        for line in path.read_text("utf-8").splitlines():
+            word = line.strip().removeprefix("*")
+            if word and not word.startswith(("#", "!")) and word.isascii() and word.isalpha():
+                return word
+    raise RuntimeError(f"no word lists in {LISTS}")
+
+
 Scenario = Callable[[Room, Result], Awaitable[None]]
 SCENARIOS: dict[str, Scenario] = {
     "fifty": fifty,
@@ -367,6 +425,7 @@ SCENARIOS: dict[str, Scenario] = {
     "veto": veto,
     "low population": low_population,
     "ties": ties,
+    "macros": macros,
 }
 
 

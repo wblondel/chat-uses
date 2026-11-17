@@ -55,7 +55,18 @@ class Scroll:
     amount: int
 
 
-InputCommand = TypeText | PressKeys | Click | Move | Drag | Scroll
+StepCommand = TypeText | PressKeys | Click | Move | Drag | Scroll  # what a macro may hold
+
+
+@dataclass(frozen=True)
+class MacroRun:
+    """A macro chat voted in (PLAN.md 6.10): its steps run one after the other, as one command."""
+
+    name: str
+    steps: tuple[StepCommand, ...]
+
+
+InputCommand = TypeText | PressKeys | Click | Move | Drag | Scroll | MacroRun
 
 MetaName = Literal[
     "anarchy",
@@ -95,7 +106,22 @@ class Save:
     name: str
 
 
-MetaCommand = Meta | Rewind | Load | Save
+@dataclass(frozen=True)
+class MacroDefine:
+    """!macro NAME = STEP; STEP: a vote to add a macro."""
+
+    name: str
+    steps: tuple[StepCommand, ...]
+
+
+@dataclass(frozen=True)
+class MacroRemove:
+    """!unmacro NAME: a vote to remove one."""
+
+    name: str
+
+
+MetaCommand = Meta | Rewind | Load | Save | MacroDefine | MacroRemove
 Command = InputCommand | MetaCommand
 
 
@@ -144,6 +170,17 @@ def describe(command: Command) -> str:
             return f"!load {name}"
         case Save(name=name):
             return f"!save {name}"
+        case MacroRun(name=name):
+            return f"!{name}"
+        case MacroDefine(name=name, steps=steps):
+            return f"!macro {name} = {macro_source(steps)}"
+        case MacroRemove(name=name):
+            return f"!unmacro {name}"
+
+
+def macro_source(steps: tuple[StepCommand, ...]) -> str:
+    """A macro's steps as chat writes them, without the "!": "key ctrl+alt+t; type hello"."""
+    return "; ".join(describe(step).removeprefix("!") for step in steps)
 
 
 def describe_stored(data: dict[str, Any]) -> str:
@@ -166,6 +203,8 @@ def describe_stored(data: dict[str, Any]) -> str:
                 command = Drag(str(data["start_cell"]), (0, 0), str(data["end_cell"]), (0, 0))
             case "Scroll":
                 command = Scroll(data["direction"], int(data["amount"]))
+            case "MacroRun":
+                return f"!{data['name']}"
             case _:
                 return "a command"
     except (KeyError, TypeError, ValueError):

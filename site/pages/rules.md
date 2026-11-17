@@ -25,10 +25,11 @@ meter, as typing `!yes` or `!democracy` does. Each run of the machine has
 `!revive` (a life) or `!rip`. Its card names the last command before the
 end: a joke, not an accusation. Achievements (getting Doom running, say)
 give points to everyone who played in the 10 minutes before, and some give
-a life; `/me` on Discord tells you your points. Refused text never reaches
-the screen; three refused slurs in 10 minutes are a 10-minute timeout.
-Moderators get the screen's text read to them (screen OCR) and can stop
-everything in a second.
+a life; `/me` on Discord tells you your points. Chat can vote in commands
+of its own: `!macro hello = type hello; enter`, then anyone types
+`!hello`. Refused text never reaches the screen; three refused slurs in 10
+minutes are a 10-minute timeout. Moderators get the screen's text read to
+them (screen OCR) and can stop everything in a second.
 
 **Your data:** see the [privacy notice](privacy.html). Ask a moderator, or write to
 the contact address there, to have your data deleted.

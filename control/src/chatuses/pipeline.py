@@ -7,7 +7,8 @@
 Every message counts for presence (who is active, who may vote). Every
 command, accepted or not, is recorded with its outcome; ordinary chat isn't
 stored. The text filter (PLAN.md 7.4, safety/textfilter.py) sees typed text
-together with what was typed just before, and save names; a refused slur is
+together with what was typed just before, save names, and a macro's name and
+text when it's proposed and its text again when it runs; a refused slur is
 a strike, and 3 strikes in 10 minutes a 10-minute timeout.
 """
 
@@ -15,10 +16,21 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from chatuses.commands import Command, InputCommand, Load, ParseError, PressKeys, Save, TypeText
+from chatuses.commands import (
+    Command,
+    InputCommand,
+    Load,
+    MacroDefine,
+    MacroRun,
+    ParseError,
+    PressKeys,
+    Save,
+    StepCommand,
+    TypeText,
+)
 from chatuses.grid import Grid
 from chatuses.identity import Presence
-from chatuses.parser import parse
+from chatuses.parser import Macros, parse
 from chatuses.ratelimit import RateLimiter
 from chatuses.safety.strikes import Strikes
 from chatuses.safety.textfilter import HATE, PERSONAL, Kind, TextFilter
@@ -71,6 +83,7 @@ class Pipeline:
         is_banned: Callable[[str], bool] = lambda _user: False,
         locked_out: Callable[[ChatMessage], bool] = lambda _msg: False,
         paused: Callable[[], bool] = lambda: False,
+        macros: Callable[[], Macros] = dict,
     ) -> None:
         self.store = store
         self.grid = grid or Grid()
@@ -81,10 +94,11 @@ class Pipeline:
         self.is_banned = is_banned
         self.locked_out = locked_out  # lockdown (safety/moderation.py)
         self.paused = paused  # panic: input is frozen
+        self.macros = macros  # the macros chat voted in (brain's)
 
     def handle(self, msg: ChatMessage) -> Outcome:
         self.presence.saw(msg.user_id, msg.ts)
-        parsed = parse(msg.text, self.grid)
+        parsed = parse(msg.text, self.grid, self.macros())
         if parsed is None:
             return Outcome("chat")
         self.store.seen_user(msg.user_id, msg.display_name, msg.ts, msg.roles)
@@ -98,7 +112,10 @@ class Pipeline:
 
     def _remember(self, command: Command | None) -> None:
         """Tell the filter what's being typed on screen."""
-        if isinstance(command, TypeText):
+        if isinstance(command, MacroRun):
+            for step in command.steps:
+                self._remember(step)
+        elif isinstance(command, TypeText):
             self.censor.typed(command.text)
         elif isinstance(command, PressKeys):
             for _ in range(command.repeat):
@@ -135,4 +152,14 @@ class Pipeline:
             return self.censor.typed_kind(command.text)
         if isinstance(command, (Load, Save)):
             return self.censor.kind(command.name)
+        if isinstance(command, MacroDefine):  # shown on the overlay as it's voted on
+            return self.censor.kind(command.name) or next(
+                (kind for text in _typed(command.steps) if (kind := self.censor.kind(text))), None
+            )
+        if isinstance(command, MacroRun) and (typed := "".join(_typed(command.steps))):
+            return self.censor.typed_kind(typed)  # with what was typed just before
         return None
+
+
+def _typed(steps: tuple[StepCommand, ...]) -> list[str]:
+    return [step.text for step in steps if isinstance(step, TypeText)]

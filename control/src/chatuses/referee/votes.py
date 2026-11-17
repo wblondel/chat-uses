@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from chatuses.commands import StepCommand
 from chatuses.identity import Presence
 from chatuses.referee.laws import Laws, Tier
 
@@ -44,9 +45,10 @@ class VoteLog(Protocol):
 
 @dataclass(frozen=True)
 class Proposal:
-    action: str  # reboot, save, reset, rewind, load, newrun, impeach
+    action: str  # reboot, save, reset, rewind, load, newrun, impeach, macro, unmacro
     text: str  # as chat writes it (commands.describe): "!rewind 2"
-    arg: int | str | None = None  # rewind: how many back; save, load: the name
+    arg: int | str | None = None  # rewind: how many back; save, load, macro, unmacro: the name
+    steps: tuple[StepCommand, ...] = ()  # macro: what it will run
 
 
 @dataclass(frozen=True)

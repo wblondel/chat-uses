@@ -29,7 +29,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -189,6 +189,7 @@ class SiteData:
     amended: dict[str, float]  # laws changed over the ruleset's
     lives_left: int | None  # the live run's (None: lives off)
     pictures: frozenset[str] | None = None  # the thumbs/ files the site carries (None: all)
+    macros: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])  # chat's (store.macros)
 
     def shows(self, picture: str | None) -> bool:
         return (
@@ -241,6 +242,7 @@ def gather(
         laws=laws,
         amended=store.laws(),
         lives_left=lives_left,
+        macros=store.macros(),
     )
 
 
@@ -642,6 +644,31 @@ def laws_page(d: SiteData) -> bytes:
             ),
             tag("tbody", votes),
             class_="votes",
+        ),
+        tag("h2", "Chat's macros"),
+        tag(
+            "table",
+            tag(
+                "tbody",
+                [
+                    tag(
+                        "tr",
+                        tag("td", tag("code", f"!{m['name']}")),
+                        tag("td", tag("code", m["source"])),
+                        tag("td", f"since {when(m['at'])}", class_="note"),
+                    )
+                    for m in d.macros
+                ],
+            ),
+            class_="macros",
+        )
+        if d.macros
+        else tag(
+            "p",
+            "None yet: propose one with ",
+            tag("code", "!macro NAME = COMMAND; COMMAND"),
+            ".",
+            class_="empty",
         ),
         tag("h2", "Never up for a vote"),
         tag(
