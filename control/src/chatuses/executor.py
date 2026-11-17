@@ -12,6 +12,9 @@ new is taken until it thaws.
 
 Grid coordinates are scaled to the screen size the VNC server reports, so a
 target at another resolution still gets clicks where chat aimed.
+
+A macro is one job: its steps run one after the other, MACRO_GAP apart, and
+nothing else runs in between; its time limit is one command's per step.
 """
 
 import asyncio
@@ -22,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from chatuses.commands import Click, Drag, InputCommand, Move, PressKeys, Scroll, TypeText
+from chatuses.commands import Click, Drag, InputCommand, MacroRun, Move, PressKeys, Scroll, TypeText
 from chatuses.grid import Grid
 from chatuses.keymap import char_keysym
 from chatuses.store import Store, to_json
@@ -31,6 +34,7 @@ from chatuses.vnc import BUTTONS, VncError, VncInput
 JobResult = Literal["done", "offline", "flushed"]  # flushed: dropped by a panic
 KEY_DELAY = 0.008  # seconds between keystrokes
 JOB_TIMEOUT = 10.0  # seconds for one command; the longest takes about one
+MACRO_GAP = 0.2  # seconds between a macro's steps: what one opens can take a keypress
 RECONNECT = (1.0, 15.0)  # first and longest wait between connection attempts
 
 log = logging.getLogger(__name__)
@@ -157,7 +161,7 @@ class Executor:
                     continue
                 self._running = asyncio.create_task(execute(vnc, job.command, self.grid))
                 try:
-                    await asyncio.wait_for(asyncio.shield(self._running), JOB_TIMEOUT)
+                    await asyncio.wait_for(asyncio.shield(self._running), _timeout(job.command))
                 except asyncio.CancelledError:
                     me = asyncio.current_task()
                     if not self._running.cancelled() or (me is not None and me.cancelling()):
@@ -208,6 +212,11 @@ class Executor:
             log.exception("reporting a job failed")
 
 
+def _timeout(command: InputCommand) -> float:
+    steps = len(command.steps) if isinstance(command, MacroRun) else 1
+    return JOB_TIMEOUT * max(1, steps)
+
+
 async def execute(vnc: VncInput, command: InputCommand, grid: Grid) -> None:
     """Send one command's input events. Grid coordinates are scaled to the server's screen."""
 
@@ -236,6 +245,11 @@ async def execute(vnc: VncInput, command: InputCommand, grid: Grid) -> None:
             await vnc.drag(scale(*start), scale(*end))
         case Scroll(direction=direction, amount=amount):
             await vnc.scroll(direction, amount)
+        case MacroRun(steps=steps):
+            for i, step in enumerate(steps):
+                if i:
+                    await asyncio.sleep(MACRO_GAP)
+                await execute(vnc, step, grid)
 
 
 async def connect_to(host: str, port: int = 5900) -> VncInput:

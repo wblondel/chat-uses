@@ -202,7 +202,6 @@ def test_rewind_save_load() -> None:
 
 def test_unknown_and_later_commands() -> None:
     assert "unknown command !discord" in reason("!discord")
-    assert "Phase 9" in reason("!macro x = !type y")
     assert "Phase 9" in reason("!amend quorum 3")
 
 
@@ -225,6 +224,10 @@ def test_unknown_and_later_commands() -> None:
         "!enter xyzzy",
         "!type xyzzy\nmore",
         "!type " + "xyzzy" * 20,
+        "!macro ab = click xyzzy",
+        "!macro xyzzy",
+        "!macro x = enter; xyzzy",
+        "!unmacro xyzzy/x",
     ],
 )
 def test_refusals_never_repeat_what_chat_wrote(text: str) -> None:

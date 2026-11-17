@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS achievements (  -- Phase 8 (game/achievements.py)
     credited_users_json TEXT NOT NULL,  -- who sent a command in the 10 minutes before
     UNIQUE (run_id, key)
 );
+CREATE TABLE IF NOT EXISTS macros (  -- Phase 9 (PLAN.md 6.10): chat's own commands, across runs
+    name TEXT PRIMARY KEY,
+    source TEXT NOT NULL,             -- its steps as chat writes them: "key ctrl+alt+t; type ls"
+    proposed_by TEXT NOT NULL,        -- who proposed it ('' after a deletion request)
+    added_at REAL NOT NULL,
+    vote_id INTEGER REFERENCES votes(id)
+);
 CREATE TABLE IF NOT EXISTS laws (
     key TEXT PRIMARY KEY,             -- a law, or tiers.ACTION.SETTING (referee/laws.py)
     value TEXT NOT NULL,              -- JSON number, over the ruleset's
@@ -492,6 +499,7 @@ class Store:
                 self.db.execute("DELETE FROM events WHERE id = ?", (event_id,))
             self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
             self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
+            self.db.execute("UPDATE macros SET proposed_by = '' WHERE proposed_by = ?", (user_id,))
             self._forget_in_runs(user_id)
             for achievement_id, credited in self.db.execute(
                 "SELECT id, credited_users_json FROM achievements WHERE instr(credited_users_json, ?)",
@@ -709,6 +717,32 @@ class Store:
                 (json.dumps(blow_data) if blow_data else None, json.dumps(last_data),
                  json.dumps(kept) if kept is not None else None, run_id),
             )  # fmt: skip
+
+    # --- macros (PLAN.md 6.10) ---------------------------------------------------------------
+
+    def macros(self) -> list[dict[str, Any]]:
+        """Chat's macros, oldest first: {"name", "source", "by", "at"}."""
+        rows = self.db.execute(
+            "SELECT name, source, proposed_by, added_at FROM macros ORDER BY added_at, name"
+        )
+        return [{"name": n, "source": src, "by": by, "at": at} for n, src, by, at in rows]
+
+    def add_macro(self, ts: float, name: str, source: str, by: str, vote_id: int | None = None) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "INSERT INTO macros (name, source, proposed_by, added_at, vote_id) VALUES (?, ?, ?, ?, ?)",
+                (name, source, by, ts, vote_id),
+            )
+            self._event(ts, "macro", {"name": name, "source": source, "phase": "added"})
+
+    def remove_macro(self, ts: float, name: str, by: str) -> bool:
+        with self.db:
+            self.db.execute("BEGIN")
+            gone = self.db.execute("DELETE FROM macros WHERE name = ?", (name,)).rowcount
+            if gone:
+                self._event(ts, "macro", {"name": name, "phase": "removed", "by": by})
+        return bool(gone)
 
     # --- achievements and points (game/) ---------------------------------------------------
 

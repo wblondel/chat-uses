@@ -18,7 +18,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from chatuses.commands import InputCommand, Load, Meta, MetaCommand, Rewind, Save, describe
+from chatuses.commands import (
+    InputCommand,
+    Load,
+    MacroDefine,
+    MacroRemove,
+    Meta,
+    MetaCommand,
+    Rewind,
+    Save,
+    describe,
+)
 from chatuses.identity import Presence
 from chatuses.referee import laws as laws_module
 from chatuses.referee.laws import DEFAULT, Laws, Ruleset, RulesetError
@@ -96,6 +106,10 @@ class Referee:
                 return self._propose(user, name, Proposal("load", describe(command), save), now)
             case Save(name=save):
                 return self._propose(user, name, Proposal("save", describe(command), save), now)
+            case MacroDefine(name=macro, steps=steps):
+                return self._propose(user, name, Proposal("macro", describe(command), macro, steps), now)
+            case MacroRemove(name=macro):
+                return self._propose(user, name, Proposal("unmacro", describe(command), macro), now)
             case Meta():
                 return Reply(False, "not a vote")
 
@@ -220,3 +234,7 @@ def _word(command: MetaCommand) -> str:
             return "load"
         case Save():
             return "save"
+        case MacroDefine():
+            return "macro"
+        case MacroRemove():
+            return "unmacro"

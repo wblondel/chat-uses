@@ -64,7 +64,21 @@ from chatuses import site as site_module
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
-from chatuses.commands import Click, Drag, InputCommand, Load, Meta, Move, Rewind, Save, describe
+from chatuses.commands import (
+    Click,
+    Drag,
+    InputCommand,
+    Load,
+    MacroDefine,
+    MacroRemove,
+    Meta,
+    Move,
+    Rewind,
+    Save,
+    StepCommand,
+    describe,
+    macro_source,
+)
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.game import achievements as achievements_module
 from chatuses.game.achievements import CHECK_EVERY, CREDIT, Achievement, AchievementError, Context, passes
@@ -73,6 +87,7 @@ from chatuses.game.runs import Death, Runs, uptime_text
 from chatuses.identity import Platform, user_id
 from chatuses.incus import Incus, IncusError
 from chatuses.overlay import OverlayHub
+from chatuses.parser import parse
 from chatuses.pipeline import PAUSED, ChatMessage, Pipeline
 from chatuses.referee import laws
 from chatuses.referee.laws import DEFAULT, Ruleset, RulesetError
@@ -132,6 +147,7 @@ NO_INCUS = "time travel is off: brain has no Incus access"
 NO_REBOOT = "the machine didn't shut down within 30 s: !reset forces it"
 _THUMB = re.compile(r"\d{1,9}\.png")
 FORWARDER_STATES = ("ok", "failing", "idle")  # what bcast reports
+MAX_MACROS = 64  # chat's macros at most (PLAN.md 6.10)
 FORWARDER_ALERT = 60  # seconds of failing before #ops hears it
 BCAST_CHECK = 15.0  # seconds between checks that bcast still reports
 BCAST_SILENT = 180.0  # seconds without a report before #ops hears it
@@ -274,6 +290,7 @@ class Brain:
         site: Site | None = None,
     ) -> None:
         self.store = store
+        self.macros: dict[str, tuple[StepCommand, ...]] = {}  # chat's, by name (PLAN.md 6.10)
         self.site = site  # the public site (site.py): rendered when something changes
         self._site_dirty = True
         self._site_at = 0.0
@@ -291,7 +308,9 @@ class Brain:
             is_banned=lambda user: store.banned_until(user) > time.time(),
             locked_out=self.moderation.held_by_lockdown,
             paused=lambda: self.moderation.panicking,
+            macros=lambda: self.macros,
         )
+        self.macros = self._load_macros()
         self.referee = Referee(
             store,
             self.pipeline.presence,
@@ -401,14 +420,16 @@ class Brain:
             self.overlay.add_line(name, platform, describe(command), "done")
             if command == Meta("grid"):
                 self.overlay.grid()
-        elif outcome.kind == "accepted" and isinstance(command, (Meta, Rewind, Load, Save)):  # referee/
+        elif outcome.kind == "accepted" and isinstance(
+            command, (Meta, Rewind, Load, Save, MacroDefine, MacroRemove)
+        ):  # referee/
             if isinstance(command, Meta) and command.name in ("revive", "rip"):  # game/runs.py
                 reply = self.runs.ballot(msg.user_id, command.name == "revive", msg.ts)
             else:
                 reply = self.referee.handle(msg.user_id, name, command, msg.ts)
             if not reply.ok:
                 if not private and self._may_show_refusal(msg):
-                    self.overlay.add_line(name, platform, None, "refused", reply.text)
+                    self.overlay.add_line(name, platform, None, "refused", self._on_stream(reply.text))
                 return "refused", reply.text
             if not (isinstance(command, Meta) and command.name in BALLOTS):
                 self.overlay.add_line(name, platform, describe(command), "done")
@@ -417,7 +438,7 @@ class Brain:
             and not private
             and self._may_show_refusal(msg)
         ):
-            self.overlay.add_line(name, platform, None, "refused", outcome.reason)
+            self.overlay.add_line(name, platform, None, "refused", self._on_stream(outcome.reason))
         if outcome.timed_out_until is not None:  # always shown: chat should see what it earned
             minutes = round((outcome.timed_out_until - msg.ts) / 60)
             self.overlay.add_line(name, platform, None, "refused", f"timed out for {minutes} minutes")
@@ -517,6 +538,8 @@ class Brain:
         action, arg = proposal.action, proposal.arg
         if self.moderation.panicking:
             return PAUSED
+        if action in ("macro", "unmacro"):  # they don't touch the machine
+            return self._macro_unavailable(action, str(arg))
         if self.runs.state != "alive" or self._ending:
             return DYING
         if action == "impeach":
@@ -536,6 +559,8 @@ class Brain:
 
     async def run(self, proposal: Proposal) -> tuple[bool, str]:
         """What a passed vote does: a few words for chat."""
+        if proposal.action in ("macro", "unmacro"):
+            return self._macro_vote(proposal)
         if self.snapshots is None:
             return False, NO_INCUS
         snapshots = self.snapshots
@@ -569,6 +594,61 @@ class Brain:
             reason = str(err) or type(err).__name__
             self.ops(f"⚠️ {proposal.text} (voted by chat) failed: {reason}")
             return False, "it didn't work (the moderators know)"
+
+    # --- macros (PLAN.md 6.10) -------------------------------------------------------------
+
+    def _load_macros(self) -> dict[str, tuple[StepCommand, ...]]:
+        """The store's macros, parsed again (so they follow today's grid and limits)."""
+        found: dict[str, tuple[StepCommand, ...]] = {}
+        for row in self.store.macros():
+            parsed = parse(f"!macro {row['name']} = {row['source']}", self.pipeline.grid)
+            if isinstance(parsed, MacroDefine):
+                found[parsed.name] = parsed.steps
+            else:
+                log.warning("macro %s no longer parses (%s): left out", row["name"], parsed)
+        return found
+
+    def _macro_unavailable(self, action: str, name: str) -> str | None:
+        if action == "macro" and name in self.macros:
+            return f"!{name} is a macro already: !unmacro {name} first"
+        if action == "macro" and len(self.macros) >= MAX_MACROS:
+            return f"chat has {MAX_MACROS} macros already: !unmacro one first"
+        if action == "unmacro" and name not in self.macros:
+            return f"there's no macro !{name}"
+        return None
+
+    def _macro_vote(self, proposal: Proposal) -> tuple[bool, str]:
+        name = str(proposal.arg)
+        if (why := self._macro_unavailable(proposal.action, name)) is not None:
+            return False, why
+        vote = self.referee.votes.current
+        if proposal.action == "macro":
+            source = macro_source(proposal.steps)
+            by, vote_id = (vote.proposer, vote.id) if vote is not None else ("", None)
+            self.store.add_macro(time.time(), name, source, by, vote_id)
+            self.macros[name] = proposal.steps
+            done = f"!{name} now does: {source}"
+        else:
+            self.store.remove_macro(time.time(), name, "a vote")
+            self.macros.pop(name, None)
+            done = f"!{name} is gone"
+        self.site_changed()
+        return True, done
+
+    def remove_macro(self, name: str, by: str) -> tuple[str, str]:
+        """A moderator's call (chat-brain-admin macro remove NAME): no vote."""
+        if name not in self.macros:
+            return "error", f"no macro !{name}"
+        self.store.remove_macro(time.time(), name, by)
+        del self.macros[name]
+        self.site_changed()
+        return "ok", f"Macro !{name} removed."
+
+    def macros_text(self) -> str:
+        rows = self.store.macros()
+        if not rows:
+            return "No macros yet: chat proposes them with !macro NAME = COMMAND; COMMAND."
+        return "\n".join(f"!{r['name']} = {r['source']} (since {_clock(r['at'])})" for r in rows)
 
     async def _instance(self) -> str:
         """The target's instance: TARGET_INSTANCE, or found by its address once."""
@@ -779,6 +859,13 @@ class Brain:
             log.error("screen OCR: can't keep the screenshot: %s", err)
             return None
         return name
+
+    def _on_stream(self, reason: str | None) -> str | None:
+        """A refusal's reason, for the overlay. Some quote what chat typed ("unknown command
+        !word"): anything the filter refuses is replaced by fixed wording."""
+        if reason and self.filter.kind(reason):
+            return "that's not a command (try !help)"
+        return reason
 
     def _may_show_refusal(self, msg: ChatMessage) -> bool:
         last = self._last_refusal.get(msg.user_id)
@@ -1011,6 +1098,10 @@ class Brain:
                 return "ok", self.run_line()
             case ["achievements"]:
                 return "ok", self.achievements_text()
+            case ["macros"]:
+                return "ok", self.macros_text()
+            case ["macro", "remove", name]:
+                return self.remove_macro(name.casefold().lstrip("!"), "console")
             case ["leaderboard"]:
                 return "ok", self.leaderboard_text()
             case ["site", "hide", number] if number.isdigit():
