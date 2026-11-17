@@ -232,6 +232,30 @@ def test_youtube_data_goes_after_30_days_unless_youtube_gave_it_again() -> None:
             store.db.execute("DELETE FROM events")  # protected again
 
 
+def test_a_backup_copy_holds_no_youtube_data_past_30_days_while_it_is_kept(tmp_path: Path) -> None:
+    now = time.time()
+    with Store(tmp_path / "brain.db") as store:
+        store.seen_user("yt:old", "Old", now - 25 * DAY)  # 30 days old in 5: gone from a 7-day backup
+        store.record_command(now - 25 * DAY, "yt:old", "!enter", None, "accepted", None)
+        store.seen_user("yt:new", "New", now - DAY)
+        store.seen_user("dc:friend", "Friend", now - 25 * DAY)  # Discord's: 90 days, as before
+        store.set_setting("ruleset", "roguelike")
+        target = tmp_path / "backup" / "brain.db"
+        target.parent.mkdir()
+        expired = store.backup(target, now, 7 * DAY)
+        assert expired["viewers"] == 1 and expired["commands"] == 1
+        assert store.user("yt:old") is not None  # the store itself keeps it: still within 30 days
+        assert sorted(target.parent.iterdir()) == [target]  # one file: no -wal, no .part
+        assert b"Old" not in target.read_bytes()  # compacted: not even in free pages
+        with Store(target) as copy:
+            assert copy.user("yt:old") is None and copy.user("yt:new") is not None
+            assert copy.user("dc:friend") is not None and copy.setting("ruleset") == "roguelike"
+        store.seen_user("dc:later", "Later", now)
+        store.backup(target, now, 7 * DAY)  # again: replaced whole
+        with Store(target) as copy:
+            assert copy.user("dc:later") is not None
+
+
 def test_a_banned_youtube_viewer_stays_banned_while_youtube_confirms_the_channel() -> None:
     now = time.time()
     with Store(":memory:") as store:

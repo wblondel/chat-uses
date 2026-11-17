@@ -18,6 +18,7 @@ the channel still exists (channels.list).
 """
 
 import json
+import os
 import sqlite3
 import time
 from collections import Counter
@@ -556,6 +557,26 @@ class Store:
                 "UPDATE achievements SET credited_users_json = ? WHERE id = ?",
                 (json.dumps(kept), achievement_id),
             )
+
+    def backup(self, path: Path, now: float, keep: float) -> dict[str, int]:
+        """A copy of the store at `path` for the host's backups (infra/host/backup.py), made
+        with SQLite's online backup while brain runs. YouTube's data in it is gone as it will
+        be `keep` seconds from now (expire_youtube), so a backup kept that long never holds any
+        past its 30 days; compacted, so what was deleted is gone from the file too. Returns
+        what expire_youtube took out."""
+        part = path.with_name(path.name + ".part")
+        part.unlink(missing_ok=True)
+        target = sqlite3.connect(part)
+        try:
+            self.db.backup(target)
+        finally:
+            target.close()
+        with Store(part) as copy:
+            expired = copy.expire_youtube(now + keep)
+            copy.db.execute("PRAGMA journal_mode=DELETE")  # one file, no -wal beside it
+            copy.db.execute("VACUUM")
+        os.replace(part, path)
+        return expired
 
     def expire_youtube(self, now: float) -> dict[str, int]:
         """YouTube's API data, 30 days on (YOUTUBE_KEEP): viewers YouTube hasn't told us about

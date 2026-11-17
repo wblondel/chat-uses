@@ -33,8 +33,12 @@ placeholders still in it. Change it there, then rebuild brain's image
 | Names on the site are the stream's | the site is rendered from the store with `TextFilter.safe_name` (`control/src/chatuses/site.py`) |
 | A deletion request reaches the site | brain renders the site again after `forget`; the host's copy follows within a minute (`infra/host/site_sync.py` deletes what brain no longer lists) |
 
-Backups: if you back up `brain.db` (Phase 8), keep the backups no longer than
-30 days (YouTube's data) or the retention promises don't hold for them.
+Backups (Phase 10, `infra/host/backup.py`, D78): restic, encrypted on the
+server with a password only the operator holds, to Google Drive, kept
+`BACKUP_KEEP_DAYS` (7). brain's copy in them has YouTube's data expired that
+many days ahead (`Store.backup`), so no backup holds any past its 30 days;
+the site's pages (which name viewers) stay out. A deletion request reaches
+the backups when they expire: within 7 days, as promised.
 
 Old session reports: reports saved before D75 (`/var/lib/chat-uses/sessions/`
 on the host, and their posts in `#ops`) may show YouTube's viewer counts.

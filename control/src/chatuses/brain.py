@@ -131,10 +131,11 @@ ADMIN_USAGE = (
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
     "       | snapshots | snapshot | rewind-to NUMBER|SAVE\n"
     "       | session | session start NAME | session end | sessions | ocr | ocr-verdict HIT real|false\n"
-    "       | run | run end [CAUSE] | achievements | leaderboard"
+    "       | run | run end [CAUSE] | achievements | leaderboard | backup [KEEP_DAYS]"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 HELP_SECONDS = 20.0  # !help and !rules: how long their panel stays on stream
+BACKUP_KEEP_DAYS = 7  # the host keeps backups this long (infra/host/backup.py, BACKUP_KEEP_DAYS)
 RULES = (
     "Be decent: no slurs, hate speech or harassment, in commands, names or on screen.",
     "No personal details: yours or anyone's (names, addresses, phone numbers, emails, links).",
@@ -417,6 +418,9 @@ class Brain:
         )
         self.ocr_mode = "off"
         self.screens_dir: Path | None = None
+        # chat-brain-admin backup writes its copy next to the store (None: a store in memory).
+        _seq, _name, store_file = store.db.execute("PRAGMA database_list").fetchone()
+        self.backup_dir: Path | None = Path(store_file).parent / "backup" if store_file else None
         if self.moderation.panicking:  # a panic outlives a restart
             self.panic_changed(True, self.moderation.kind)
         if self.moderation.locked:
@@ -1502,6 +1506,10 @@ class Brain:
                 return self.remove_macro(name.casefold().lstrip("!"), "console")
             case ["leaderboard"]:
                 return "ok", self.leaderboard_text()
+            case ["backup"]:
+                return self.backup_store(BACKUP_KEEP_DAYS)
+            case ["backup", days] if days.isdigit() and 1 <= int(days) <= 30:
+                return self.backup_store(int(days))
             case ["site", "hide", number] if number.isdigit():
                 return self.hide_pictures(int(number))
             case ["site"]:
@@ -1670,6 +1678,27 @@ class Brain:
             said = f"{verdict['verdict']} ({verdict['by']})" if verdict else "not marked"
             lines.append(f"#{hit_id} {_clock(ts)} {payload.get('mode', '?')}: {said}")
         return "\n".join(lines)
+
+    def backup_store(self, keep_days: int) -> tuple[str, str]:
+        """chat-brain-admin backup: a copy of the store, next to it in backup/brain.db, for the
+        host's backups to take (infra/host/backup.py); YouTube's data in it expired as it will be
+        in keep_days (Store.backup)."""
+        if self.backup_dir is None:
+            return "error", "the store is in memory: nothing to back up"
+        try:
+            self.backup_dir.mkdir(mode=0o700, exist_ok=True)
+            target = self.backup_dir / "brain.db"
+            expired = self.store.backup(target, time.time(), keep_days * 86400.0)
+        except (OSError, sqlite3.Error) as err:
+            log.error("backup: %s", err)
+            return "error", f"backup failed: {err}"
+        target.chmod(0o600)
+        size = target.stat().st_size
+        gone = ", ".join(f"{n} {what}" for what, n in expired.items() if n) or "nothing"
+        return (
+            "ok",
+            f"Backup: {target} ({size / 1e6:.1f} MB; YouTube data expired {keep_days} days ahead: {gone})",
+        )
 
     def end_session(self) -> tuple[str, str]:
         ok, text, _report = self.sessions.end()
