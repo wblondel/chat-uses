@@ -81,6 +81,8 @@ class OverlayHub:
         self._mode_at = 0.0
         self._run: dict[str, Any] | None = None
         self._run_at = 0.0
+        self._driver: dict[str, Any] | None = None  # the driver's seat (game/driver.py)
+        self._driver_at = 0.0
         self._card: dict[str, Any] | None = None
         self._card_until = 0.0
         self._clients: set[asyncio.Queue[str | None]] = set()
@@ -163,6 +165,17 @@ class OverlayHub:
             view["death"] = {**death, "ends_in": round(max(0.0, death["ends_in"] - gone), 1)}
         return view
 
+    def driver(self, view: dict[str, Any] | None) -> None:
+        """The driver's seat: {"name", "state": offered | driving, "ends_in"}, or None."""
+        self._driver, self._driver_at = view, time.monotonic()
+        self._send({"type": "driver", "driver": view})
+
+    def _driver_now(self) -> dict[str, Any] | None:
+        if self._driver is None:
+            return None
+        gone = time.monotonic() - self._driver_at
+        return {**self._driver, "ends_in": round(max(0.0, self._driver["ends_in"] - gone), 1)}
+
     def achievement(self, data: dict[str, Any]) -> None:
         self._send({"type": "achievement", **data})
 
@@ -219,6 +232,7 @@ class OverlayHub:
             "mode": self._mode_now(),
             "run": self._run_now(),
             "card": self._card_now(),
+            "driver": self._driver_now(),
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)

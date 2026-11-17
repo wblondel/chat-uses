@@ -320,6 +320,36 @@ function setRun(v) {
   if (runView) runTimer = setInterval(renderRun, 250);
 }
 
+// --- the driver's seat (control/src/chatuses/game/driver.py) ---------------------------
+
+let driverView = null;
+let driverAt = 0;
+let driverTimer = null;
+
+function renderDriver() {
+  const v = driverView;
+  const panel = $("driver-panel");
+  const left = v ? Math.max(0, v.ends_in - (performance.now() - driverAt) / 1000) : 0;
+  if (!v || left <= 0) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  panel.classList.toggle("offered", v.state === "offered");
+  $("driver-name").textContent = `🚗 ${v.name}`;
+  $("driver-left").textContent = `${Math.ceil(left)} s`;
+  $("driver-what").textContent =
+    v.state === "offered" ? "Any command takes the wheel" : "Only their commands run · !impeach";
+}
+
+function setDriver(v) {
+  driverView = v ?? null;
+  driverAt = performance.now();
+  renderDriver();
+  clearInterval(driverTimer);
+  if (driverView) driverTimer = setInterval(renderDriver, 250);
+}
+
 // --- achievements (control/src/chatuses/game/achievements.py) -------------------------
 
 const TOAST_SECONDS = 8;
@@ -487,6 +517,10 @@ function onMessage(msg) {
       setMode(msg.mode);
       setRun(msg.run);
       showCard(msg.card);
+      setDriver(msg.driver);
+      break;
+    case "driver":
+      setDriver(msg.driver);
       break;
     case "run":
       setRun(msg.run);
@@ -558,6 +592,7 @@ function connectBrain(url) {
     applyScene();
     setVote(null); // the vote lives in brain
     setRun(null); // so does the run
+    setDriver(null); // and the driver's seat
     showCard(null);
     setMode(null); // so does the mode: anarchy's look until it's back
     setControls();

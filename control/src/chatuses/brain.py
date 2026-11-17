@@ -83,6 +83,7 @@ from chatuses.commands import (
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.game import achievements as achievements_module
 from chatuses.game.achievements import CHECK_EVERY, CREDIT, Achievement, AchievementError, Context, passes
+from chatuses.game.driver import ACCEPT, DriverSeat, Event, Seat
 from chatuses.game.points import Points
 from chatuses.game.runs import Death, Runs, uptime_text
 from chatuses.identity import Platform, user_id
@@ -339,6 +340,12 @@ class Brain:
         self.achievements = achievements or []  # game/achievements.py
         self.achievements_channel = "achievements"
         self.points = Points(store, self.pipeline.presence)  # game/points.py
+        self.driver = DriverSeat(  # game/driver.py
+            lambda: self.referee.laws,
+            self.pipeline.presence,
+            lambda _now: self.store.command_counts(self._session_since()),
+            self._driver_changed,
+        )
         self.incus = incus
         self.incus_off_reason = "" if incus else "not set up"
         self.target_host = target_host
@@ -404,6 +411,10 @@ class Brain:
             # A ballot: the overlay's tally shows it; the window's winner runs (_democracy_won).
             self.referee.ballot(msg.user_id, name, command, msg.ts)
         elif outcome.kind == "accepted" and isinstance(command, InputCommand):
+            if why := self.driver.command(msg.user_id, msg.ts):  # someone else is driving
+                if not private and self._may_show_refusal(msg):
+                    self.overlay.add_line(name, platform, None, "refused", why)
+                return "refused", why
             if not self.executor.can_take():
                 # Down or swamped: a refusal like the others, so a busy chat
                 # during a reboot doesn't fill the log with dead lines.
@@ -541,6 +552,8 @@ class Brain:
             return PAUSED
         if action in ("macro", "unmacro"):  # they don't touch the machine
             return self._macro_unavailable(action, str(arg))
+        if action == "impeach":
+            return None if self.driver.seat is not None else "nobody is driving"
         if action == "amend":
             try:
                 constitution.check(self.referee.ruleset, self.referee.laws, str(arg), proposal.value or 0)
@@ -549,8 +562,6 @@ class Brain:
             return None
         if self.runs.state != "alive" or self._ending:
             return DYING
-        if action == "impeach":
-            return "nobody is driving: the driver's seat comes later"
         if self.snapshots is None:
             return NO_INCUS
         if self._travelling:
@@ -568,6 +579,11 @@ class Brain:
         """What a passed vote does: a few words for chat."""
         if proposal.action in ("macro", "unmacro"):
             return self._macro_vote(proposal)
+        if proposal.action == "impeach":
+            seat = self.driver.seat
+            if seat is None or not self.driver.end(time.time(), "impeached"):
+                return False, "nobody is driving"
+            return True, f"{seat.name} is out of the driver's seat"
         if proposal.action == "amend":
             vote = self.referee.votes.current
             by, vote_id = (vote.proposer, vote.id) if vote is not None else ("", None)
@@ -665,6 +681,66 @@ class Brain:
         if not rows:
             return "No macros yet: chat proposes them with !macro NAME = COMMAND; COMMAND."
         return "\n".join(f"!{r['name']} = {r['source']} (since {_clock(r['at'])})" for r in rows)
+
+    # --- the driver's seat (game/driver.py) ------------------------------------------------
+
+    def _session_since(self) -> float:
+        """Since when commands count as this session's: the session's start, or brain's."""
+        running = self.sessions.current
+        return float(running["started"]) if running is not None else self._started
+
+    def _name_of(self, user: str) -> str:
+        return self.filter.safe_name(user, self.store.user_names([user]).get(user, user))
+
+    def driver_tick(self, now: float) -> None:
+        on = "driver_seat" in self.referee.ruleset.features
+        stop = not on or self.referee.democracy or self.moderation.panicking
+        if self.driver.seat is not None and stop:
+            self.driver.end(now, "stopped")
+        can_offer = (
+            on
+            and not stop
+            and not self._travelling
+            and not self._ending
+            and self.runs.state == "alive"
+            and self.executor.online.is_set()
+        )
+        self.driver.tick(now, can_offer, self._name_of)
+
+    def _driver_changed(self, event: Event, seat: Seat) -> None:
+        now = time.time()
+        self.overlay.driver(self.driver.view(now))
+        duration = round(self.referee.laws.driver_duration_s)
+        said = {
+            "offered": f"🚗 the wheel is theirs: any command within {ACCEPT:.0f} s",
+            "took": f"🚗 drives for {duration} s: only their commands run",
+            "declined": "🚗 didn't take the wheel",
+            "ended": "🚗 the drive is over",
+            "impeached": "🚗 impeached: out of the driver's seat",
+            "stopped": "🚗 the drive stopped",
+        }[event]
+        platform = seat.user.split(":", 1)[0]  # yt, dc, console: as the log shows where a line is from
+        self.overlay.add_line(seat.name, platform, said, "done")
+        self.store.event(now, "driver", {"user": seat.user, "phase": event})
+        if event == "offered" and seat.user.startswith("dc:") and self.discord is not None:
+            member = seat.user.removeprefix("dc:")
+            if member.isdigit():
+                self.discord.ping(
+                    int(member),
+                    f"the driver's seat is yours: send any command here within {ACCEPT:.0f} s,"
+                    f" then for {duration} s only your commands reach the machine.",
+                )
+
+    def driver_line(self) -> str:
+        view = self.driver.view(time.time())
+        if "driver_seat" not in self.referee.ruleset.features:
+            return "Driver's seat: off in this ruleset"
+        if view is not None:
+            doing = "is offered it" if view["state"] == "offered" else "drives"
+            return f"Driver's seat: {view['name']} {doing}, {view['ends_in']:.0f} s left"
+        due = self.driver.next_at
+        later = f", next offer in {max(0, round((due - time.time()) / 60))} min" if due else ""
+        return f"Driver's seat: empty{later}"
 
     async def _instance(self) -> str:
         """The target's instance: TARGET_INSTANCE, or found by its address once."""
@@ -1011,6 +1087,7 @@ class Brain:
                 f", panel {status['panel']}" if status["state"] == "connected" and "panel" in status else ""
             )
             lines.append(f"{PLATFORM_NAMES[name]}: {status['state']}{video}{quota}{panel}{detail}")
+        lines.append(self.driver_line())
         lines.append(self.stream_line())
         lines.append(f"Overlay pages: {self.overlay.clients}")
         return "\n".join(lines)
@@ -1299,6 +1376,7 @@ class Brain:
         """Close vote windows, veto countdowns and death votes on time. Never returns."""
         while True:
             self.referee.tick()
+            self.driver_tick(time.time())
             if (verdict := self.runs.verdict(time.time())) is not None:
                 self._spawn(self._after_death_vote(verdict))
             await asyncio.sleep(REFEREE_TICK)

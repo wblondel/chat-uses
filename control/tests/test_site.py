@@ -158,7 +158,7 @@ def test_the_laws_page_says_the_numbers_and_what_was_amended(store: Store, tmp_p
     page = Site(tmp_path, REPO / "site", None).render(d)[0]["laws.html"].decode()
     assert 'runs every</td><td class="num">20 s</td><td class="note">amended</td>' in page
     assert '<code>!newrun</code></td><td class="num">75 %</td>' in page
-    assert "!impeach" not in page  # the driver's seat isn't built
+    assert '<code>!impeach</code></td><td class="num">50 %</td>' in page  # the driver's seat is built
 
 
 def test_publishing_writes_what_changed_and_removes_the_rest(store: Store, tmp_path: Path) -> None:

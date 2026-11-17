@@ -576,6 +576,8 @@ LAW_TEXT: tuple[tuple[str, str, str], ...] = (
     ("auto_snapshot_keep", "Automatic snapshots kept", ""),
     ("named_saves", "Named save slots", ""),
     ("lives_start", "Lives at the start of a run", ""),
+    ("driver_interval_min", "The driver's seat is offered to one of chat every", "min"),
+    ("driver_duration_s", "A drive lasts", "s"),
     ("veto_min", "A passed vote is cancelled during its countdown by at least this many !veto", ""),
     ("veto_fraction", "…or by this share of its yes votes, if that's more", "%"),
 )
