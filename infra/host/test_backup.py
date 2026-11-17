@@ -240,13 +240,25 @@ class Backups(Server):
         self.assertTrue(lines[1].startswith("brain's store: copied ("), lines)
         self.assertEqual(lines[2], f"image debian-xfce: exporting build {'a' * 12} (a few minutes)")
         self.assertTrue(lines[3].startswith("image debian-xfce: exported ("), lines)
-        self.assertTrue(lines[4].startswith("restic: encrypting and sending to "), lines)
+        self.assertTrue(lines[4].startswith("restic: encrypting and sending what changed to "), lines)
+        self.assertTrue(lines[4].endswith("(the first time: everything, the image too)"), lines)
         self.assertIn("100%", lines)  # restic's progress
         self.assertTrue(
             any(line.startswith("restic: snapshot 00000001, 0 MB new, in ") for line in lines), lines
         )
         self.assertIn("restic: deleting the backups more than 7 days older", lines)
-        self.assertIn(f"image debian-xfce: this build ({'a' * 12}) is out already", self.main()[1])
+        again = self.main()[1]
+        self.assertIn(f"image debian-xfce: this build ({'a' * 12}) is out already", again)
+        self.assertNotIn("the first time", again)
+
+    def test_progress_lines(self) -> None:
+        progress = backup._progress  # pyright: ignore[reportPrivateUsage]
+        start = {"percent_done": 0.0, "total_bytes": 1.36e9, "bytes_done": 0, "seconds_remaining": 1_031_280}
+        self.assertEqual(progress(start), "0% (0.00 of 1.36 GB), comparing with the last backup")
+        going = {"percent_done": 0.42, "total_bytes": 2.9e9, "bytes_done": 1.2e9, "seconds_remaining": 240}
+        self.assertEqual(progress(going), "42% (1.20 of 2.90 GB), about 4 min left")
+        wild = {"percent_done": 0.05, "seconds_remaining": 10**7}
+        self.assertEqual(progress(wild), "5%")
 
     def test_brain_down_the_rest_is_still_backed_up(self) -> None:
         self.main("--init")
