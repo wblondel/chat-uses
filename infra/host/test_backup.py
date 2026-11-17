@@ -231,6 +231,23 @@ class Backups(Server):
         folders = sorted(p.name for p in (self.var / "backup" / "images").iterdir())
         self.assertEqual(folders, [f"debian-xfce-{'b' * 12}"])  # the old export goes
 
+    def test_it_says_how_it_goes(self) -> None:
+        self.main("--init")
+        with mock.patch.object(backup, "PROGRESS_EVERY", 0.0):
+            _code, out, _err = self.main()
+        lines = [line.removeprefix("backup: ") for line in out.splitlines()]
+        self.assertEqual(lines[0], "brain's store: brain copies it")
+        self.assertTrue(lines[1].startswith("brain's store: copied ("), lines)
+        self.assertEqual(lines[2], f"image debian-xfce: exporting build {'a' * 12} (a few minutes)")
+        self.assertTrue(lines[3].startswith("image debian-xfce: exported ("), lines)
+        self.assertTrue(lines[4].startswith("restic: encrypting and sending to "), lines)
+        self.assertIn("100%", lines)  # restic's progress
+        self.assertTrue(
+            any(line.startswith("restic: snapshot 00000001, 0 MB new, in ") for line in lines), lines
+        )
+        self.assertIn("restic: deleting the backups more than 7 days older", lines)
+        self.assertIn(f"image debian-xfce: this build ({'a' * 12}) is out already", self.main()[1])
+
     def test_brain_down_the_rest_is_still_backed_up(self) -> None:
         self.main("--init")
         self.main()

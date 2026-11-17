@@ -61,6 +61,7 @@ DEFAULTS = {
     "BACKUP_IMAGES": "debian-xfce",
 }
 TABLES = ("users", "commands", "events", "runs", "settings")  # what a store must have
+PROGRESS_EVERY = 30.0  # seconds between two of restic's progress lines
 
 
 # --- the host ----------------------------------------------------------------------------
@@ -94,21 +95,93 @@ def config() -> dict[str, str]:
     return {name: found.get(name) or default for name, default in DEFAULTS.items()}
 
 
+def say(text: str) -> None:
+    """A line of progress, at once (a terminal, or journalctl -u chat-uses-backup)."""
+    print(f"backup: {text}", flush=True)
+
+
+def size(path: Path) -> str:
+    total = (
+        sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        if path.is_dir()
+        else path.stat().st_size
+    )
+    return f"{total / 1e9:.2f} GB" if total >= 1e8 else f"{total / 1e6:.1f} MB"
+
+
+def duration(seconds: float) -> str:
+    return f"{seconds / 60:.0f} min" if seconds >= 90 else f"{seconds:.0f} s"
+
+
 def last_line(answer: subprocess.CompletedProcess[str]) -> str:
     lines = (answer.stderr or answer.stdout).strip().splitlines()
     return lines[-1][:300] if lines else f"exit {answer.returncode}"
 
 
-def restic(
-    settings: dict[str, str], *args: str, timeout: float | None = None
-) -> subprocess.CompletedProcess[str]:
+def restic_env(settings: dict[str, str]) -> dict[str, str]:
     env = {"RESTIC_CACHE_DIR": "/var/cache/restic"} | os.environ  # a timer's root may have no HOME
-    env |= {
+    return env | {
         "RESTIC_REPOSITORY": settings["BACKUP_REPOSITORY"],
         "RESTIC_PASSWORD_FILE": str(PASSWORD),
         "RCLONE_CONFIG": str(RCLONE),
     }
-    return run("restic", *args, timeout=timeout, env=env)
+
+
+def restic(
+    settings: dict[str, str], *args: str, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    return run("restic", *args, timeout=timeout, env=restic_env(settings))
+
+
+def restic_backup(settings: dict[str, str], *args: str) -> tuple[int, dict[str, Any], str]:
+    """restic backup --json, its progress said every PROGRESS_EVERY: exit code, summary, the
+    last thing it complained about ("" if nothing)."""
+    try:
+        process = subprocess.Popen(
+            ["restic", "backup", "--json", *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # one pipe: nothing can fill up unread
+            text=True,
+            env=restic_env(settings),
+        )
+    except FileNotFoundError:
+        return 127, {}, "restic: not installed"
+    result: dict[str, Any] = {}
+    complaint = ""
+    said = time.monotonic()
+    with process:  # closes the pipe and waits, whatever happens
+        assert process.stdout is not None
+        for line in process.stdout:
+            try:
+                data: object = json.loads(line)
+            except ValueError:
+                data = None
+            if not isinstance(data, dict):
+                if line.strip():
+                    complaint = line.strip()[:300]  # "Fatal: …", in plain text
+                continue
+            kind = data.get("message_type")
+            if kind == "summary":
+                result = data
+            elif kind == "error":
+                error = data.get("error")
+                message = error.get("message") if isinstance(error, dict) else error
+                complaint = f"{data.get('item', '')}: {message}"[:300]
+            elif kind == "status" and time.monotonic() - said >= PROGRESS_EVERY:
+                said = time.monotonic()
+                say(_progress(data))
+    return process.returncode, result, complaint
+
+
+def _progress(status: dict[str, Any]) -> str:
+    done = float(status.get("percent_done") or 0)
+    line = f"{done:.0%}"
+    if status.get("total_bytes"):
+        done_gb, total_gb = float(status.get("bytes_done") or 0) / 1e9, float(status["total_bytes"]) / 1e9
+        line += f" ({done_gb:.2f} of {total_gb:.2f} GB)"
+    if status.get("seconds_remaining"):
+        line += f", about {duration(float(status['seconds_remaining']))} left"
+    return line
 
 
 def integrity(path: Path) -> str | None:
@@ -134,6 +207,7 @@ def integrity(path: Path) -> str | None:
 
 def brain_store(keep_days: int) -> str | None:
     """brain's copy of its store, into STAGE/brain.db. What went wrong (None: done)."""
+    say("brain's store: brain copies it")
     made = run(
         "incus", "exec", "brain", "--project", "infra", "--", "chat-brain-admin", "backup", str(keep_days),
         timeout=300,
@@ -154,6 +228,7 @@ def brain_store(keep_days: int) -> str | None:
         return f"brain's store: the copy is {wrong}"
     part.chmod(0o600)
     part.replace(STAGE / "brain.db")
+    say(f"brain's store: copied ({size(STAGE / 'brain.db')})")
     return None
 
 
@@ -178,9 +253,12 @@ def images(names: list[str]) -> list[str]:
         target = folder / f"{name}-{fp[:12]}"
         keep.add(target.name)
         if (target / ".done").exists():
-            continue  # this build is out already
+            say(f"image {name}: this build ({fp[:12]}) is out already")
+            continue
         shutil.rmtree(target, ignore_errors=True)
         target.mkdir()
+        say(f"image {name}: exporting build {fp[:12]} (a few minutes)")
+        started = time.monotonic()
         exported = run(
             "incus", "image", "export", f"chat-uses/{name}", f"{target}/", "--project", "infra", timeout=3600
         )  # fmt: skip
@@ -190,6 +268,7 @@ def images(names: list[str]) -> list[str]:
             keep.discard(target.name)
             continue
         (target / ".done").write_text(fp + "\n")
+        say(f"image {name}: exported ({size(target)} in {duration(time.monotonic() - started)})")
     for old in folder.iterdir():
         if old.name not in keep:
             shutil.rmtree(old, ignore_errors=True)  # an older build, or an image no longer listed
@@ -203,18 +282,6 @@ def paths() -> list[str]:
 def excludes() -> list[str]:
     patterns = [str(PASSWORD), f"{SITE}/*.html", f"{SITE}/**/*.html", f"{STAGE}/*.part", f"{VAR}/drill-*"]
     return [arg for pattern in patterns for arg in ("--exclude", pattern)]
-
-
-def summary(output: str) -> dict[str, Any]:
-    """restic backup --json's last word: the snapshot and what it added."""
-    for line in reversed(output.splitlines()):
-        try:
-            data = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(data, dict) and data.get("message_type") == "summary":
-            return data
-    return {}
 
 
 def load() -> dict[str, Any]:
@@ -260,23 +327,30 @@ def backup() -> int:
     if error := brain_store(keep_days):
         errors.append(error)
     errors += images(settings["BACKUP_IMAGES"].split())
-    done = restic(settings, "backup", "--json", "--tag", TAG, "--host", TAG, *excludes(), *paths())
+    say(
+        f"restic: encrypting and sending to {settings['BACKUP_REPOSITORY']} (the first time: the whole image)"
+    )
+    started = time.monotonic()
+    code, result, complaint = restic_backup(settings, "--tag", TAG, "--host", TAG, *excludes(), *paths())
     # Exit 3: some files couldn't be read, the backup was still made (restic's own word).
-    if done.returncode not in (0, 3):
-        errors.append(f"restic backup: {last_line(done)}")
+    if code not in (0, 3):
+        errors.append(f"restic backup: {complaint or f'exit {code}'}")
     else:
-        result = summary(done.stdout)
         state["snapshot"] = str(result.get("snapshot_id", ""))[:8]
         state["added"] = result.get("data_added")
-        if done.returncode == 3:
-            errors.append("restic backup: some files couldn't be read (journalctl -u chat-uses-backup)")
+        added = float(result.get("data_added") or 0)
+        took = duration(time.monotonic() - started)
+        say(f"restic: snapshot {state['snapshot']}, {added / 1e6:.0f} MB new, in {took}")
+        if code == 3:
+            errors.append(f"restic backup: some files couldn't be read ({complaint or '?'})")
+        say(f"restic: deleting the backups more than {keep_days} days older")
         forgot = restic(
             settings, "forget", "--tag", TAG, "--host", TAG, "--group-by", "host,tags",
             "--keep-within", f"{keep_days}d", "--prune",
         )  # fmt: skip
         if forgot.returncode != 0:
             errors.append(f"restic forget: {last_line(forgot)}")
-    if done.returncode in (0, 3):
+    if code in (0, 3):
         state["last_ok"] = now  # a snapshot was made, even with a part missing
     state["error"] = "; ".join(errors) or None
     save(state)
@@ -351,6 +425,7 @@ def drill() -> int:
     problems: list[str] = []
     with tempfile.TemporaryDirectory(prefix="drill-", dir=VAR) as tmp:
         started = time.time()
+        print("drill: downloading the latest backup (the image too: a while)", flush=True)
         restored = restic(settings, "restore", "latest", "--tag", TAG, "--host", TAG, "--target", tmp)
         root = Path(tmp)
         if restored.returncode != 0:
