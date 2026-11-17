@@ -20,6 +20,11 @@ pipeline, referee and lockdown, on a simulated clock.
   it, as one command that rate-limits like one; a macro can't hold macros,
   take a command's name or hold more than 8 commands; a slur in one is
   refused before the vote; a vote takes it out again.
+- **driver:** after 10 minutes of play the driver's seat is offered to
+  someone who played (not to someone with 2 commands); their command takes
+  it, everyone else's input is refused for the drive while votes still
+  work; `!impeach` ends it; the next offer goes to someone else, and an
+  offer nobody takes runs out.
 - **amendments:** 60 % can't amend a law (it takes 75 %); 12 of 30 who
   agree can, through the veto countdown, and the law changes; another
   amendment waits an hour; what the constitution doesn't allow (out of
@@ -49,6 +54,7 @@ from chatuses.commands import (
     Save,
     StepCommand,
 )
+from chatuses.game.driver import DriverSeat
 from chatuses.pipeline import ChatMessage, Pipeline
 from chatuses.referee.constitution import UNKNOWN
 from chatuses.referee.modes import Winner
@@ -126,6 +132,14 @@ class Room:
         self.referee = Referee(
             self.store, self.pipeline.presence, self, clock=lambda: self.now, run_winner=self.won.append
         )
+        self.driven: list[tuple[str, str]] = []  # the driver's seat: (event, user)
+        self.driver = DriverSeat(
+            lambda: self.referee.laws,
+            self.pipeline.presence,
+            lambda _now: self.store.command_counts(T0 - 1),
+            lambda event, seat: self.driven.append((event, seat.user)),
+            self.rng,
+        )
         self.roles: dict[str, frozenset[str]] = {}
         self.ran: list[str] = []  # what passed votes did
         self.said: list[Said] = []
@@ -143,6 +157,8 @@ class Room:
     # Brain's side of the referee (referee.Actions): everything is available, and works.
 
     def unavailable(self, proposal: Proposal) -> str | None:
+        if proposal.action == "impeach" and self.driver.seat is None:
+            return "nobody is driving"
         return None
 
     async def run(self, proposal: Proposal) -> tuple[bool, str]:
@@ -151,6 +167,8 @@ class Room:
             self.macros[str(proposal.arg)] = proposal.steps
         elif proposal.action == "unmacro":
             self.macros.pop(str(proposal.arg), None)
+        elif proposal.action == "impeach":
+            self.driver.end(self.now, "impeached")
         elif proposal.action == "amend":
             vote = self.referee.votes.current
             return True, self.referee.amend(
@@ -183,7 +201,11 @@ class Room:
             if isinstance(command, InputCommand):
                 if self.referee.democracy:
                     self.referee.ballot(user, user, command, self.now)
-                self.inputs += 1
+                    self.inputs += 1
+                elif why := self.driver.command(user, self.now):
+                    reply = why
+                else:
+                    self.inputs += 1
             elif isinstance(command, (Rewind, Load, Save, MacroDefine, MacroRemove, Amend)) or (
                 isinstance(command, Meta) and command.name not in OVERLAY_ONLY
             ):
@@ -225,6 +247,7 @@ class Room:
             else:
                 self.now = tick
                 self.referee.tick()
+                self.driver.tick(self.now, not self.referee.democracy, lambda u: u)
                 tick += TICK
                 await asyncio.sleep(0)  # a passed vote's action runs
         self.now = end
@@ -427,6 +450,52 @@ async def macros(room: Room, result: Result) -> None:
     result.check("!hello is unknown again", room.say("u12", "!hello").startswith("unknown command"))
 
 
+async def driver(room: Room, result: Result) -> None:
+    people = room.settled(20)
+    newcomer = room.arrive(["new0"], 600)[0]
+    room.play(people, 590)
+    room.later(30, newcomer, "!click A1")
+    room.later(60, newcomer, "!enter")
+    room.later(580, newcomer, "!hi")  # chat: still around, with 2 commands
+    await room.wait(601)
+    seat = room.driver.seat
+    result.check(
+        "after 10 minutes the seat is offered to someone who played",
+        seat is not None and seat.user in people,
+        seat,
+    )
+    result.check("never to someone with 2 commands", newcomer not in room.driver.candidates(room.now))
+    assert seat is not None
+    driver = seat.user
+    others = [p for p in people if p != driver]
+    result.check("others still play while it's only offered", room.say(others[0], "!click F7") == "ok")
+    result.check("the driver's command takes the wheel and runs", room.say(driver, "!enter") == "ok")
+    result.check("a 60 s drive", seat.state == "driving" and seat.until - room.now == 60)
+    refused = room.say(others[1], "!click F7")
+    result.check("everyone else's input is refused", refused.startswith(f"{driver} is driving"), refused)
+    result.check("votes still work: the meter", room.say(others[2], "!democracy") == "ok")
+    result.check("the driver keeps driving", room.say(driver, "!type hi") == "ok")
+    room.say(others[3], "!impeach")
+    room.each(others[4:8], "!yes", (1, 15))
+    await room.wait(21)
+    result.check(
+        "!impeach ends the drive",
+        room.driver.seat is None and room.driven[-1] == ("impeached", driver),
+        room.driven[-1:],
+    )
+    result.check("everyone plays again", room.say(others[1], "!click F7") == "ok")
+    room.play(people, 590)  # play stops just before the next offer: nobody answers it
+    await room.wait(601)
+    second = room.driver.seat
+    result.check("the next offer goes to someone else", second is not None and second.user != driver, second)
+    await room.wait(16)
+    result.check(
+        "an offer nobody takes runs out",
+        room.driver.seat is None and room.driven[-1][0] == "declined",
+        room.driven[-1:],
+    )
+
+
 async def amendments(room: Room, result: Result) -> None:
     people = room.settled(30)
     room.say("u0", "!amend democracy_window 20")
@@ -484,6 +553,7 @@ SCENARIOS: dict[str, Scenario] = {
     "low population": low_population,
     "ties": ties,
     "macros": macros,
+    "driver": driver,
     "amendments": amendments,
 }
 

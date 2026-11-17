@@ -151,6 +151,10 @@ html, body {
 
 /* The power vote (referee/votes.py): lit while chat can vote or veto. */
 #vote-panel.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+#driver-panel { border-color: var(--democracy); box-shadow: 0 0 0 2px var(--democracy) inset; }
+#driver-panel.offered { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+#driver-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 4px 0; }
+#driver-left { font-variant-numeric: tabular-nums; white-space: nowrap; }
 #vote { font-size: 20px; font-weight: normal; }
 .vote-what { font-size: 30px; font-weight: bold; color: var(--accent); overflow-wrap: anywhere; }
 .vote-by { color: var(--muted); font-size: 18px; margin-bottom: 6px; }

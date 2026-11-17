@@ -349,6 +349,7 @@ class DiscordChat:
         self.me = me  # /me: a user's points and rank (brain's me_text)
         self.panel = Panel(panel_state, self.pressed, self._ready) if press and panel_state else None
         self.presses = 0
+        self.pinged: list[tuple[int, str]] = []  # (member ID, text): the driver's seat's pings
         self.state = "off"  # off, connecting, connected, reconnecting, stopped
         self.reason = ""
         self.messages = 0
@@ -402,6 +403,34 @@ class DiscordChat:
         where = (channel or self.alerts_channel).removeprefix("#")
         self._alerts.append((text[:1900], image, where, verdict_for))
         self.flush_alerts()
+
+    def ping(self, member_id: int, text: str) -> None:
+        """Mention one member in the commands channel (the driver's seat's offer). Only them:
+        no @everyone, no roles. Now or never: an offer that waits is no offer."""
+        self.pinged.append((member_id, text[:1800]))
+        client = self._client
+        if client is None or not client.is_ready():
+            return
+        guild = client.get_guild(self.guild_id)
+        channel = (
+            next((c for c in guild.text_channels if self.channel in (c.name, str(c.id))), None)
+            if guild
+            else None
+        )
+        if channel is None:
+            return
+        mention = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=member_id)])
+        task = asyncio.create_task(self._send_ping(channel, f"<@{member_id}> {text[:1800]}", mention))
+        self._sending.add(task)
+        task.add_done_callback(self._sending.discard)
+
+    async def _send_ping(
+        self, channel: discord.TextChannel, text: str, mention: discord.AllowedMentions
+    ) -> None:
+        try:
+            await channel.send(text, allowed_mentions=mention)
+        except (discord.HTTPException, OSError, aiohttp.ClientError) as err:
+            log.warning("Discord: couldn't ping in #%s: %s", channel.name, err)
 
     def pending_alerts(self) -> list[str]:
         """Alerts not posted yet (Discord unreachable, or no alerts channel)."""

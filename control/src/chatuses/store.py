@@ -847,6 +847,14 @@ class Store:
         ).fetchone()
         return float(ts) if ts is not None else None
 
+    def command_counts(self, since: float) -> dict[str, int]:
+        """Accepted commands since then, by user (the driver's seat: who played this session)."""
+        rows = self.db.execute(
+            "SELECT user_id, COUNT(*) FROM commands WHERE ts >= ? AND outcome = 'accepted' GROUP BY user_id",
+            (since,),
+        )
+        return {user: n for user, n in rows}
+
     def commanders(self, start: float, end: float) -> list[str]:
         """Who had a command accepted between start and end (an achievement's credit)."""
         rows = self.db.execute(

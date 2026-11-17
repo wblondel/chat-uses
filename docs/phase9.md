@@ -7,7 +7,7 @@ in at least one session.
 
 1. **Macros** (below).
 2. **The constitution: `!amend`** (below).
-3. The driver's seat and `!impeach`.
+3. **The driver's seat and `!impeach`** (below).
 4. Chaos modifiers and the points shop.
 5. `!click "text"`.
 
@@ -147,3 +147,63 @@ With step 1's: `sudo images/build.sh brain && sudo images/brain/deploy.sh
 democracy_window 20`, 4 `!yes`, wait out the 90 s and the veto countdown:
 `admin laws` shows `democracy_window_s = 20`, and the site's Laws page
 Amendment #1.
+
+## Step 3: the driver's seat
+
+PLAN.md 6.9, `control/src/chatuses/game/driver.py`.
+
+**The offer.** Every `driver_interval_min` minutes (a law, 10; chat can
+`!amend driver_every`), brain offers the seat to someone picked at random
+among those who are active (a message in the last 5 minutes; never the
+banned), have had 3 commands accepted this session (since `session.py
+start`, or since brain started), and haven't been offered it in the last
+hour. Not in democracy, nor while the machine is quiet (a panic, time
+travel, a death, a run's end, the machine down): the next offer is then an
+interval later. On Discord they're pinged in `#control` (only them: no
+`@everyone`, no roles); the overlay shows a "Driver" panel and a line in
+the log either way.
+
+**The drive.** They have 15 seconds to take it with any input command,
+which runs. Then for `driver_duration_s` seconds (60; `!amend
+driver_time`) only their input reaches the machine: everyone else's is
+refused with `NAME is driving: 42 s left` (once per person per few
+seconds on stream). Votes, ballots and the meter work as ever. An offer
+nobody takes runs out; so does the drive.
+
+**`!impeach`** proposes ending it: 50 %, a quorum of 20 % of those active
+(2 at least), 20 seconds, 5 minutes apart (6.4). With nobody in the seat
+it's refused (`nobody is driving`). Democracy beginning, or a panic, ends
+a drive at once.
+
+The event log keeps each offer, take, end and impeachment with who (a
+deletion request takes those entries). `admin status` has a `Driver's
+seat:` line. A ruleset without `driver_seat` in its features never offers
+it.
+
+### What was tested
+
+- `tests/test_driver.py`: an offer only after an interval, to someone with
+  3 commands; taking it with a command, a 60-second drive, others refused
+  with the time left, the drive running out; an offer running out, and no
+  second offer within the hour; no offer when brain says not, the next an
+  interval later; impeachment. Through brain: a Discord user pinged, the
+  overlay's driver message, the status line, someone else's click refused,
+  `!impeach` voted through, the events logged and forgotten on a deletion
+  request; democracy and a panic ending a drive; `!impeach` refused with
+  nobody driving.
+- The simulator's `driver` scenario: after 10 minutes of play the seat
+  goes to someone who played, never to someone with 2 commands; others
+  still play while it's only offered; the driver's command takes it, a
+  60-second drive, others refused, the meter still works; `!impeach`
+  passes and ends it; everyone plays again; the next offer goes to someone
+  else, and runs out when nobody answers.
+- The overlay's Driver panel in Chromium from a fake feed: offered (any
+  command takes the wheel), driving (the countdown, `!impeach`), hidden.
+
+### On the server
+
+`sudo images/build.sh brain && sudo images/brain/deploy.sh --replace`, then
+`sudo images/build.sh bcast && sudo images/bcast/deploy.sh --replace` for
+the overlay's Driver panel (between streams: it restarts the stream). In a
+session, after 10 minutes of play: someone gets the seat (a Discord user
+is pinged); `admin status` shows `Driver's seat: NAME drives, … s left`.
