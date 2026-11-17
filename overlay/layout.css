@@ -41,6 +41,21 @@ html, body {
 }
 #screen canvas { image-rendering: pixelated; }
 
+/* Chaos (game/chaos.py): on the stream only, never on the machine. */
+#blackout { left: 0; top: 0; width: 1600px; height: 900px; z-index: 5; background: #000; }
+body.chaos-flip #screen { transform: rotate(180deg); }
+body.chaos-quake #screen, body.chaos-quake #cols, body.chaos-quake #rows {
+  animation: quake 0.18s infinite;
+}
+@keyframes quake {
+  0% { translate: 0 0; } 25% { translate: -9px 5px; } 50% { translate: 7px -6px; }
+  75% { translate: -5px -4px; } 100% { translate: 0 0; }
+}
+#chaos-panel { border-color: var(--anarchy); box-shadow: 0 0 0 2px var(--anarchy) inset; }
+#chaos-name { margin: 4px 0; }
+#chaos-left { font-variant-numeric: tabular-nums; white-space: nowrap; }
+#chaos-by { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Grid flash and pointer name, over the desktop (z above noVNC's canvas). */
 #grid {
   position: absolute; left: 0; top: 0; width: 1600px; height: 900px; z-index: 2;

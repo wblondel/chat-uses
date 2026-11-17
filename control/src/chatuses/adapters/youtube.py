@@ -73,6 +73,7 @@ SEEN_IDS = 2000  # message IDs remembered to drop duplicates
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 TEXT = pb.LiveChatMessageSnippet.TypeWrapper.TEXT_MESSAGE_EVENT
+SUPER_CHAT = pb.LiveChatMessageSnippet.TypeWrapper.SUPER_CHAT_EVENT
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 
 Deliver = Callable[[ChatMessage], None]
@@ -197,6 +198,7 @@ class YouTubeChat:
         clock: Callable[[], float] = time.time,
         quota: Quota | None = None,
         on_quota: Callable[[str], None] = lambda _text: None,
+        on_super_chat: Callable[[str, str, int], None] = lambda _user, _name, _tier: None,
     ) -> None:
         self.api_key = api_key
         self.deliver = deliver
@@ -213,6 +215,7 @@ class YouTubeChat:
         self.clock = clock
         self.quota = quota or Quota(clock)
         self.on_quota = on_quota  # brain: a line in #ops when the quota runs out
+        self.on_super_chat = on_super_chat  # brain: (user, name, tier) -> a chaos modifier
         self._quota_told = ""  # the quota day #ops was told about
         self.video_id: str | None = None
         self.state = "off"  # off, looking, waiting, streaming, ended, stopped
@@ -437,8 +440,8 @@ class YouTubeChat:
             self._seen.append(item.id)
             self._seen_set.add(item.id)
         snippet = item.snippet
-        if snippet.type != TEXT:
-            return  # Super Chats, memberships, bans, deletions...: later phases
+        if snippet.type not in (TEXT, SUPER_CHAT):
+            return  # memberships, bans, deletions...: later phases
         now = self.clock()
         published = _published(snippet.published_at)
         if published is not None and now - published > MAX_AGE:
@@ -448,6 +451,11 @@ class YouTubeChat:
         try:
             uid = user_id("yt", author.channel_id or snippet.author_channel_id)
         except ValueError:
+            return
+        if snippet.type == SUPER_CHAT:  # its tier only: never the amount, nor its message
+            tier = snippet.super_chat_details.tier if snippet.HasField("super_chat_details") else 0
+            if tier:
+                self.on_super_chat(uid, author.display_name, int(tier))
             return
         text = snippet.text_message_details.message_text or snippet.display_message
         self.counters.messages += 1

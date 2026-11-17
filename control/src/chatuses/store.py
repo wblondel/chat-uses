@@ -864,6 +864,13 @@ class Store:
         )
         return [user for (user,) in rows]
 
+    def spend_points(self, user_id: str, points: int) -> bool:
+        """Take points (the chaos shop) if they have that many; whether they did."""
+        cursor = self.db.execute(
+            "UPDATE users SET points = points - ? WHERE id = ? AND points >= ?", (points, user_id, points)
+        )
+        return cursor.rowcount == 1
+
     def add_points(self, user_ids: list[str], points: int) -> None:
         if user_ids and points:
             self.db.executemany(

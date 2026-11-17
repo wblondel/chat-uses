@@ -21,9 +21,9 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from chatuses.commands import Click, Drag, InputCommand, MacroRun, Move, PressKeys, Scroll, TypeText
 from chatuses.grid import Grid
@@ -87,11 +87,13 @@ class Executor:
         max_pending: int = 16,
         report: Report = ignore,
         on_status: Callable[[bool], None] = no_status,
+        delay: Callable[[], float] = lambda: 0.0,
     ) -> None:
         self._connect = connect
         self.grid = grid or Grid()
         self.report = report
         self.on_status = on_status  # called with True when the target's input is up, False when it goes
+        self.delay = delay  # seconds to wait before each command (chaos's input lag)
         self.queue: asyncio.Queue[Job] = asyncio.Queue(max_pending)
         self.online = asyncio.Event()
         self.vnc: VncInput | None = None
@@ -159,9 +161,10 @@ class Executor:
                 if self.frozen:  # taken just as a panic began
                     self._finish(job, "flushed")
                     continue
-                self._running = asyncio.create_task(execute(vnc, job.command, self.grid))
+                wait = self.delay()  # chaos's input lag (game/chaos.py)
+                self._running = asyncio.create_task(_after(wait, execute(vnc, job.command, self.grid)))
                 try:
-                    await asyncio.wait_for(asyncio.shield(self._running), _timeout(job.command))
+                    await asyncio.wait_for(asyncio.shield(self._running), _timeout(job.command) + wait)
                 except asyncio.CancelledError:
                     me = asyncio.current_task()
                     if not self._running.cancelled() or (me is not None and me.cancelling()):
@@ -210,6 +213,12 @@ class Executor:
             self.report(job, result, time.monotonic() - job.accepted_at)
         except Exception:  # a failed report (database full...) mustn't stop chat's input
             log.exception("reporting a job failed")
+
+
+async def _after(seconds: float, job: Coroutine[Any, Any, None]) -> None:
+    if seconds > 0:
+        await asyncio.sleep(seconds)
+    await job
 
 
 def _timeout(command: InputCommand) -> float:
