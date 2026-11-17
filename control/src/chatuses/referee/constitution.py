@@ -29,7 +29,7 @@ from chatuses.referee.laws import Laws, Ruleset, RulesetError, apply
 
 THRESHOLD_VOTES = ("reboot", "save", "reset", "rewind", "load")  # tiers 1 to 3
 THRESHOLD_SPAN = 10.0  # points either side of the ruleset's own threshold
-UNKNOWN = "chat can't amend that: the site's Laws page lists what it can"
+UNKNOWN = "chat can't amend that law (see the site's Laws page)"
 
 
 class AmendError(RulesetError):

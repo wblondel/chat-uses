@@ -193,7 +193,7 @@ def _click(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
 def _click_text(word: str, rest: str) -> Command | ParseError:
     match = _QUOTED.fullmatch(rest)
     if not match:
-        return ParseError(f'!{word} on text: the text in quotes, like !{word} "Settings" or "Settings"#2')
+        return ParseError(f'text to click goes in quotes, like !{word} "Settings"')
     text = " ".join(match[1].split())
     if not text or len(text) > MAX_CLICK_TEXT:
         return ParseError(f"the text to click is 1 to {MAX_CLICK_TEXT} characters")
@@ -261,9 +261,9 @@ def _macro(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
     name, equals, body = rest.partition("=")
     name = name.strip().casefold()
     if not equals or not name or not body.strip():
-        return ParseError("!macro needs a name and its commands, like !macro term = key ctrl+alt+t")
+        return ParseError("!macro needs a name and commands, like !macro hi = type hi")
     if not MACRO_NAME.fullmatch(name):
-        return ParseError("a macro's name is 2 to 12 letters and digits, starting with a letter")
+        return ParseError("a macro's name: 2 to 12 letters or digits, first a letter")
     if is_builtin(name):
         return ParseError(f"!{name} is already a command")
     parts = [part.strip() for part in body.split(";")]
@@ -278,7 +278,7 @@ def _macro(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
             why = step.reason if step else "not a command"
             return ParseError(f"the macro's command {i}: {why}")
         if not isinstance(step, InputCommand) or isinstance(step, (MacroRun, ClickText)):
-            return ParseError("a macro holds input commands only (type, key, click on a cell…)")
+            return ParseError("a macro holds input commands only: type, key, click F7…")
         steps.append(step)
     return MacroDefine(name, tuple(steps))
 
@@ -291,13 +291,13 @@ def _unmacro(word: str, args: list[str], rest: str, grid: Grid) -> Command | Par
 
 def _amend(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
     if len(args) != 2 or not _LAW.fullmatch(args[0].casefold()) or not _AMOUNT.fullmatch(args[1]):
-        return ParseError("!amend needs a law and a number, like !amend democracy_window 15")
+        return ParseError("!amend needs a law and a number: !amend democracy_window 15")
     return Amend(args[0].casefold(), float(args[1]))
 
 
 def _buy(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
     if len(args) != 1 or not _CHAOS.fullmatch(args[0].casefold()):
-        return ParseError("!buy needs a chaos, like !buy quake: the site's Laws page lists them")
+        return ParseError("!buy needs a chaos, like !buy quake (see the Laws page)")
     return Buy(args[0].casefold())
 
 

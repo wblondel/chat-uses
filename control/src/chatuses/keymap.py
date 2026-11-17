@@ -93,5 +93,5 @@ class KeyCombo:
         elif len(key) == 1 and (sym := char_keysym(key)) is not None and key != " ":
             keysym = sym
         else:
-            raise ValueError("unknown key (keys are letters, digits, f1-f12, enter, tab, esc, arrows...)")
+            raise ValueError("unknown key: letters, digits, f1-f12, enter, esc, up…")
         return cls(tuple(modifiers), keysym, "+".join([*mods, key]))

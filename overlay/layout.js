@@ -161,12 +161,27 @@ function renderLine(line) {
   return row;
 }
 
+// A line too long for its column shrinks, step by step, before it's cut (…): the log's columns
+// are narrow, and a refusal's reason can be long.
+const FIT_SIZES = [20, 18, 16]; // px, after the log's 22
+function fitLine(row) {
+  const over = () => [...row.querySelectorAll(".what, .why")].some((s) => s.scrollWidth > s.clientWidth + 1);
+  row.style.fontSize = "";
+  row.classList.remove("tight");
+  for (const size of FIT_SIZES) {
+    if (!over()) return;
+    row.style.fontSize = `${size}px`;
+  }
+  if (over()) row.classList.add("tight"); // last: a long name gives way to what the line says
+}
+
 function addLine(line) {
   const log = $("log");
   if (!lines.size) log.replaceChildren();
   const entry = { line, el: renderLine(line) };
   lines.set(line.id, entry);
   log.prepend(entry.el); // newest first
+  fitLine(entry.el);
   while (lines.size > LOG_SLOTS) {
     const [oldest] = lines.keys();
     lines.get(oldest).el.remove();
@@ -182,6 +197,7 @@ function setLineState(id, state, reason) {
   const fresh = renderLine(entry.line);
   entry.el.replaceWith(fresh);
   entry.el = fresh;
+  fitLine(fresh);
 }
 
 let gridTimer;
@@ -352,6 +368,7 @@ function renderChaos() {
   $("chaos-panel").hidden = !on;
   if (!on) return;
   $("chaos-name").textContent = `🌀 ${v.name}`;
+  $("chaos-what").textContent = v.what ?? "";
   $("chaos-left").textContent = `${Math.ceil(left)} s`;
   $("chaos-by").textContent = v.source === "random" ? "by chance" : `from ${v.by}`;
 }
@@ -506,6 +523,7 @@ function renderMode() {
   $("mode-lock").textContent = lock ? `locked ${lock} s` : "";
   $("log").hidden = democracy;
   $("tally").hidden = !democracy;
+  if (!democracy) for (const entry of lines.values()) fitLine(entry.el); // hidden, they couldn't be measured
   $("ticker").hidden = democracy;
   $("ticker-democracy").hidden = !democracy;
   renderTally(democracy ? v.tally : null, elapsed);
