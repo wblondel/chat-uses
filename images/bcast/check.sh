@@ -53,7 +53,7 @@ fi
 
 log "Pipeline (target $target_host${TARGET:+, instance $TARGET})"
 if in_bcast test -d /run/systemd/system 2>/dev/null; then
-	for unit in xvfb audio mediamtx websockify audio-in browser encoder forwarder panic; do
+	for unit in xvfb audio mediamtx websockify audio-in browser encoder forwarder panic report; do
 		state=$(in_bcast systemctl is-active "chat-bcast-$unit" 2>/dev/null || true)
 		if [[ $state == active ]]; then pass "chat-bcast-$unit active"; else fail "chat-bcast-$unit is ${state:-unknown}"; fi
 	done

@@ -22,7 +22,8 @@ Reading a public chat only needs an API key, sent as `x-goog-api-key`.
   (on_quota: #ops).
 - Each streamList call costs 5 units however long YouTube keeps it open, so
   what a day of chat costs depends on how often YouTube closes the stream:
-  status shows the calls and how long they lasted on average.
+  status shows the calls in the last hour, how long the closed ones lasted
+  on average, and how long the open one has been open.
 
 The stream_list_pb2 module is generated from Google's proto
 (proto/stream_list.proto, proto/generate.sh).
@@ -178,7 +179,10 @@ class Counters:
     stale: int = 0  # dropped as too old
     duplicates: int = 0
     calls: int = 0  # streamList calls
-    stream_seconds: float = 0.0  # how long they stayed open, in all
+    closed: int = 0  # of them, those that ended
+    stream_seconds: float = 0.0  # how long the closed ones stayed open, in all
+    starts: deque[float] = field(default_factory=lambda: deque(maxlen=4096))  # monotonic
+    open_since: float | None = None  # monotonic, while a call is open
     errors: deque[str] = field(default_factory=lambda: deque(maxlen=5))
 
 
@@ -243,6 +247,7 @@ class YouTubeChat:
 
     def status(self) -> dict[str, Any]:
         c = self.counters
+        now = time.monotonic()
         return {
             "state": self.state,
             "reason": self.reason,
@@ -250,7 +255,9 @@ class YouTubeChat:
             "messages": c.messages,
             "stale": c.stale,
             "calls": c.calls,  # since brain started
-            "average_stream_s": round(c.stream_seconds / c.calls) if c.calls else None,
+            "calls_last_hour": sum(1 for t in c.starts if now - t <= 3600),
+            "average_stream_s": round(c.stream_seconds / c.closed) if c.closed else None,  # closed ones
+            "open_s": round(now - c.open_since) if c.open_since is not None else None,
             "quota_used_today": self.quota.spent(),
             "recent_errors": list(c.errors),
         }
@@ -373,6 +380,8 @@ class YouTubeChat:
                 self.quota.spend(COST_STREAM_LIST)
                 self._last_call = time.monotonic()
                 self.counters.calls += 1
+                self.counters.starts.append(self._last_call)
+                self.counters.open_since = self._last_call
                 request = pb.LiveChatMessageListRequest(
                     live_chat_id=chat_id, part=["id", "snippet", "authorDetails"], page_token=token or None
                 )
@@ -394,6 +403,8 @@ class YouTubeChat:
                     continue
                 finally:
                     self.counters.stream_seconds += time.monotonic() - self._last_call
+                    self.counters.closed += 1
+                    self.counters.open_since = None
                 # The server closed the stream normally: resume from the token.
 
     def _rpc_error(self, err: grpc.aio.AioRpcError, backoff: float) -> float:

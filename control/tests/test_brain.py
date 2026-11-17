@@ -677,8 +677,14 @@ def test_the_youtube_video_is_set_by_admin_and_kept(tmp_path: Path, monkeypatch:
             brain.start_adapters(config_for(tmp_path))
             assert followed == [VIDEO, VIDEO]
             assert brain.youtube is not None and brain.youtube.quota.spent() == 5  # the day's count goes on
-            brain.youtube.counters.calls, brain.youtube.counters.stream_seconds = 3, 90.0
-            assert "5 quota units today (3 calls since brain started, 30 s each)" in brain.status_text()
+            counters = brain.youtube.counters
+            counters.calls, counters.closed, counters.stream_seconds = 3, 2, 60.0
+            counters.starts.extend([time.monotonic() - 7200, time.monotonic() - 600, time.monotonic() - 300])
+            counters.open_since = time.monotonic() - 300
+            assert (
+                "5 quota units today (2 calls in the last hour, 5 units each;"
+                " closed ones lasted 30 s on average; open for 5 min)"
+            ) in brain.status_text()
             assert (await brain.admin(["youtube", "off"]))[0] == "ok"
             assert followed[-1] is None and store.setting("youtube_video") is None
             await brain.stop_adapters()

@@ -82,7 +82,7 @@ log "Services"
 systemctl enable chat-bcast.target chat-bcast-xvfb.service chat-bcast-audio.service \
 	chat-bcast-mediamtx.service chat-bcast-websockify.service chat-bcast-audio-in.service \
 	chat-bcast-browser.service chat-bcast-encoder.service chat-bcast-forwarder.service \
-	chat-bcast-panic.service >/dev/null 2>&1
+	chat-bcast-panic.service chat-bcast-report.service >/dev/null 2>&1
 
 log "Cleaning up"
 apt-get autoremove -y -q >/dev/null

@@ -217,6 +217,7 @@ def test_chat_is_streamed_resumed_and_ends() -> None:
         assert (status["messages"], status["stale"], status["calls"]) == (2, 1, 2)
         assert status["quota_used_today"] == 1 + 5 + 5
         assert status["average_stream_s"] == 0  # both closed at once
+        assert (status["calls_last_hour"], status["open_s"]) == (2, None)
         assert "ended" in status["reason"]
         await fake.stop()
 

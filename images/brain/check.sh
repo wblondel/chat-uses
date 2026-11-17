@@ -6,7 +6,7 @@
 # console chat command reaches the desktop ("!move H5" moves the target's
 # pointer to the middle of the screen, and the feed reports who moved it),
 # and the chat adapters' state: YouTube reading a video's chat, Discord
-# connected. An adapter without its secrets is reported, not failed.
+# connected; whether the stream reaches YouTube (bcast's report). An adapter without its secrets is reported, not failed.
 # Moderation (Phase 5): no panic or lockdown on, the admin API refuses
 # requests without its token (also from bcast) and answers with it, and
 # brain's Incus access (for the panic's forensic snapshot) finds the target.
@@ -161,6 +161,16 @@ while IFS='|' read -r kind text; do
 	*) info "$text" ;;
 	esac
 done <<<"$verdicts"
+
+log "Stream to YouTube (bcast's report, every 15 s)"
+stream=$(in_brain chat-brain-admin status 2>/dev/null | grep '^Stream: ' || true)
+case $stream in
+"Stream: reaching YouTube") pass "the stream reaches YouTube" ;;
+"Stream: not sent to YouTube"*) info "${stream#Stream: }" ;;
+"Stream: no report from bcast yet")
+	info "bcast hasn't reported yet: its image reports from Phase 8 on (images/build.sh bcast && images/bcast/deploy.sh --replace)" ;;
+*) fail "${stream#Stream: } (images/bcast/check.sh; #ops says what to do)" ;;
+esac
 
 log "Screen OCR"
 ocr_verdict() {

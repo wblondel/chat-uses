@@ -24,6 +24,7 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     INCUS_URL                the host's Incus API, for forensic snapshots on panic;
                              off without it or without the certificates (INCUS_*)
     TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
+    BCAST_IP                 bcast's address: only it may report whether the stream reaches YouTube
     ADMIN_TOKEN_FILE         the admin dashboard's and API's token; both are off without it
     OCR_MODE                 screen OCR: shadow (report only, the default), enforce (hold), off
     OCR_INTERVAL, OCR_LANGS  seconds between reads (5); tesseract's languages (eng+ara)
@@ -42,6 +43,7 @@ rulesets and laws are the referee's (referee/).
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import os
 import re
@@ -129,6 +131,10 @@ TRAVELLING = "wait: the machine is travelling in time"
 NO_INCUS = "time travel is off: brain has no Incus access"
 NO_REBOOT = "the machine didn't shut down within 30 s: !reset forces it"
 _THUMB = re.compile(r"\d{1,9}\.png")
+FORWARDER_STATES = ("ok", "failing", "idle")  # what bcast reports
+FORWARDER_ALERT = 60  # seconds of failing before #ops hears it
+BCAST_CHECK = 15.0  # seconds between checks that bcast still reports
+BCAST_SILENT = 180.0  # seconds without a report before #ops hears it
 _SITE_URL = re.compile(r"https?://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~/-]*)?")
 PRUNE_EVERY = 24 * 3600.0  # seconds between retention passes
 
@@ -156,6 +162,7 @@ class Config:
     incus_key: str = f"{SECRETS}/incus-client.key"
     incus_server_cert: str = f"{SECRETS}/incus-server.crt"
     target_instance: str = ""
+    bcast_ip: str = ""
     admin_token_file: str = f"{SECRETS}/admin-token"
     ocr_mode: str = "shadow"
     ocr_interval: float = 5.0
@@ -178,6 +185,12 @@ class Config:
         ocr_mode = env.get("OCR_MODE", "").strip() or cls.ocr_mode
         if ocr_mode not in OCR_MODES:
             raise SystemExit(f"OCR_MODE must be one of {', '.join(OCR_MODES)}")
+        bcast_ip = env.get("BCAST_IP", "").strip()
+        if bcast_ip:
+            try:
+                ipaddress.ip_address(bcast_ip)
+            except ValueError:
+                raise SystemExit("BCAST_IP must be bcast's IP address") from None
         site_url = env.get("SITE_URL", "").strip().rstrip("/")
         if site_url and not _SITE_URL.fullmatch(site_url):
             raise SystemExit("SITE_URL must be the public site's address, like https://example.org")
@@ -205,6 +218,7 @@ class Config:
             incus_key=env.get("INCUS_KEY", cls.incus_key),
             incus_server_cert=env.get("INCUS_SERVER_CERT", cls.incus_server_cert),
             target_instance=env.get("TARGET_INSTANCE", cls.target_instance),
+            bcast_ip=bcast_ip,
             admin_token_file=env.get("ADMIN_TOKEN_FILE", cls.admin_token_file),
             ocr_mode=ocr_mode,
             ocr_interval=max(1.0, float(env.get("OCR_INTERVAL", "") or cls.ocr_interval)),
@@ -333,6 +347,9 @@ class Brain:
         self.discord: DiscordChat | None = None
         self.watch: ScreenWatch | None = None  # screen OCR (start_ocr)
         self.ops_channel = "ops"
+        self.bcast_ip = ""  # only it reports the forwarder's state (Config.bcast_ip)
+        self.forwarder: dict[str, Any] | None = None  # bcast's last report, and when ("at")
+        self._forwarder_told = ""  # what #ops was last told: "failing", "silent" or ""
         self.watchdog = Watchdog(
             incus,
             target_host,
@@ -883,13 +900,12 @@ class Brain:
                 f", {status['quota_used_today']} quota units today" if "quota_used_today" in status else ""
             )
             if status.get("calls"):  # what reading chat costs: 5 units a call, however long it lasts
-                quota += (
-                    f" ({status['calls']} calls since brain started, {status['average_stream_s']} s each)"
-                )
+                quota += f" ({_calls(status)})"
             panel = (
                 f", panel {status['panel']}" if status["state"] == "connected" and "panel" in status else ""
             )
             lines.append(f"{PLATFORM_NAMES[name]}: {status['state']}{video}{quota}{panel}{detail}")
+        lines.append(self.stream_line())
         lines.append(f"Overlay pages: {self.overlay.clients}")
         return "\n".join(lines)
 
@@ -1048,9 +1064,84 @@ class Brain:
         app.router.add_get("/ws/overlay", self.overlay.handle)
         app.router.add_get("/healthz", health)
         app.router.add_get("/thumbs/{name}", self._thumb)
+        app.router.add_put("/bcast/forwarder", self._forwarder_put)
         if admin_token:
             dashboard.add_routes(app, self, admin_token)
         return app
+
+    # --- does the stream reach YouTube? (bcast's report) -----------------------------------
+
+    async def _forwarder_put(self, request: web.Request) -> web.Response:
+        """bcast's report, every 15 s (images/bcast/rootfs/usr/lib/chat-bcast/report).
+        Only from bcast's address: anything else on infranet is refused."""
+        if not self.bcast_ip or request.remote != self.bcast_ip:
+            raise web.HTTPForbidden()
+        try:
+            data: object = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest() from None
+        if not isinstance(data, dict):
+            raise web.HTTPBadRequest()
+        report: dict[str, Any] = {str(k): v for k, v in data.items()}  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+        state, failing = report.get("state"), report.get("failing_s", 0)
+        if state not in FORWARDER_STATES or type(failing) is not int or not 0 <= failing <= 10**8:
+            raise web.HTTPBadRequest()
+        self.forwarder_report(str(state), failing)
+        return web.Response(status=204)
+
+    def forwarder_report(self, state: str, failing_s: int, now: float | None = None) -> None:
+        """What bcast says; #ops hears when the stream stops reaching YouTube, and when it's back."""
+        now = time.time() if now is None else now
+        self.forwarder = {"state": state, "failing_s": failing_s, "at": now}
+        if state == "failing" and failing_s >= FORWARDER_ALERT:
+            if self._forwarder_told != "failing":
+                self._forwarder_told = "failing"
+                self.ops(
+                    f"📡 The stream isn't reaching YouTube: bcast's forwarder has been failing for"
+                    f" {_duration(failing_s)}. Most often YouTube no longer takes the stream key: make a"
+                    " new one in YouTube Studio, put it in /etc/chat-uses/secrets/youtube-stream-key on"
+                    " the host, then run images/bcast/deploy.sh."
+                )
+        elif state != "failing" and self._forwarder_told:
+            self._forwarder_told = ""
+            self.ops(
+                "📡 The stream reaches YouTube again."
+                if state == "ok"
+                else "📡 bcast sends nothing to YouTube now (no stream key)."
+            )
+
+    async def _bcast_watch(self) -> None:
+        """#ops hears when bcast stops reporting (it's down, or can't reach brain). Never returns."""
+        while True:
+            await asyncio.sleep(BCAST_CHECK)
+            self.bcast_silence()
+
+    def bcast_silence(self, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        report = self.forwarder
+        if report is None or now - report["at"] < BCAST_SILENT or self._forwarder_told == "silent":
+            return  # never heard from (an older bcast), or heard from lately, or said already
+        self._forwarder_told = "silent"
+        self.ops(
+            f"📡 No word from bcast for {_duration(now - report['at'])}: the stream may be down."
+            " On the host: sudo incus exec bcast --project infra -- systemctl status chat-bcast.target"
+        )
+
+    def stream_line(self) -> str:
+        report = self.forwarder
+        if report is None:
+            return "Stream: no report from bcast yet"
+        age = time.time() - report["at"]
+        if age >= BCAST_SILENT:
+            return f"Stream: no word from bcast for {_duration(age)}"
+        match report["state"]:
+            case "ok":
+                return "Stream: reaching YouTube"
+            case "idle":
+                return "Stream: not sent to YouTube (no stream key in bcast)"
+            case _:
+                failing = _duration(report["failing_s"])
+                return f"Stream: NOT reaching YouTube (the forwarder has failed for {failing})"
 
     async def _thumb(self, request: web.Request) -> web.StreamResponse:
         """A snapshot's thumbnail, for the overlay's timeline: a past frame of the stream (D37)."""
@@ -1473,6 +1564,7 @@ class Brain:
             self._points_minutes(),
             self._achievement_checks(),
             self._site_updates(),
+            self._bcast_watch(),
         ):
             task = asyncio.create_task(job)
             self._background.add(task)
@@ -1548,6 +1640,7 @@ async def amain(config: Config) -> None:
             Site(Path(config.site_dir), Path(config.site_source), Path(config.thumbs_dir), config.site_url),
         )
         brain.incus_off_reason = why_not
+        brain.bcast_ip = config.bcast_ip
         await brain.serve(config, stop)
 
 
@@ -1566,6 +1659,21 @@ def _session_line(row: dict[str, Any]) -> str:
         f" peak {viewers if viewers is not None else '?'} viewers, {report['active']['peak']} active,"
         f" {report['commands']['total']} commands, {report['votes']['proposed']} votes"
     )
+
+
+def _calls(status: dict[str, Any]) -> str:
+    """YouTube's streamList calls, 5 units each: how many an hour, and how long they stay open."""
+    hour = status.get("calls_last_hour", status["calls"])
+    parts = [f"{hour} {'call' if hour == 1 else 'calls'} in the last hour, 5 units each"]
+    if status.get("average_stream_s") is not None:
+        parts.append(f"closed ones lasted {_duration(status['average_stream_s'])} on average")
+    if status.get("open_s") is not None:
+        parts.append(f"open for {_duration(status['open_s'])}")
+    return "; ".join(parts)
+
+
+def _duration(seconds: float) -> str:
+    return f"{round(seconds)} s" if seconds < 120 else uptime_text(seconds)
 
 
 def _answer(answer: Answer) -> tuple[str, str]:
