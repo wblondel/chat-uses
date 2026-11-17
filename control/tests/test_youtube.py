@@ -726,3 +726,29 @@ def test_after_an_error_a_backlog_is_late_again(monkeypatch: pytest.MonkeyPatch)
 
 def four_seconds(_opened: float) -> float:
     return 4.0
+
+
+def test_a_bigger_quota_from_google_scales_the_stop_and_the_pace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(youtube, "MAX_GAP", 90.0)
+    now = [pacific("2026-11-17T00:00:00")]
+    quota = Quota(lambda: now[0], daily=50_000)
+    assert (quota.stop, quota.burst) == (45_000, 2_250)
+    chat = YouTubeChat(KEY, lambda _m: None, clock=lambda: now[0], quota=quota)
+    end = pacific("2026-11-18T00:00:00")
+    busy_waits: list[float] = []
+    quiet_waits: list[float] = []
+    while now[0] < end:
+        hour = datetime.fromtimestamp(now[0], QUOTA_DAY).hour
+        chat._last_message = now[0] if hour >= 12 else 0.0  # pyright: ignore[reportPrivateUsage]
+        wait = pace(chat, 10)
+        (busy_waits if hour >= 12 else quiet_waits).append(wait)
+        now[0] += wait
+        if now[0] >= end:
+            break
+        quota.spend(youtube.COST_STREAM_LIST)
+        now[0] += 10
+    assert quota.spent() <= 45_000
+    assert max(busy_waits) < 1.0  # chat that plays: at once, all afternoon
+    assert max(quiet_waits) < 6.0  # quiet: a few seconds
+    quota.used_up()
+    assert quota.spent() == 50_000

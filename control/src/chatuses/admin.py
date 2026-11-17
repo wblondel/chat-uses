@@ -3,6 +3,7 @@
     chat-brain-admin status                     brain, the desktop link, the chat adapters
     chat-brain-admin youtube VIDEO_ID_OR_URL    read this live stream's chat (kept across restarts)
     chat-brain-admin youtube off                stop reading YouTube chat
+    chat-brain-admin youtube quota [UNITS]      Google's daily quota for the project (when it grants more)
 
 Moderation (PLAN.md 7.5, 7.6), as Discord's slash commands and the admin
 dashboard do it; logged as done by "console":

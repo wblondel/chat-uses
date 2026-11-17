@@ -13,18 +13,19 @@ Reading a public chat only needs an API key, sent as `x-goog-api-key`.
   after a long outage. Executing them late would surprise everyone.
 - A chat that ended (or went offline) stops the adapter until a new video is
   set: each broadcast has its own chat.
-- The quota is 10,000 units a day by default, and YouTube's day starts at
+- The quota is 10,000 units a day by default (more once Google grants it:
+  `admin youtube quota N` sets Quota.daily), and YouTube's day starts at
   midnight Pacific. Units are counted here (kept in brain's store, so a
-  restart doesn't start the count again) and the adapter pauses at
-  QUOTA_STOP rather than run into the hard limit. When the quota is used up,
+  restart doesn't start the count again) and the adapter pauses at 90 % of
+  it (Quota.stop) rather than run into the hard limit. When the quota is used up,
   by us or as Google says (403 quotaExceeded, or a streamList refusal about
   quota), it waits for the reset and goes on by itself, and says so once
   (on_quota: #ops).
 - Each streamList call costs 5 units however long YouTube keeps it open, and
   YouTube closes streams after about 10 s: reconnecting at once spends the
   default quota in about 5 hours. So the day's quota is an allowance that
-  builds up (Quota.ready_at): QUOTA_BURST units at midnight Pacific,
-  growing evenly to QUOTA_STOP by the next. After YouTube closes a stream,
+  builds up (Quota.ready_at): 5 % of it at midnight Pacific, growing
+  evenly to Quota.stop by the next. After YouTube closes a stream,
   the next call waits until the allowance covers it (`_pace`); while chat
   is quiet (no message for ACTIVE_FOR seconds) it also waits PACE_QUIET
   times the even interval (MAX_GAP at most), so quiet hours leave quota for
@@ -70,9 +71,10 @@ STREAM_LIST = "/youtube.api.v3.V3DataLiveChatMessageService/StreamList"
 
 COST_VIDEOS_LIST = 1
 COST_STREAM_LIST = 5
-QUOTA_DAILY = 10_000  # YouTube's default daily quota
-QUOTA_STOP = 9000  # of it: we pause here, before Google refuses
-QUOTA_BURST = 450  # of it, ready at midnight Pacific; the rest comes evenly through the day
+QUOTA_DAILY = 10_000  # YouTube's default daily quota (Quota.daily: what Google gives us)
+QUOTA_STOP = 9000  # of the default: we pause here, before Google refuses (scaled to Quota.daily)
+QUOTA_BURST = 450  # of the default, ready at midnight Pacific; the rest comes evenly through the day
+QUOTA_LIMITS = (1000, 10_000_000)  # what `admin youtube quota N` accepts
 QUOTA_DAY = ZoneInfo("America/Los_Angeles")  # YouTube's quota resets at midnight Pacific
 QUOTA_RESUME_AFTER = 120.0  # seconds after the reset before trying again (clocks differ)
 QUOTA_REASONS = ("quotaExceeded", "dailyLimitExceeded")
@@ -145,15 +147,18 @@ class QuotaOut(Exception):
 class Quota:
     """Units spent in YouTube's day (midnight Pacific to midnight), kept across restarts.
 
-    load/save read and write "DAY UNITS" (brain's store, setting youtube_quota)."""
+    load/save read and write "DAY UNITS" (brain's store, setting youtube_quota). daily is
+    the quota Google gives the project (10,000 unless it granted more)."""
 
     def __init__(
         self,
         clock: Callable[[], float] = time.time,
         load: Callable[[], str | None] = lambda: None,
         save: Callable[[str], None] = lambda _value: None,
+        daily: int = QUOTA_DAILY,
     ) -> None:
         self.clock, self._save = clock, save
+        self.daily = daily
         day, _, used = (load() or "").partition(" ")
         self.day, self.used = (day, int(used)) if used.isdigit() else ("", 0)
 
@@ -168,11 +173,21 @@ class Quota:
         self._roll()
         return self.used
 
+    @property
+    def stop(self) -> int:
+        """Where we pause, before Google refuses: QUOTA_STOP of each QUOTA_DAILY."""
+        return self.daily * QUOTA_STOP // QUOTA_DAILY
+
+    @property
+    def burst(self) -> int:
+        """What's ready at midnight Pacific: QUOTA_BURST of each QUOTA_STOP."""
+        return self.stop * QUOTA_BURST // QUOTA_STOP
+
     def spend(self, units: int) -> None:
-        """Count units before a call; QuotaOut if they'd take us past QUOTA_STOP."""
+        """Count units before a call; QuotaOut if they'd take us past `stop`."""
         self._roll()
-        if self.used + units > QUOTA_STOP:
-            how = "used up" if self.used >= QUOTA_DAILY else "nearly used"
+        if self.used + units > self.stop:
+            how = "used up" if self.used >= self.daily else "nearly used"
             raise QuotaOut(f"the daily quota is {how} ({self.used} units)")
         self.used += units
         self._save(f"{self.day} {self.used}")
@@ -180,7 +195,7 @@ class Quota:
     def used_up(self) -> None:
         """Google says the day's quota is gone: nothing more until the reset."""
         self._roll()
-        self.used = max(self.used, QUOTA_DAILY)
+        self.used = max(self.used, self.daily)
         self._save(f"{self.day} {self.used}")
 
     def resets_at(self) -> float:
@@ -199,14 +214,14 @@ class Quota:
     def rate(self) -> float:
         """Units a second the day's allowance grows by."""
         start, end = self._day()
-        return (QUOTA_STOP - QUOTA_BURST) / (end - start)
+        return (self.stop - self.burst) / (end - start)
 
     def ready_at(self, units: int) -> float:
-        """When spending `units` more keeps to the day's allowance: QUOTA_BURST at midnight
-        Pacific, growing evenly to QUOTA_STOP at the next. What quiet hours don't spend, busy
+        """When spending `units` more keeps to the day's allowance: `burst` at midnight
+        Pacific, growing evenly to `stop` at the next. What quiet hours don't spend, busy
         ones can; the day never runs out early."""
         self._roll()
-        return self._day()[0] + max(0, self.used + units - QUOTA_BURST) / self.rate()
+        return self._day()[0] + max(0, self.used + units - self.burst) / self.rate()
 
 
 @dataclass
@@ -461,7 +476,7 @@ class YouTubeChat:
     def _pace(self, opened: float) -> float:
         """Seconds to wait before the next call, after one YouTube kept open `opened` seconds:
         until the day's allowance covers it, and while chat is quiet, longer."""
-        if self.quota.spent() + COST_STREAM_LIST > QUOTA_STOP:
+        if self.quota.spent() + COST_STREAM_LIST > self.quota.stop:
             return 0.0  # the next spend() pauses until the reset
         now = self.clock()
         wait = max(0.0, self.quota.ready_at(COST_STREAM_LIST) - now)

@@ -264,10 +264,14 @@ me the numbers and I'll write them down in PLAN.md.
   stream is off (`admin youtube off`).
 - **For chat without waits, ask Google for more quota**: the YouTube API
   Services audit and quota extension form (linked from Google Cloud
-  console → APIs & Services → YouTube Data API v3 → Quotas). It's free
-  and reviewed by Google, which can take a few weeks. With about 100,000
-  units a day, brain reconnects at once all day by itself: nothing to
-  change here.
+  console → APIs & Services → YouTube Data API v3 → Quotas). There's no
+  fee; Google audits the project against its developer policies first,
+  which can take weeks. Ask for 50,000 units a day: a connection every
+  10 s all day is 43,200, viewer counts about 1,500. Once granted, tell
+  brain: `admin youtube quota 50000` (kept across restarts; `admin youtube
+  quota` shows it). It then stops at 90 % of it and paces to it: with
+  50,000, chat that plays reconnects at once and a quiet one within a few
+  seconds. A pause for quota ends at once when you raise it.
 - **Commands older than 30 s are dropped**, on both the first connection
   (YouTube sends recent history) and after an outage: a command executed
   minutes late would surprise everyone. A wait brain chose doesn't count:
