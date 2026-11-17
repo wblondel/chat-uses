@@ -64,12 +64,12 @@ def test_a_macro_is_input_commands_with_or_without_their_bang() -> None:
 @pytest.mark.parametrize(
     ("text", "why"),
     [
-        ("!macro", "needs a name and its commands"),
-        ("!macro term", "needs a name and its commands"),
-        ("!macro term =", "needs a name and its commands"),
-        ("!macro t = enter", "2 to 12 letters and digits"),
-        ("!macro 9lives = enter", "2 to 12 letters and digits"),
-        ("!macro waytoolongname = enter", "2 to 12 letters and digits"),
+        ("!macro", "needs a name and commands"),
+        ("!macro term", "needs a name and commands"),
+        ("!macro term =", "needs a name and commands"),
+        ("!macro t = enter", "2 to 12 letters or digits"),
+        ("!macro 9lives = enter", "2 to 12 letters or digits"),
+        ("!macro waytoolongname = enter", "2 to 12 letters or digits"),
         ("!macro click = enter", "!click is already a command"),
         ("!macro rewind = enter", "!rewind is already a command"),
         ("!macro amend = enter", "!amend is already a command"),  # coming in Phase 9

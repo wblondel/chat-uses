@@ -217,6 +217,7 @@ body.chaos-quake #screen, body.chaos-quake #cols, body.chaos-quake #rows {
 .log-line .who { color: var(--accent); font-weight: bold; max-width: 230px; overflow: hidden; text-overflow: ellipsis; flex: none; }
 .log-line .what { overflow: hidden; text-overflow: ellipsis; }
 .log-line .why { color: #ffb547; overflow: hidden; text-overflow: ellipsis; }
+.log-line.tight .who { max-width: 140px; }
 .log-line .mark { flex: none; color: var(--muted); font-size: 18px; }
 .log-line.done .mark { color: var(--accent); font-size: 24px; }
 .log-line.dropped .what, .log-line.busy .what { color: var(--muted); text-decoration: line-through; }
