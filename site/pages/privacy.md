@@ -93,6 +93,10 @@ keeping it safe (GDPR art. 6(1)(f)).
   then deleted automatically; your user ID, name and roles while you take
   part; leaderboards and other aggregates until you ask us to delete them.
 - **Bans:** as long as the ban lasts.
+- **Backups:** an encrypted copy (only we hold the key) is kept on Google
+  Drive for 7 days, so the stream survives a broken server. It follows the
+  same limits: YouTube data in it never passes its 30 days, and what you
+  ask us to delete leaves the backups within those 7 days.
 
 ## Who sees it
 
@@ -101,8 +105,9 @@ already: the stream shows commands and display names as chat sent them
 (names with slurs or personal details are shown as `viewer#1234`), and this
 site shows the runs, the achievements and the leaderboard with the same
 names. We don't sell or share your data with anyone else. Our server runs at
-netcup GmbH (data centre: Nuremberg, Germany). YouTube and Discord process your data
-under their own policies.
+netcup GmbH (data centre: Nuremberg, Germany); its encrypted backups are
+stored on Google Drive, where Google can't read them. YouTube and Discord
+process your data under their own policies.
 
 ## Your rights
 

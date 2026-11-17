@@ -15,6 +15,7 @@ dashboard do it; logged as done by "console":
     chat-brain-admin timeout WHO [MINUTES]      10 minutes unless told
     chat-brain-admin unban WHO
     chat-brain-admin lockdown on|off            only regulars may send commands
+    chat-brain-admin night [auto|on|off]        night mode (no moderator around): where it stands, or set it
     chat-brain-admin bans                       who is banned or timed out, until when
     chat-brain-admin endvote                    end the power vote running now
     chat-brain-admin mode anarchy|democracy     set the mode now (locked for a while after)
@@ -38,6 +39,9 @@ Runs (PLAN.md 6.7, Phase 8):
     chat-brain-admin chaos [start NAME | stop]  the chaos modifier on, and the shop; start one free, stop it
     chat-brain-admin macro remove NAME          take one away, without a vote
     chat-brain-admin site                       render the public site now: where, and what's left to fill in
+    chat-brain-admin backup [KEEP_DAYS]         a copy of the store in backup/brain.db, for the host's
+                                                backups (infra/host/backup.py): YouTube's data expired
+                                                KEEP_DAYS (7) ahead
     chat-brain-admin site hide RUN              take a run's pictures (last screen, timeline) off the site
 
 Screen OCR verdicts (Phase 7): was each hit real? What decides enforcing.

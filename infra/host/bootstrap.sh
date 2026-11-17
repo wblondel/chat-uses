@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck source=infra/host/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api site monitor summary)
+STEPS=(packages admin-user ssh system updates firewall wireguard incus storage quotas networks projects profiles incus-api site monitor backup summary)
 
 PACKAGES=(
 	ca-certificates curl jq gettext-base sudo python3 openssl
@@ -628,6 +628,84 @@ UNIT
 	else
 		warn "alerts can't reach #ops yet: in Discord, #ops → Edit Channel → Integrations → Webhooks → New Webhook → Copy Webhook URL, then: sudo install -m 0600 /dev/stdin $CHAT_USES_ETC/secrets/ops-webhook (paste it, Enter, Ctrl-D)"
 	fi
+}
+
+# Backups (Phase 10): restic to Google Drive through rclone, every night
+# (infra/host/backup.py). The restore drill is by hand: chat-uses-backup --drill.
+step_backup() {
+	log "Backups (restic to Google Drive)"
+	local pkg missing=()
+	for pkg in restic rclone; do
+		command -v "$pkg" >/dev/null || missing+=("$pkg")
+	done
+	if ((${#missing[@]})); then
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}" >/dev/null
+		info "installed ${missing[*]}"
+	fi
+	if [[ ! $BACKUP_KEEP_DAYS =~ ^[0-9]+$ ]] || ((BACKUP_KEEP_DAYS < 1 || BACKUP_KEEP_DAYS > 30)); then
+		die "BACKUP_KEEP_DAYS must be 1 to 30 (YouTube's data may not be kept longer than 30 days)"
+	fi
+	[[ $BACKUP_TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "BACKUP_TIME must be HH:MM"
+	install -d -m 0755 /var/lib/chat-uses
+	[[ -d $CHAT_USES_ETC/secrets ]] || install -d -m 0700 "$CHAT_USES_ETC/secrets"
+	local password=$CHAT_USES_ETC/secrets/restic-password
+	if [[ ! -s $password ]]; then
+		(umask 077 && openssl rand -base64 33 >"$password")
+		warn "made restic's password in $password. Copy it to your password manager now (sudo cat $password): without it nobody can read the backups, you included"
+	fi
+	local changed=0
+	write_file /usr/local/sbin/chat-uses-backup 0755 <"$CHAT_USES_HOST_DIR/backup.py" && changed=1
+	# What it needs from host.env: the installed copy has no lib.sh to read it.
+	printf 'BACKUP_REPOSITORY=%s\nBACKUP_KEEP_DAYS=%s\nBACKUP_IMAGES=%s\n' \
+		"$BACKUP_REPOSITORY" "$BACKUP_KEEP_DAYS" "$BACKUP_IMAGES" |
+		write_file "$CHAT_USES_ETC/backup.env" 0644 || true
+	write_file /etc/systemd/system/chat-uses-backup.service 0644 <<'UNIT' && changed=1
+[Unit]
+Description=chat-uses: back up to Google Drive (restic)
+After=incus.service network-online.target
+Wants=incus.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chat-uses-backup
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
+UNIT
+	write_file /etc/systemd/system/chat-uses-backup.timer 0644 <<UNIT && changed=1
+[Unit]
+Description=chat-uses: back up every night
+
+[Timer]
+OnCalendar=*-*-* $BACKUP_TIME
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+	have_systemd && ((changed)) && systemctl daemon-reload
+	local remote=""
+	if [[ $BACKUP_REPOSITORY == rclone:* ]]; then
+		remote=${BACKUP_REPOSITORY#rclone:}
+		remote=${remote%%:*}
+		if ! RCLONE_CONFIG=$CHAT_USES_ETC/rclone.conf rclone listremotes 2>/dev/null | grep -qx "$remote:"; then
+			warn "Google Drive isn't connected yet (no rclone remote \"$remote\" in $CHAT_USES_ETC/rclone.conf): docs/phase10.md, step 3, then run this step again"
+			if have_systemd && systemctl is-enabled --quiet chat-uses-backup.timer 2>/dev/null; then
+				systemctl disable --now chat-uses-backup.timer >/dev/null 2>&1 || true
+				info "nightly backups stopped until then"
+			fi
+			return
+		fi
+	fi
+	/usr/local/sbin/chat-uses-backup --init || die "can't reach or make the repository $BACKUP_REPOSITORY"
+	if have_systemd; then
+		systemctl enable --quiet chat-uses-backup.timer
+		systemctl start chat-uses-backup.timer
+		info "every night at $BACKUP_TIME (up to 30 min later), kept $BACKUP_KEEP_DAYS days"
+	fi
+	info "back up now: sudo systemctl start chat-uses-backup (then: journalctl -u chat-uses-backup)"
+	info "then a restore drill: sudo chat-uses-backup --drill"
 }
 
 step_summary() {

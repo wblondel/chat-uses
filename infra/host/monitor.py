@@ -27,7 +27,10 @@ What it looks at:
 - the encoder (bcast's journal, a report every 30 s): silent, or behind
   real time (speed below SLOW);
 - the host's disk and Incus's storage pool: nearly full;
-- CPU steal (/proc/stat): the VPS's neighbours taking our CPU.
+- CPU steal (/proc/stat): the VPS's neighbours taking our CPU;
+- the backups (backup.py's /var/lib/chat-uses/backup.json, once there is
+  one): the last one failed, none worked for 36 hours, no restore drill for
+  3 months.
 
 Standard library only: it runs `incus` and `journalctl` through `incus exec`
 on the host. It never reads the forwarder's journal (the stream key is in it).
@@ -67,7 +70,11 @@ GRACE = {  # seconds a problem lasts before #ops hears it
     "disk": 0,
     "pool": 0,
     "steal": 300,
+    "backup": 0,
+    "drill": 0,
 }
+BACKUP_LATE = 36 * 3600.0  # seconds without a backup that worked (they run every night)
+DRILL_EVERY = 92 * 86400.0  # a restore drill a quarter (PLAN.md 10.3)
 CLEAR = 120  # seconds a told problem must be gone before "back to normal": no flapping
 YOUTUBE_BAD = ("looking", "stopped", "ended", "reconnecting")
 DISCORD_BAD = ("stopped", "reconnecting", "connecting")
@@ -123,6 +130,39 @@ def problems(
 
 def grace(key: str) -> int:
     return GRACE.get(key.split()[0], 60)
+
+
+def backup_problems(state: dict[str, Any], now: float) -> dict[str, str]:
+    """backup.py's record: key → what #ops reads. Nothing until backups are set up."""
+    if not state:
+        return {}
+    found: dict[str, str] = {}
+    if error := state.get("error"):
+        found["backup failed"] = f"the last backup had a problem: {str(error)[:300]}"
+    last_ok = state.get("last_ok")
+    if not isinstance(last_ok, (int, float)):
+        found["backup none"] = "no backup has worked yet: journalctl -u chat-uses-backup"
+    elif now - last_ok > BACKUP_LATE:
+        found["backup late"] = f"no backup has worked for {(now - last_ok) / 3600:.0f} h"
+    if isinstance(last_ok, (int, float)):
+        drill = state.get("drill")
+        if not isinstance(drill, (int, float)):
+            found["drill"] = "no restore drill done yet: sudo chat-uses-backup --drill"
+        elif now - drill > DRILL_EVERY:
+            found["drill"] = (
+                f"no restore drill for {(now - drill) / 86400:.0f} days: sudo chat-uses-backup --drill"
+            )
+        elif state.get("drill_ok") is False:
+            found["drill"] = "the last restore drill failed: sudo chat-uses-backup --drill (it says why)"
+    return found
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def advance(
@@ -274,15 +314,12 @@ def look(state: dict[str, Any]) -> tuple[dict[str, str], list[int]]:
         pool_used(host.get("POOL_NAME") or "chat"),
         steal_share(state.get("stat"), stat),
     )
+    found |= backup_problems(read_json(VAR / "backup.json"), time.time())
     return found, stat
 
 
 def load() -> dict[str, Any]:
-    try:
-        data = json.loads(STATE.read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return read_json(STATE)
 
 
 def save(state: dict[str, Any]) -> None:

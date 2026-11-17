@@ -20,7 +20,7 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 | 7 — Closed beta | [docs/phase7.md](docs/phase7.md) | `infra/host/session.py`, `docs/retros/TEMPLATE.md` |
 | 8 — Roguelike layer and site | [docs/phase8.md](docs/phase8.md) | `bootstrap.sh site`, `infra/host/site_sync.py` |
 | 9 — Depth | [docs/phase9.md](docs/phase9.md) | |
-| 10 — 24/7 operations | [docs/phase10.md](docs/phase10.md) | `bootstrap.sh monitor`, `infra/host/monitor.py` |
+| 10 — 24/7 operations | [docs/phase10.md](docs/phase10.md) | `bootstrap.sh monitor`, `infra/host/monitor.py`, `bootstrap.sh backup`, `infra/host/backup.py` |
 
 ## Layout
 

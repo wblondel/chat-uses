@@ -5,9 +5,9 @@ intervention. Built so far, in this order:
 
 1. **The host's monitor: alerts in `#ops`** (below).
 2. **Night mode** (below): stricter laws while no moderator is around.
+3. **Backups to Google Drive** (below), with the restore drill.
 
-Still to build: backups to Google Drive with a restore drill, event clips,
-VOD rotation, the timelapse.
+Still to build: event clips, VOD rotation, the timelapse.
 
 ## Step 1: the host's monitor
 
@@ -28,6 +28,7 @@ and it posts in `#ops` through a Discord webhook, not brain's bot.
 | The host's disk (`/`) | 90 % full | at once |
 | Incus's storage pool (`POOL_NAME`) | 85 % full | at once |
 | CPU steal (`/proc/stat`) | 10 % of the CPU taken by the VPS's neighbours, over the last minute | 5 min |
+| Backups (`/var/lib/chat-uses/backup.json`, step 3) | the last one had a problem, none worked for 36 h, no restore drill yet or for 3 months | at once |
 
 A problem is told once (🚨), and once it has been gone for 2 minutes `#ops`
 reads "✅ Back to normal after N min" (a problem that comes and goes is told
@@ -175,3 +176,162 @@ The simulator's `night` scenario (in CI): 12 people play while the
 moderator falls silent; 15 minutes later the night falls, a `!rewind` that
 5 of them would pass by day fails for want of 6, commands slow down; the
 moderator speaks and the day and anarchy come back.
+
+## Step 3: backups to Google Drive
+
+`infra/host/backup.py`, installed by `bootstrap.sh backup` as
+`/usr/local/sbin/chat-uses-backup` with a timer that runs it every night.
+[restic](https://restic.net) encrypts and deduplicates on the server;
+[rclone](https://rclone.org) carries the result to Google Drive. Google
+stores the backups but can't read them: only restic's password opens them.
+
+**What goes in:**
+
+| What | From | Why |
+|---|---|---|
+| brain's store | `chat-brain-admin backup` makes a copy (SQLite's online backup, brain keeps running), YouTube's data expired 7 days ahead | bans, runs, points, the event log: what a rebuilt server can't make again |
+| The golden image | `incus image export chat-uses/debian-xfce` (`BACKUP_IMAGES`), once per build | rebuilding it from the repo today gives other package versions |
+| Settings and secrets | `/etc/chat-uses` (not restic's own password), `/etc/wireguard` | the tokens, the keys, `host.env`, the tunnel's peers |
+| The tools' records | `/var/lib/chat-uses` | session reports, the monitor's memory |
+| The site's pictures | `/var/www/chat-uses/img` (not its pages) | runs' last screens; brain writes the pages again from its store |
+
+The other images (bcast, brain, egress, intranet) are rebuilt with
+`images/build.sh`; the target's snapshots are chat's game, not worth their
+size (a new run starts from the golden image).
+
+**How long:** 7 days (`BACKUP_KEEP_DAYS`). After each backup, those more
+than 7 days older than it are deleted. That's what keeps YouTube's 30 days:
+brain's copy has YouTube's data expired as it will be 7 days later, so by
+the time a backup is deleted, nothing in it has passed its 30 days. The
+site's pages stay out because they name viewers. The privacy notice says
+the backups are kept 7 days, encrypted, on Google Drive.
+
+**#ops hears it** (the monitor reads `/var/lib/chat-uses/backup.json`): a
+backup that had a problem (brain's copy, an image, restic itself), no backup
+that worked for 36 hours, no restore drill yet, or none for 3 months
+(PLAN.md 10.3: a drill a quarter).
+
+### On the server
+
+Do these in order (each needs the one before).
+
+1. **Redeploy brain** with this version, so it has `chat-brain-admin
+   backup`: `sudo images/build.sh brain && sudo images/brain/deploy.sh`.
+
+2. **Install the tools:** `sudo infra/host/bootstrap.sh backup monitor`. It
+   installs restic and rclone, makes restic's password and says Google
+   Drive isn't connected yet (that's expected).
+
+3. **Keep restic's password off the server**, in your password manager:
+   `sudo cat /etc/chat-uses/secrets/restic-password`. If the server dies,
+   it's the only way to read the backups. Don't paste it anywhere else.
+
+4. **Connect Google Drive.** rclone needs a browser once, and the server
+   has none: a tunnel lends it yours. From your computer (over WireGuard,
+   as usual):
+
+   ```sh
+   ssh -L 53682:127.0.0.1:53682 you@10.99.0.1   # the server's tunnel address
+   ```
+
+   Then, in that session:
+
+   ```sh
+   sudo rclone config --config /etc/chat-uses/rclone.conf
+   ```
+
+   - `n` (new remote), name: **`gdrive`**
+   - Storage: **`drive`** (Google Drive)
+   - `client_id` and `client_secret`: Enter (empty: rclone's own)
+   - scope: **`drive.file`**: rclone sees only the files it makes, not the
+     rest of your Drive
+   - `service_account_file`: Enter; "Edit advanced config": `n`
+   - "Use web browser to automatically authenticate": `y`. rclone prints a
+     link (`http://127.0.0.1:53682/auth?state=…`): open it in your
+     computer's browser (the tunnel carries it), sign in with the Google
+     account that will hold the backups, allow
+   - "Configure this as a Shared Drive": `n`; "Keep this remote": `y`; `q`
+
+   No tunnel? Answer `n` to the browser question: rclone prints a command
+   (`rclone authorize "drive" "…"`) to run on a computer that has rclone
+   (rclone.org/downloads) and a browser, and you paste its answer back.
+
+5. **Make the repository and start the nightly backups:** `sudo
+   infra/host/bootstrap.sh backup` again. It makes `chat-uses-backups` in
+   your Drive and starts `chat-uses-backup.timer` (every night at
+   `BACKUP_TIME`, 04:17, up to 30 minutes later).
+
+6. **The first backup, now:**
+
+   ```sh
+   sudo systemctl start chat-uses-backup     # a while: the golden image goes up once
+   journalctl -u chat-uses-backup            # "backup: done (snapshot …)"
+   sudo chat-uses-backup --check             # the backups, the space they take on Drive
+   ```
+
+7. **The restore drill:** `sudo chat-uses-backup --drill`. It downloads the
+   latest backup into a temporary folder, checks brain's store (whole, with
+   its tables), the secrets, the image (every file readable) and that no
+   site page or restic password got in, then deletes it. "all good: this
+   backup would rebuild the server" is the drill passed; PLAN.md asks for
+   one now and one a quarter (`#ops` reminds you).
+
+**Space:** a free Google account has 15 GB. restic compresses; the golden
+image is most of it, and a new build adds one copy for 7 days. `--check`
+says how much it takes.
+
+**If Google says the token expired** (`journalctl -u chat-uses-backup`:
+"invalid_grant"): `sudo rclone config reconnect gdrive: --config
+/etc/chat-uses/rclone.conf` with the tunnel open. With rclone's own client
+the token doesn't expire by itself; with a client of your own, its Google
+Cloud app must be "In production", or Google ends its tokens every 7 days.
+
+### Restoring for real
+
+On a new server, after `bootstrap.sh` (docs/phase1.md) with your `host.env`:
+
+1. `sudo infra/host/bootstrap.sh backup`, put restic's password back from
+   your password manager into `/etc/chat-uses/secrets/restic-password`
+   (`sudo install -m 0600 /dev/stdin …`, paste, Enter, Ctrl-D), connect
+   Google Drive again (step 4 above).
+2. Download the latest backup:
+
+   ```sh
+   sudo RESTIC_REPOSITORY=rclone:gdrive:chat-uses-backups \
+        RESTIC_PASSWORD_FILE=/etc/chat-uses/secrets/restic-password \
+        RCLONE_CONFIG=/etc/chat-uses/rclone.conf \
+        restic restore latest --tag chat-uses --target /root/restore
+   ```
+
+3. Settings and secrets: copy `/root/restore/etc/chat-uses/` over
+   `/etc/chat-uses/` and `/root/restore/etc/wireguard/` over
+   `/etc/wireguard/`, then `sudo infra/host/bootstrap.sh` (all steps).
+4. The golden image: `sudo incus image import
+   /root/restore/var/lib/chat-uses/backup/images/debian-xfce-*/*.tar
+   --alias chat-uses/debian-xfce --project infra`. The others:
+   `images/build.sh`, then each `deploy.sh` (docs/phase3.md to phase5.md).
+5. brain's store, once `images/brain/deploy.sh` made brain:
+
+   ```sh
+   sudo incus exec brain --project infra -- systemctl stop chat-brain
+   sudo incus exec brain --project infra -- rm -f /var/lib/chat-brain/brain.db-wal /var/lib/chat-brain/brain.db-shm
+   sudo incus file push /root/restore/var/lib/chat-uses/backup/brain.db brain/var/lib/chat-brain/brain.db --project infra
+   sudo incus file push /root/restore/var/www/chat-uses/img/*.png brain/var/lib/chat-brain/thumbs/ --project infra
+   sudo incus exec brain --project infra -- chown -R brain:brain /var/lib/chat-brain
+   sudo incus exec brain --project infra -- systemctl start chat-brain
+   ```
+
+6. `sudo rm -rf /root/restore`.
+
+### Tests
+
+`infra/host/test_backup.py` (in CI with the other host tools), against a
+fake `incus` and a fake `restic`: a whole backup (brain's copy, the image,
+the secrets but restic's password, the site's pictures but not its pages,
+the deletion of old backups), the same build not exported twice, a new one
+replacing the old export, brain down (the rest still backed up, its stale
+copy dropped), a missing image or repository, `--check`, a drill passing
+and a damaged backup failing one; and what the monitor tells `#ops`.
+`control/tests/test_store.py`: brain's copy, with YouTube's data expired
+ahead and nothing left in the file's free pages; `tests/test_brain.py`:
+`chat-brain-admin backup`.

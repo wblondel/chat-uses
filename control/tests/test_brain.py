@@ -991,6 +991,22 @@ def test_forensic_snapshots_through_incus() -> None:
     run(test)
 
 
+def test_a_backup_of_the_store_for_the_host(tmp_path: Path) -> None:
+    async def test() -> None:
+        async with running() as (brain, _feed):
+            assert await brain.admin(["backup"]) == ("error", "the store is in memory: nothing to back up")
+        with Store(tmp_path / "brain.db") as store:
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            assert brain.backup_dir == tmp_path / "backup"
+            status, text = await brain.admin(["backup", "3"])
+            copy = tmp_path / "backup" / "brain.db"
+            assert status == "ok" and text.startswith(f"Backup: {copy} (") and "expired 3 days ahead" in text
+            assert copy.stat().st_mode & 0o777 == 0o600 and (tmp_path / "backup").stat().st_mode & 0o077 == 0
+            assert (await brain.admin(["backup", "90"]))[0] == "error"  # 1 to 30 days
+
+    run(test)
+
+
 def test_moderation_over_chat_brain_admin() -> None:
     async def test() -> None:
         async with running() as (brain, feed):
