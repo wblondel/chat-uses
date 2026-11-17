@@ -63,7 +63,7 @@ from chatuses import console, dashboard, textclick
 from chatuses import site as site_module
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.discord_panel import PanelState
-from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
+from chatuses.adapters.youtube import QUOTA_DAILY, QUOTA_LIMITS, Quota, YouTubeChat, video_id_from
 from chatuses.commands import (
     Amend,
     Buy,
@@ -124,7 +124,7 @@ OCR_MODES = ("shadow", "enforce", "off")
 KEEP_SCREENS = 200  # OCR hits' screenshots kept on disk
 SECRETS = "/etc/chat-uses/secrets"
 ADMIN_USAGE = (
-    "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off\n"
+    "usage: chat-brain-admin status | youtube VIDEO_ID_OR_URL | youtube off | youtube quota [UNITS]\n"
     "       | panic [REASON] | resume | lockdown on|off | bans\n"
     "       | ban WHO DURATION [REASON] | timeout WHO [MINUTES] | unban WHO | forget WHO\n"
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
@@ -1130,6 +1130,7 @@ class Brain:
             quota = Quota(  # the day's units outlive restarts
                 load=lambda: self.store.setting("youtube_quota"),
                 save=lambda value: self.store.set_setting("youtube_quota", value),
+                daily=_int_setting(self.store.setting("youtube_quota_daily"), QUOTA_DAILY),
             )
             self.youtube = YouTubeChat(
                 key, self._deliver("yt"), quota=quota, on_quota=self.ops, on_super_chat=self.super_chat
@@ -1230,11 +1231,32 @@ class Brain:
         lines.append(f"Overlay pages: {self.overlay.clients}")
         return "\n".join(lines)
 
+    def youtube_quota(self, amount: list[str]) -> tuple[str, str]:
+        """`admin youtube quota [N]`: the daily quota Google gives the project. Raise it when
+        Google grants more: brain then stops at 90 % of it and paces to it (adapters/youtube.py)."""
+        if self.youtube is None:
+            return "error", "no YouTube API key: see docs/phase4.md (step 4)"
+        quota = self.youtube.quota
+        low, high = QUOTA_LIMITS
+        if amount:
+            if len(amount) != 1 or not amount[0].isdigit() or not low <= int(amount[0]) <= high:
+                return "error", f"the daily quota is a number of units, {low:,} to {high:,}"
+            quota.daily = int(amount[0])
+            self.store.set_setting("youtube_quota_daily", str(quota.daily))
+            if self.youtube.state == "waiting" and self.youtube.video_id:  # paused for quota: go on
+                self.youtube.follow(self.youtube.video_id)
+        return "ok", (
+            f"YouTube quota: {quota.daily:,} units a day (Google's; set it with admin youtube quota N"
+            f" when it grants more). brain stops at {quota.stop:,}; {quota.spent():,} spent today."
+        )
+
     async def admin(self, words: list[str]) -> tuple[str, str]:
         """Operator requests from chat-brain-admin (console socket: root only)."""
         match words:
             case ["status"]:
                 return "ok", self.status_text()
+            case ["youtube", "quota", *amount]:
+                return self.youtube_quota(amount)
             case ["youtube", target]:
                 if self.youtube is None:
                     return "error", "no YouTube API key: see docs/phase4.md (step 4)"
@@ -1972,6 +1994,10 @@ async def amain(config: Config) -> None:
         brain.bcast_ip = config.bcast_ip
         brain.ocr_langs = config.ocr_langs
         await brain.serve(config, stop)
+
+
+def _int_setting(value: str | None, default: int) -> int:
+    return int(value) if value and value.isdigit() else default
 
 
 def _lives(n: int) -> str:

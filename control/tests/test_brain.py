@@ -641,6 +641,7 @@ def test_adapters_stay_off_without_their_secrets(tmp_path: Path) -> None:
                 "error",
                 "no YouTube API key: see docs/phase4.md (step 4)",
             )
+            assert (await brain.admin(["youtube", "quota", "50000"]))[0] == "error"
 
     run(test)
 
@@ -689,6 +690,23 @@ def test_the_youtube_video_is_set_by_admin_and_kept(tmp_path: Path, monkeypatch:
             assert "closed ones lasted 30 s on average; next call in 40 s)" in brain.status_text()
             assert (await brain.admin(["youtube", "off"]))[0] == "ok"
             assert followed[-1] is None and store.setting("youtube_video") is None
+            ok, text = await brain.admin(["youtube", "quota"])
+            assert ok == "ok" and "10,000 units a day" in text and "stops at 9,000" in text
+            for wrong in (
+                ["youtube", "quota", "lots"],
+                ["youtube", "quota", "50"],
+                ["youtube", "quota", "1", "2"],
+            ):
+                assert (await brain.admin(wrong))[0] == "error"
+            brain.youtube.video_id, brain.youtube.state = VIDEO, "waiting"  # paused until the reset
+            ok, text = await brain.admin(["youtube", "quota", "50000"])
+            assert ok == "ok" and "50,000 units a day" in text and "stops at 45,000" in text
+            assert followed[-1] == VIDEO  # it goes on at once, with the room it has now
+            await brain.stop_adapters()
+        with Store(db) as store:  # Google's grant outlives a restart
+            brain = Brain(store, lambda: connect_to("127.0.0.1", 1))
+            brain.start_adapters(config_for(tmp_path))
+            assert brain.youtube is not None and brain.youtube.quota.stop == 45_000
             await brain.stop_adapters()
 
     run(test)
