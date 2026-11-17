@@ -167,6 +167,14 @@ class _Client(discord.Client):
         async def status(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
             await interaction.response.send_message(adapter.status_text(), ephemeral=True)
 
+        if adapter.me is not None:
+            me_text = adapter.me
+
+            @self.tree.command(name="me", description="Your points and rank (only you see the answer)")
+            async def me(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
+                answer = me_text(user_id("dc", str(interaction.user.id)))
+                await interaction.response.send_message(answer, ephemeral=True)
+
         if adapter.moderation is not None:
             self._moderator_commands(adapter.moderation)
         self.tree.copy_global_to(guild=guild)
@@ -328,6 +336,7 @@ class DiscordChat:
         alerts_channel: str = "mod-alerts",
         press: Callable[[ChatMessage], str] | None = None,
         panel_state: Callable[[], PanelState | None] | None = None,
+        me: Callable[[str], str] | None = None,
     ) -> None:
         self.token = token
         self.guild_id = guild_id
@@ -337,6 +346,7 @@ class DiscordChat:
         self.moderation = moderation
         self.alerts_channel = alerts_channel.removeprefix("#")
         self.press = press  # a panel button: brain handles it as typed, returns the answer
+        self.me = me  # /me: a user's points and rank (brain's me_text)
         self.panel = Panel(panel_state, self.pressed, self._ready) if press and panel_state else None
         self.presses = 0
         self.state = "off"  # off, connecting, connected, reconnecting, stopped

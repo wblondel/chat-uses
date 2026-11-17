@@ -63,6 +63,10 @@ PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'import chatuses.brain, cha
 PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'from pathlib import Path
 from chatuses.referee import laws
 laws.load(Path("/usr/lib/chat-brain/rulesets"), "roguelike")' # PyYAML, and a valid default ruleset
+PYTHONPATH=/usr/lib/chat-brain "$VENV/bin/python" -c 'from pathlib import Path
+from chatuses.game import achievements
+found = achievements.load(Path("/usr/lib/chat-brain/achievements"))
+print(f"    achievements: {len(found)}")' # every achievements/*.yaml is valid
 tesseract --list-langs 2>/dev/null | sed -n '2,$p' | tr '\n' ' ' | sed 's/^/    tesseract languages: /; s/$/\n/'
 
 log "Services"

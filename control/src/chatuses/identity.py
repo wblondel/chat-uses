@@ -42,6 +42,10 @@ class Presence:
     def active(self, now: float) -> set[str]:
         return {u for u in self._last_seen if self.is_active(u, now)}
 
+    def seen_since(self, start: float, now: float) -> set[str]:
+        """Who sent a message between start and now (and isn't banned): a minute's points."""
+        return {u for u, last in self._last_seen.items() if start <= last <= now and not self.is_banned(u)}
+
     def is_eligible(self, user: str, vote_opened: float) -> bool:
         first = self._first_seen.get(user)
         return first is not None and first <= vote_opened - SETTLE_TIME and self.is_active(user, vote_opened)

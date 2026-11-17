@@ -26,6 +26,8 @@ what the stream shows), so the feed needs no password. Messages:
                                                             vote (game/runs.py view())
     {"type": "card", "kind": "death" | "start",             a full-frame card for `seconds`: a dead
      "seconds": float, ...}                                 run's (brain's end_run), a new run's
+    {"type": "achievement", "name", "description",          unlocked (game/achievements.py): a toast
+     "rewards": [str]}
 
 bcast follows "panic" too (chat-bcast-panic), to mute the target's sound.
 
@@ -160,6 +162,9 @@ class OverlayHub:
         if death and death.get("ends_in") is not None:
             view["death"] = {**death, "ends_in": round(max(0.0, death["ends_in"] - gone), 1)}
         return view
+
+    def achievement(self, data: dict[str, Any]) -> None:
+        self._send({"type": "achievement", **data})
 
     def card(self, kind: str, data: dict[str, Any], seconds: float) -> None:
         self._card = {"type": "card", "kind": kind, **data, "seconds": seconds}

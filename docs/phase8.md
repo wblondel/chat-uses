@@ -6,7 +6,7 @@ Done when a full run lifecycle works end to end: start → achievements →
 rewinds → death → Graveyard on the site and Discord.
 
 1. **Runs, lives, deaths, new runs** (below).
-2. Achievements and points.
+2. **Achievements and points** (below).
 3. The public site.
 4. The end-to-end test.
 
@@ -109,3 +109,87 @@ this), `sudo images/debian-xfce/deploy.sh --replace` gives it a fresh
 desktop and one. To see a whole death without breaking anything:
 `admin run end testing` shows the card, posts in `#graveyard` and starts
 run #2 from the golden snapshot.
+
+## Step 2: achievements and points
+
+`control/src/chatuses/game/achievements.py` and `game/points.py`, PLAN.md
+6.8 and 6.11.
+
+**Achievements** are defined in `achievements/*.yaml` (the image carries
+the folder; `starter.yaml` documents the format). Each has a key, a name, a
+description, one check and a reward of points (0 to 1000) and lives (0 to
+2). brain reads them all when it starts and refuses a file with an unknown
+key, a bad type or a value out of bounds, saying why in its journal; it then
+runs without any rather than with half of them. `provision.sh` loads them
+while building the image, so a broken file fails the build first.
+
+| Check | Unlocked when | Where |
+|---|---|---|
+| `process` | a process name matches `pattern` (`pgrep`) | in the target |
+| `file_exists` | `path` exists | in the target |
+| `package` | the Debian package `name` is installed | in the target |
+| `http` | something answers on the target's port 80 | in the target |
+| `command` | `run` (`sh -c`) exits 0 | in the target |
+| `ocr_text` | screen OCR's last read matches `pattern` (any case) | brain |
+| `uptime_since_rewind` | the run has gone `hours` without a rewind | brain |
+| `saves` | chat has `count` named saves | brain |
+
+Checks in the target go through Incus exec and only their exit status
+counts: nothing the target prints is read, and a check that takes more than
+10 s, or can't run, is a no. Chat can fake some of them (`touch` the file),
+and that's fine. The starter set has 15: Hello World, Wallpaper Artist, Doom
+Guy (+1 life), Encyclopedist, Package Manager, Compiler, Pythonista, Web
+Master, Terminal Aesthetic, Dark Mode, Minimalist, Archivist, and Survivor
+1 h, 6 h (+1 life) and 24 h (+1 life).
+
+Every 30 seconds while a run is alive, brain checks the achievements it
+hasn't unlocked, but not while a moderator covers the stream, the machine
+travels, restarts or dies, or a power vote runs (it may rewind). An
+achievement unlocks once a run. It credits everyone who had a command
+accepted in the 10 minutes before; each of them gets its points, and the run
+gets its lives. A gold toast shows it on stream for 8 seconds (several
+queue up), and `#achievements` gets `🏆 **Doom Guy** (run #3): Get Freedoom
+running. +50 points each for 6, +1 life.` A ruleset without `achievements`
+in its features checks nothing.
+
+**Points** never go down:
+
+- +1 for each minute someone sends something in chat;
+- +2 for each of their commands that ran on the machine, 10 a minute at
+  most (spam earns nothing more);
+- an achievement's points, for each one they're credited with.
+
+They're kept on each user, so a deletion request takes them, and takes
+the person out of every achievement's credits. Discord's `/me` tells you
+your points, your rank and what you helped unlock this run, only to you.
+The leaderboard leaves out anyone banned or timed out at the moment.
+
+Moderators: `chat-brain-admin achievements` (the run's, ✓ or ·),
+`chat-brain-admin leaderboard` (the top 10).
+
+### What was tested
+
+- `tests/test_achievements.py`: the starter set loads; ten kinds of bad
+  definition are refused with the reason; checks in the target run the
+  expected command and only the exit status counts, a hanging one is a no;
+  brain's own checks (OCR, time since a rewind, saves); points a minute, per
+  command with the cap, the leaderboard without the sanctioned; an unlock
+  through brain credits who played in the last 10 minutes and not before,
+  gives points and a life, once a run, with the toast, the `#achievements`
+  post, `achievements`, `leaderboard` and `/me`'s text; no checks while
+  dying or with the feature off; a command that ran earns points, a flushed
+  one doesn't; a deletion request takes the points and the credits.
+- `tests/test_discord.py`: `/me` answers only the asker, about themself.
+- The overlay's toast rendered in Chromium from a fake feed.
+
+### On the server
+
+```bash
+cd /opt/chat-uses && sudo git pull
+sudo images/build.sh brain && sudo images/brain/deploy.sh --replace   # achievements: 15
+admin achievements                            # Run #1: 0 of 15 achievements. …
+```
+
+To see one unlock: open a terminal on the stream and run `cmatrix`
+(Terminal Aesthetic) or type `hello world` in a text editor (Hello World);
+within 30 seconds the toast shows and `#achievements` gets the post.

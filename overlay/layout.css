@@ -245,6 +245,19 @@ html, body {
 .badge.lockdown { background: #3a1018; color: #ff8a8a; white-space: nowrap; }
 .badge[hidden] { display: none; }
 
+/* --- an achievement's toast ------------------------------------------------------- */
+
+#toast {
+  position: absolute; left: 20px; top: 912px; width: 1560px; height: 150px;
+  box-sizing: border-box; padding: 18px 26px;
+  display: flex; flex-direction: column; justify-content: center; gap: 8px;
+  background: #2a2410; border: 3px solid #ffd166; border-radius: 12px;
+  z-index: 5;
+}
+#toast[hidden] { display: none; }
+.toast-title { font-size: 40px; font-weight: bold; color: #ffd166; }
+.toast-text { font-size: 26px; }
+
 /* --- a run's cards (death, start) ------------------------------------------------ */
 
 .card-scene {

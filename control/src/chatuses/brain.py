@@ -19,6 +19,8 @@ environment variables (images/brain/rootfs/etc/chat-uses/brain.env.tmpl):
     DISCORD_ALERTS_CHANNEL   where moderators get alerts (mod-alerts)
     DISCORD_OPS_CHANNEL      where the watchdog reports the target's health (ops)
     DISCORD_GRAVEYARD_CHANNEL where dead runs' cards go (graveyard)
+    DISCORD_ACHIEVEMENTS_CHANNEL where unlocked achievements go (achievements)
+    ACHIEVEMENTS_DIR         achievement definitions (/usr/lib/chat-brain/achievements)
     INCUS_URL                the host's Incus API, for forensic snapshots on panic;
                              off without it or without the certificates (INCUS_*)
     TARGET_INSTANCE          the target's instance name (default: found by TARGET_HOST)
@@ -58,6 +60,9 @@ from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
 from chatuses.commands import Click, Drag, InputCommand, Load, Meta, Move, Rewind, Save, describe
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
+from chatuses.game import achievements as achievements_module
+from chatuses.game.achievements import CHECK_EVERY, CREDIT, Achievement, AchievementError, Context, passes
+from chatuses.game.points import Points
 from chatuses.game.runs import Death, Runs, uptime_text
 from chatuses.identity import Platform, user_id
 from chatuses.incus import Incus, IncusError
@@ -95,7 +100,7 @@ ADMIN_USAGE = (
     "       | endvote | mode anarchy|democracy | ruleset [NAME] | laws | law NAME VALUE|default\n"
     "       | snapshots | snapshot | rewind-to NUMBER|SAVE\n"
     "       | session | session start NAME | session end | sessions | ocr | ocr-verdict HIT real|false\n"
-    "       | run | run end [CAUSE]"
+    "       | run | run end [CAUSE] | achievements | leaderboard"
 )
 OVERLAY_ONLY = ("grid", "help", "rules")  # meta commands the overlay answers by itself
 # Counted in the vote panel, not each put in the log: a vote would push every command off it.
@@ -137,6 +142,8 @@ class Config:
     discord_alerts_channel: str = "mod-alerts"
     discord_ops_channel: str = "ops"
     discord_graveyard_channel: str = "graveyard"
+    discord_achievements_channel: str = "achievements"
+    achievements_dir: str = "/usr/lib/chat-brain/achievements"
     incus_url: str = ""
     incus_project: str = "targets"
     incus_cert: str = f"{SECRETS}/incus-client.crt"
@@ -177,6 +184,9 @@ class Config:
             discord_ops_channel=env.get("DISCORD_OPS_CHANNEL", "") or cls.discord_ops_channel,
             discord_graveyard_channel=env.get("DISCORD_GRAVEYARD_CHANNEL", "")
             or cls.discord_graveyard_channel,
+            discord_achievements_channel=env.get("DISCORD_ACHIEVEMENTS_CHANNEL", "")
+            or cls.discord_achievements_channel,
+            achievements_dir=env.get("ACHIEVEMENTS_DIR", "") or cls.achievements_dir,
             incus_url=env.get("INCUS_URL", cls.incus_url),
             incus_project=env.get("INCUS_PROJECT", "") or cls.incus_project,
             incus_cert=env.get("INCUS_CERT", cls.incus_cert),
@@ -231,6 +241,7 @@ class Brain:
         rulesets: Path | None = None,
         thumbs: Path | None = None,
         grab: Callable[[], Awaitable[Frame | None]] | None = None,
+        achievements: list[Achievement] | None = None,
     ) -> None:
         self.store = store
         self.filter = TextFilter()
@@ -268,6 +279,9 @@ class Brain:
         self.runs.ensure(self.referee.ruleset.name, target_instance or target_host)
         self._ending = False  # a run's end and the next run's start under way
         self.graveyard_channel = "graveyard"
+        self.achievements = achievements or []  # game/achievements.py
+        self.achievements_channel = "achievements"
+        self.points = Points(store, self.pipeline.presence)  # game/points.py
         self.incus = incus
         self.incus_off_reason = "" if incus else "not set up"
         self.target_host = target_host
@@ -727,6 +741,7 @@ class Brain:
         self.overlay.set_state(job.ref, "done" if result == "done" else "dropped")
         if result != "done":
             return
+        self.points.command_ran(job.user_id)
         match job.command:
             case Click(x=x, y=y) | Move(x=x, y=y) | Drag(end=(x, y)):
                 self.overlay.pointer(x, y, name)
@@ -768,6 +783,7 @@ class Brain:
                 config.discord_alerts_channel,
                 press=self.press,
                 panel_state=self.panel_state,
+                me=self.me_text,
             )
             self.discord.start()
         else:
@@ -937,6 +953,10 @@ class Brain:
                 return "ok", "\n".join(_session_line(row) for row in rows)
             case ["run"]:
                 return "ok", self.run_line()
+            case ["achievements"]:
+                return "ok", self.achievements_text()
+            case ["leaderboard"]:
+                return "ok", self.leaderboard_text()
             case ["run", "end", *why]:
                 if self.runs.current is None or self._ending:
                     return "error", "No run to end right now."
@@ -1040,6 +1060,125 @@ class Brain:
         task = asyncio.create_task(job)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
+
+    # --- achievements and points (game/) ------------------------------------------------
+
+    async def _points_minutes(self) -> None:
+        """A point a minute to everyone active in chat (game/points.py). Never returns."""
+        while True:
+            await asyncio.sleep(60)
+            self.points.active_minute()
+
+    async def _achievement_checks(self) -> None:
+        """The run's locked achievements, checked while it's alive (game/achievements.py). Never returns."""
+        while True:
+            await asyncio.sleep(CHECK_EVERY)
+            await self.check_achievements()
+
+    def _quiet(self) -> bool:
+        vote = self.referee.votes.current
+        return (
+            self.moderation.panicking
+            or self._travelling
+            or self._ending
+            or self.runs.state != "alive"
+            or (vote is not None and vote.phase == "running")
+        )
+
+    async def check_achievements(self) -> list[Achievement]:
+        """One round of checks; what was unlocked."""
+        run = self.runs.current
+        if run is None or "achievements" not in self.referee.ruleset.features or self._quiet():
+            return []
+        done = self.store.unlocked(run["id"])
+        unlocked: list[Achievement] = []
+        context = self._achievement_context(run)
+        for achievement in self.achievements:
+            if achievement.key in done:
+                continue
+            if achievement.kind in achievements_module.IN_TARGET and self.incus is None:
+                continue
+            if await passes(achievement, context) and self._unlock(run, achievement):
+                unlocked.append(achievement)
+        return unlocked
+
+    def _achievement_context(self, run: dict[str, Any]) -> Context:
+        async def run_in_target(command: list[str]) -> int:
+            assert self.incus is not None
+            return await self.incus.exec(await self._instance(), command)
+
+        def since_rewind() -> float:
+            last = self.store.last_event_time("time-travel", run["started"])
+            return time.time() - (last if last is not None else run["started"])
+
+        return Context(
+            exec=run_in_target,
+            screen_text=lambda: self.watch.last_text if self.watch else "",
+            since_rewind=since_rewind,
+            saves=lambda: len(self.snapshots.all("named")) if self.snapshots else 0,
+        )
+
+    def _unlock(self, run: dict[str, Any], achievement: Achievement) -> bool:
+        now = time.time()
+        credited = self.store.commanders(now - CREDIT, now)
+        if not self.store.unlock(run["id"], achievement.key, now, credited, achievement.points):
+            return False
+        for _ in range(achievement.lives):
+            self.runs.give_life(f"achievement: {achievement.name}")
+        rewards = (
+            [f"+{achievement.points} points each for {len(credited)}"]
+            if achievement.points and credited
+            else []
+        )
+        if achievement.lives:
+            rewards.append(f"+{achievement.lives} {'life' if achievement.lives == 1 else 'lives'}")
+        self.overlay.achievement(
+            {"name": achievement.name, "description": achievement.description, "rewards": rewards}
+        )
+        if self.discord is not None:
+            text = f"🏆 **{achievement.name}** (run #{run['number']}): {achievement.description}."
+            if rewards:
+                text += " " + ", ".join(rewards) + "."
+            self.discord.alert(text, channel=self.achievements_channel)
+        log.info("run #%s: %s unlocked (%d credited)", run["number"], achievement.key, len(credited))
+        return True
+
+    def achievements_text(self) -> str:
+        run = self.runs.current
+        if run is None:
+            return "No run going on."
+        done = self.store.unlocked(run["id"])
+        lines = [f"Run #{run['number']}: {len(done)} of {len(self.achievements)} achievements."]
+        for a in self.achievements:
+            mark = "✓" if a.key in done else "·"
+            lines.append(f"{mark} {a.name}: {a.description}")
+        return "\n".join(lines)
+
+    def leaderboard_text(self, limit: int = 10) -> str:
+        rows = self.store.leaderboard(limit)
+        if not rows:
+            return "No points yet."
+        return "\n".join(
+            f"{i}. {self.filter.safe_name(r['user'], r['name'])}: {r['points']}"
+            for i, r in enumerate(rows, 1)
+        )
+
+    def me_text(self, user: str) -> str:
+        """Discord's /me: your points and rank, privately."""
+        points, rank, total = self.store.standing(user)
+        if not points:
+            return "No points yet: a point a minute you're active in chat, two for each command that runs."
+        run = self.runs.current
+        mine = []
+        if run is not None:
+            names = {a.key: a.name for a in self.achievements}
+            mine = [
+                names.get(k, k) for k, v in self.store.unlocked(run["id"]).items() if user in v["credited"]
+            ]
+        text = f"You have {points} points: #{rank} of {total}."
+        if mine:
+            text += " This run you helped unlock: " + ", ".join(mine) + "."
+        return text
 
     # --- runs (game/runs.py) ------------------------------------------------------------
 
@@ -1207,13 +1346,20 @@ class Brain:
         self.start_ocr(config)
         self.ops_channel = config.discord_ops_channel
         self.graveyard_channel = config.discord_graveyard_channel
+        self.achievements_channel = config.discord_achievements_channel
         if self.snapshots is not None:
             try:
                 await self.snapshots.reconcile()
             except (IncusError, OSError, aiohttp.ClientError, TimeoutError) as err:
                 log.warning("snapshots: can't list the target's: %s", err)
         jobs = (self.keep_tidy(), self.watchdog.run(), self._referee_ticks(), self._auto_snapshots())
-        for job in (*jobs, self._session_samples(), self._run_watch()):
+        for job in (
+            *jobs,
+            self._session_samples(),
+            self._run_watch(),
+            self._points_minutes(),
+            self._achievement_checks(),
+        ):
             task = asyncio.create_task(job)
             self._background.add(task)
             task.add_done_callback(self._background.discard)
@@ -1269,6 +1415,11 @@ async def amain(config: Config) -> None:
             finally:
                 await reader.close()
 
+        try:
+            achievements = achievements_module.load(Path(config.achievements_dir))
+        except (AchievementError, OSError) as err:
+            log.error("achievements: %s (none this time)", err)
+            achievements = []
         brain = Brain(
             store,
             lambda: connect_to(config.target_host, config.vnc_port),
@@ -1279,6 +1430,7 @@ async def amain(config: Config) -> None:
             rulesets,
             Path(config.thumbs_dir),
             grab,
+            achievements,
         )
         brain.incus_off_reason = why_not
         await brain.serve(config, stop)

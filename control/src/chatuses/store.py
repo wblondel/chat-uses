@@ -10,6 +10,7 @@ chat's snapshots (snapshots.py); later phases add theirs (runs...).
 
 import json
 import sqlite3
+import time
 from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -24,7 +25,8 @@ CREATE TABLE IF NOT EXISTS users (
     first_seen REAL NOT NULL,
     last_seen REAL NOT NULL,
     banned_until REAL,
-    roles TEXT NOT NULL DEFAULT ''   -- space-separated, as the platform last said
+    roles TEXT NOT NULL DEFAULT '',  -- space-separated, as the platform last said
+    points INTEGER NOT NULL DEFAULT 0 -- PLAN.md 6.11 (game/points.py)
 );
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY,
@@ -83,6 +85,14 @@ CREATE TABLE IF NOT EXISTS runs (  -- Phase 8 (game/runs.py)
     last_commands_json TEXT,          -- [{"user", "name", "text", "ts"}], its last commands
     final_frame TEXT                  -- thumbs/<file> of its last screen, or null
 );
+CREATE TABLE IF NOT EXISTS achievements (  -- Phase 8 (game/achievements.py)
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    key TEXT NOT NULL,
+    at REAL NOT NULL,
+    credited_users_json TEXT NOT NULL,  -- who sent a command in the 10 minutes before
+    UNIQUE (run_id, key)
+);
 CREATE TABLE IF NOT EXISTS laws (
     key TEXT PRIMARY KEY,             -- a law, or tiers.ACTION.SETTING (referee/laws.py)
     value TEXT NOT NULL,              -- JSON number, over the ruleset's
@@ -134,6 +144,8 @@ class Store:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(users)")}
         if "roles" not in columns:  # Phase 4 step 4
             self.db.execute("ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT ''")
+        if "points" not in columns:  # Phase 8
+            self.db.execute("ALTER TABLE users ADD COLUMN points INTEGER NOT NULL DEFAULT 0")
         (trigger,) = self.db.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'events_no_delete'"
         ).fetchone()
@@ -478,6 +490,15 @@ class Store:
             self.db.execute("DELETE FROM settings WHERE key = 'erasing'")
             self.db.execute("UPDATE votes SET proposer = '' WHERE proposer = ?", (user_id,))
             self._forget_in_runs(user_id)
+            for achievement_id, credited in self.db.execute(
+                "SELECT id, credited_users_json FROM achievements WHERE instr(credited_users_json, ?)",
+                (json.dumps(user_id),),
+            ).fetchall():
+                kept = [u for u in json.loads(credited) if u != user_id]
+                self.db.execute(
+                    "UPDATE achievements SET credited_users_json = ? WHERE id = ?",
+                    (json.dumps(kept), achievement_id),
+                )
             if self.banned_until(user_id) > ts:
                 self.db.execute("UPDATE users SET display_name = '', roles = '' WHERE id = ?", (user_id,))
             else:
@@ -669,6 +690,74 @@ class Store:
                 "UPDATE runs SET final_blow_json = ?, last_commands_json = ? WHERE id = ?",
                 (json.dumps(blow_data) if blow_data else None, json.dumps(last_data), run_id),
             )
+
+    # --- achievements and points (game/) ---------------------------------------------------
+
+    def unlocked(self, run_id: int) -> dict[str, dict[str, Any]]:
+        """A run's achievements: key -> {"at", "credited"}."""
+        rows = self.db.execute(
+            "SELECT key, at, credited_users_json FROM achievements WHERE run_id = ? ORDER BY at", (run_id,)
+        ).fetchall()
+        return {key: {"at": at, "credited": json.loads(credited)} for key, at, credited in rows}
+
+    def unlock(self, run_id: int, key: str, ts: float, credited: list[str], points: int) -> bool:
+        """Record it and give each credited user its points; False if the run had it already."""
+        with self.db:
+            self.db.execute("BEGIN")
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO achievements (run_id, key, at, credited_users_json)"
+                " VALUES (?, ?, ?, ?)",
+                (run_id, key, ts, json.dumps(credited)),
+            )
+            if cursor.rowcount == 0:
+                return False
+            if points:
+                self.db.executemany(
+                    "UPDATE users SET points = points + ? WHERE id = ?", [(points, user) for user in credited]
+                )
+            self._event(ts, "achievement", {"run": run_id, "key": key, "credited": len(credited)})
+        return True
+
+    def last_event_time(self, type_: str, since: float) -> float | None:
+        (ts,) = self.db.execute(
+            "SELECT MAX(ts) FROM events WHERE type = ? AND ts >= ?", (type_, since)
+        ).fetchone()
+        return float(ts) if ts is not None else None
+
+    def commanders(self, start: float, end: float) -> list[str]:
+        """Who had a command accepted between start and end (an achievement's credit)."""
+        rows = self.db.execute(
+            "SELECT DISTINCT user_id FROM commands WHERE ts >= ? AND ts <= ? AND outcome = 'accepted'"
+            " ORDER BY user_id",
+            (start, end),
+        )
+        return [user for (user,) in rows]
+
+    def add_points(self, user_ids: list[str], points: int) -> None:
+        if user_ids and points:
+            self.db.executemany(
+                "UPDATE users SET points = points + ? WHERE id = ?", [(points, user) for user in user_ids]
+            )
+
+    def leaderboard(self, limit: int = 100, now: float | None = None) -> list[dict[str, Any]]:
+        """Users by points, most first: none with 0, nor anyone banned or timed out now."""
+        now = time.time() if now is None else now
+        rows = self.db.execute(
+            "SELECT id, display_name, points FROM users WHERE points > 0 AND display_name != ''"
+            " AND coalesce(banned_until, 0) <= ? ORDER BY points DESC, id LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        return [{"user": u, "name": n, "points": p} for u, n, p in rows]
+
+    def standing(self, user_id: str) -> tuple[int, int, int]:
+        """A user's points, their rank (1: first; 0: no points) and how many have points."""
+        row = self.db.execute("SELECT points FROM users WHERE id = ?", (user_id,)).fetchone()
+        points = int(row[0]) if row else 0
+        (total,) = self.db.execute("SELECT COUNT(*) FROM users WHERE points > 0").fetchone()
+        if points <= 0:
+            return 0, 0, int(total)
+        (ahead,) = self.db.execute("SELECT COUNT(*) FROM users WHERE points > ?", (points,)).fetchone()
+        return points, int(ahead) + 1, int(total)
 
     def outcome_counts(self) -> dict[str, int]:
         return dict(self.db.execute("SELECT outcome, COUNT(*) FROM commands GROUP BY outcome").fetchall())

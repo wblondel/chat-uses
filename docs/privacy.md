@@ -35,6 +35,9 @@ server's `#control` channel.
   last commands with the names of those who sent them (as the stream showed
   them), including "probably killed by". It's kept as the run's history,
   after the 90 days; a deletion request takes your name out of it.
+- **Points and achievements:** your points, and which of a run's
+  achievements you were credited with. The leaderboard shows the names
+  with the most points; a deletion request takes your points and credits.
 
 We don't collect anything the platforms don't already show in chat: no
 email, no IP address, no payment data.
