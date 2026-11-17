@@ -145,7 +145,10 @@ def test_bcast_s_reporter_tells_brain_what_systemd_says(tmp_path: Path) -> None:
             (bin_dir / "systemctl").write_text(FAKE_SYSTEMCTL)
             (bin_dir / "systemctl").chmod(0o755)
             state_file = tmp_path / "state"
-            started_long_ago = max(1, int((time.monotonic() - 60) * 1e6))  # a minute ago (or at boot)
+            # The reporter's clock is shifted an hour on: CI's machines may have booted seconds ago,
+            # and systemd's timestamps count from boot.
+            shift = 3600.0
+            started_long_ago = int((time.monotonic() + shift - 60) * 1e6)  # a minute ago
             state_file.write_text(
                 f"ActiveState=active\nActiveEnterTimestampMonotonic={started_long_ago}\nNRestarts=0\n"
             )
@@ -156,6 +159,7 @@ def test_bcast_s_reporter_tells_brain_what_systemd_says(tmp_path: Path) -> None:
                 "BRAIN_URL": f"ws://127.0.0.1:{port}/ws/overlay",
                 "FORWARD_URL": "rtmp://127.0.0.1:1935/dryrun/test",  # something to send to
                 "REPORT_EVERY": "0.1",
+                "REPORT_CLOCK_SHIFT": str(shift),
             }
             proc = await asyncio.create_subprocess_exec(sys.executable, str(REPORTER), env=env)
             try:
@@ -164,7 +168,7 @@ def test_bcast_s_reporter_tells_brain_what_systemd_says(tmp_path: Path) -> None:
                     if brain.forwarder is not None:
                         break
                 assert brain.forwarder is not None and brain.forwarder["state"] == "ok"
-                just_now = int(time.monotonic() * 1e6)  # restarted a moment ago, and again
+                just_now = int((time.monotonic() + shift) * 1e6)  # restarted a moment ago, and again
                 state_file.write_text(
                     f"ActiveState=activating\nActiveEnterTimestampMonotonic={just_now}\nNRestarts=7\n"
                 )
