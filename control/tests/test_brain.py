@@ -94,7 +94,13 @@ def test_a_click_from_chat_reaches_the_desktop_and_the_overlay() -> None:
                 "queued",
             )
             assert await feed.next() == {"type": "log-state", "id": line["id"], "state": "done"}
-            assert await feed.next() == {"type": "pointer", "x": 550, "y": 650, "user": "alice"}
+            assert await feed.next() == {
+                "type": "pointer",
+                "x": 550,
+                "y": 650,
+                "user": "alice",
+                "kind": "click",
+            }
             assert await server.wait_for(3) == [
                 ("ptr", 0, 550, 650),
                 ("ptr", 1, 550, 650),
@@ -1237,5 +1243,33 @@ def test_help_and_rules_show_a_panel_on_stream() -> None:
             lines = brain.help_lines()
             assert not any("!buy" in line or "!rewind" in line or "!democracy" in line for line in lines)
             assert brain.help_markdown().startswith("**Commands**\n- !type hello")
+
+    run(test)
+
+
+def test_a_move_and_a_drag_are_marked_on_stream_as_what_they_are() -> None:
+    """Only a click looks like one: a move is a ring where the pointer went, a drag a line from
+    where it started (found live: both looked like a click at the end cell)."""
+
+    async def test() -> None:
+        server = await FakeVnc().start()
+        async with running(server) as (brain, feed):
+            assert await brain.console_message("alice", "!move K3") == ("accepted", None)
+            assert await feed.next("pointer") == {
+                "type": "pointer",
+                "x": 1050,
+                "y": 250,
+                "user": "alice",
+                "kind": "move",
+            }
+            assert await brain.console_message("alice", "!drag B2 H6") == ("accepted", None)
+            assert await feed.next("pointer") == {
+                "type": "pointer", "x": 750, "y": 550, "user": "alice", "kind": "drag", "from": [150, 150],
+            }  # fmt: skip
+            events = await server.wait_for(13)
+            assert events[0] == ("ptr", 0, 1050, 250)  # the move: no button
+            assert all(e[1] == 0 for e in events[:2]) and events[-1] == ("ptr", 0, 750, 550)  # released at H6
+            assert next(e for e in events if e[0] == "ptr" and e[1] == 1)[2:] == (150, 150)  # pressed at B2
+        await server.stop()
 
     run(test)

@@ -201,31 +201,48 @@ function setLineState(id, state, reason) {
 }
 
 let gridTimer;
-function flashGrid(cell) {
+function flashGrid(cell, lines = false) {
   const grid = $("grid");
   grid.querySelector(".hit")?.classList.remove("hit");
   if (cell) {
     const [col, row] = cell;
     grid.children[row * GRID_COLS + col]?.classList.add("hit");
   }
-  grid.classList.toggle("labels", !cell); // !grid shows every cell's name
+  grid.classList.toggle("labels", !cell && !lines); // !grid shows every cell's name
   grid.hidden = false;
   clearTimeout(gridTimer);
   gridTimer = setTimeout(() => { grid.hidden = true; }, FLASH_MS);
 }
 
 let pointerTimer;
-function showPointer(x, y, user) {
+// Where a command left the pointer. A click lights its cell up; a move or a drag doesn't (they
+// don't click): a hollow ring, and for a drag a dashed line from where it started.
+function showPointer(msg) {
+  const { x, y, user } = msg;
+  const kind = msg.kind ?? "click";
   const p = $("pointer");
   p.style.left = `${x}px`;
   p.style.top = `${y}px`;
+  for (const k of ["click", "move", "drag"]) p.classList.toggle(k, kind === k);
   p.classList.toggle("left", x > 1300); // keep the label on screen
   p.classList.toggle("below", y < 60);
   $("pointer-who").textContent = user;
   p.hidden = false;
+  const line = $("drag-line");
+  if (kind === "drag" && Array.isArray(msg.from)) {
+    const [sx, sy] = msg.from;
+    line.style.left = `${sx}px`;
+    line.style.top = `${sy}px`;
+    line.style.width = `${Math.hypot(x - sx, y - sy)}px`;
+    line.style.transform = `rotate(${Math.atan2(y - sy, x - sx)}rad)`;
+    line.hidden = false;
+  } else {
+    line.hidden = true;
+  }
   clearTimeout(pointerTimer);
-  pointerTimer = setTimeout(() => { p.hidden = true; }, FLASH_MS);
-  flashGrid([Math.floor(x / 100), Math.floor(y / 100)]);
+  pointerTimer = setTimeout(() => { p.hidden = true; line.hidden = true; }, FLASH_MS);
+  if (kind === "click") flashGrid([Math.floor(x / 100), Math.floor(y / 100)]);
+  else flashGrid(null, true); // the grid's lines, no cell lit
 }
 
 // --- the power vote (control/src/chatuses/referee/votes.py) ---------------------
@@ -637,7 +654,7 @@ function onMessage(msg) {
       setLineState(msg.id, msg.state, msg.reason);
       break;
     case "pointer":
-      showPointer(msg.x, msg.y, msg.user);
+      showPointer(msg);
       break;
     case "grid":
       flashGrid(null);

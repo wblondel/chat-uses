@@ -120,8 +120,15 @@ class OverlayHub:
             message["reason"] = reason
         self._send(message)
 
-    def pointer(self, x: int, y: int, user: str) -> None:
-        self._send({"type": "pointer", "x": x, "y": y, "user": user})
+    def pointer(
+        self, x: int, y: int, user: str, kind: str = "click", start: tuple[int, int] | None = None
+    ) -> None:
+        """Where a command left the pointer, and how: a click (the cell lights up), a move, or a
+        drag from `start` (a line, no lit cell): only a click looks like one."""
+        message: dict[str, Any] = {"type": "pointer", "x": x, "y": y, "user": user, "kind": kind}
+        if start is not None:
+            message["from"] = list(start)
+        self._send(message)
 
     def grid(self) -> None:
         self._send({"type": "grid"})

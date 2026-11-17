@@ -50,7 +50,13 @@ def test_a_page_gets_the_recent_log_then_live_updates() -> None:
                 None,
                 "slow down",
             )
-            assert await receive(ws) == {"type": "pointer", "x": 550, "y": 650, "user": "alice"}
+            assert await receive(ws) == {
+                "type": "pointer",
+                "x": 550,
+                "y": 650,
+                "user": "alice",
+                "kind": "click",
+            }
             assert await receive(ws) == {"type": "grid"}
 
             await ws.send_str("anything: the page has no say")
