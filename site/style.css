@@ -66,7 +66,7 @@ section {
   padding: 0.25rem 1.25rem 1rem;
   margin: 1rem 0;
 }
-section.about { background: none; border: 0; padding: 0; }
+section.about, section.plain { background: none; border: 0; padding: 0; }
 section h2 { margin-top: 1rem; }
 
 code {
@@ -89,7 +89,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 td code { white-space: nowrap; overflow-wrap: normal; }
 td.note { color: var(--gold); font-size: 0.9em; }
 /* Wide tables scroll on their own, not the page. */
-table.graveyard, table.votes, table.achievements { display: block; overflow-x: auto; }
+table.graveyard, table.votes, table.achievements, table.chaos { display: block; overflow-x: auto; }
 
 .by { color: var(--muted); font-size: 0.9em; }
 .pts { color: var(--gold); font-variant-numeric: tabular-nums; }

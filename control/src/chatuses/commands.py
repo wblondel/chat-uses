@@ -129,7 +129,14 @@ class Amend:
     value: float
 
 
-MetaCommand = Meta | Rewind | Load | Save | MacroDefine | MacroRemove | Amend
+@dataclass(frozen=True)
+class Buy:
+    """!buy NAME: a chaos modifier for points (game/chaos.py)."""
+
+    key: str
+
+
+MetaCommand = Meta | Rewind | Load | Save | MacroDefine | MacroRemove | Amend | Buy
 Command = InputCommand | MetaCommand
 
 
@@ -186,6 +193,8 @@ def describe(command: Command) -> str:
             return f"!unmacro {name}"
         case Amend(law=law, value=value):
             return f"!amend {law} {value:g}"
+        case Buy(key=key):
+            return f"!buy {key}"
 
 
 def macro_source(steps: tuple[StepCommand, ...]) -> str:

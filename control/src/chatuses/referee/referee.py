@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from chatuses.commands import (
     Amend,
+    Buy,
     InputCommand,
     Load,
     MacroDefine,
@@ -120,7 +121,7 @@ class Referee:
                 except constitution.AmendError as err:
                     return Reply(False, str(err))
                 return self._propose(user, name, Proposal("amend", describe(command), law, value=value), now)
-            case Meta():
+            case Meta() | Buy():  # !buy is brain's chaos shop (game/chaos.py)
                 return Reply(False, "not a vote")
 
     def _propose(self, user: str, name: str, proposal: Proposal, now: float) -> Reply:
@@ -261,3 +262,5 @@ def _word(command: MetaCommand) -> str:
             return "unmacro"
         case Amend():
             return "amend"
+        case Buy():
+            return "buy"

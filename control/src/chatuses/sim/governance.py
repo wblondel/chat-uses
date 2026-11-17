@@ -25,6 +25,10 @@ pipeline, referee and lockdown, on a simulated clock.
   it, everyone else's input is refused for the drive while votes still
   work; `!impeach` ends it; the next offer goes to someone else, and an
   offer nobody takes runs out.
+- **chaos:** too few points can't buy a modifier, enough can; one at a
+  time, five minutes apart; an inverted mouse mirrors a click, a shuffled
+  grid sends chat's click where its label now is; Super Chats queue and run
+  one after another, cooldown or not.
 - **amendments:** 60 % can't amend a law (it takes 75 %); 12 of 30 who
   agree can, through the veto countdown, and the law changes; another
   amendment waits an hour; what the constitution doesn't allow (out of
@@ -45,6 +49,8 @@ from dataclasses import dataclass, field
 
 from chatuses.commands import (
     Amend,
+    Buy,
+    Click,
     InputCommand,
     Load,
     MacroDefine,
@@ -54,6 +60,8 @@ from chatuses.commands import (
     Save,
     StepCommand,
 )
+from chatuses.game import chaos as chaos_module
+from chatuses.game.chaos import COOLDOWN, MODIFIERS, Chaos
 from chatuses.game.driver import DriverSeat
 from chatuses.pipeline import ChatMessage, Pipeline
 from chatuses.referee.constitution import UNKNOWN
@@ -140,6 +148,12 @@ class Room:
             lambda event, seat: self.driven.append((event, seat.user)),
             self.rng,
         )
+        self.ran_inputs: list[InputCommand] = []  # what reached the machine, chaos and all
+        self.chaos = Chaos(
+            self.pipeline.grid,
+            lambda _old, _new: setattr(self.pipeline, "grid", self.chaos.aim_grid()),
+            self.rng,
+        )
         self.roles: dict[str, frozenset[str]] = {}
         self.ran: list[str] = []  # what passed votes did
         self.said: list[Said] = []
@@ -206,6 +220,10 @@ class Room:
                     reply = why
                 else:
                     self.inputs += 1
+                    self.ran_inputs.append(self.chaos.transform(command))
+            elif isinstance(command, Buy):
+                _ok, reply = chaos_module.buy(self.chaos, self.store, user, user, command.key, self.now)
+                reply = "ok" if _ok else reply
             elif isinstance(command, (Rewind, Load, Save, MacroDefine, MacroRemove, Amend)) or (
                 isinstance(command, Meta) and command.name not in OVERLAY_ONLY
             ):
@@ -248,6 +266,7 @@ class Room:
                 self.now = tick
                 self.referee.tick()
                 self.driver.tick(self.now, not self.referee.democracy, lambda u: u)
+                self.chaos.tick(self.now, chance=False)  # chance's own timing: tests/test_chaos.py
                 tick += TICK
                 await asyncio.sleep(0)  # a passed vote's action runs
         self.now = end
@@ -496,6 +515,65 @@ async def driver(room: Room, result: Result) -> None:
     )
 
 
+async def chaos(room: Room, result: Result) -> None:
+    people = room.settled(10)
+
+    def give(user: str, points: int) -> None:
+        room.store.seen_user(user, user, room.now, frozenset())
+        room.store.add_points([user], points)
+
+    give("u0", 100)
+    give("u1", 10)
+    reply = room.say("u1", "!buy quake")
+    result.check(
+        "10 points can't buy an earthquake (30)", reply == "Earthquake costs 30 points: you have 10", reply
+    )
+    result.check("100 points buy an inverted mouse (80)", room.say("u0", "!buy mirror") == "ok")
+    result.check("the points are spent", room.store.standing("u0")[0] == 20)
+    reply = room.say("u2", "!buy quake")
+    result.check("one at a time", reply.startswith("Inverted mouse is on:"), reply)
+    room.say("u3", "!click A1")
+    click = room.ran_inputs[-1]
+    result.check(
+        "a click on A1 lands mirrored", isinstance(click, Click) and (click.x, click.y) == (1549, 849), click
+    )
+    await room.wait(61)
+    give("u0", 100)
+    reply = room.say("u0", "!buy quake")
+    result.check("five minutes before the next", reply.startswith("chaos again in"), reply)
+    room.now += COOLDOWN
+    room.settled(10)
+    give("u4", 100)
+    result.check("then a shuffled grid", room.say("u4", "!buy shuffle") == "ok")
+    labels = room.chaos.active.labels if room.chaos.active else {}
+    shown = labels["cols"][0] + labels["rows"][0]  # the label over the real A1
+    room.say("u5", f"!click {shown}")
+    click = room.ran_inputs[-1]
+    result.check(
+        f"chat clicks {shown}, where A1 now shows that label",
+        isinstance(click, Click) and (click.x, click.y) == (50, 50),
+        click,
+    )
+    await room.wait(61)
+    result.check(
+        "the grid is back", room.pipeline.grid.locate("A1") == (50, 50) and room.chaos.active is None
+    )
+    room.chaos.paid("quake", "fan1", room.now)  # Super Chats: no cooldown, in turn
+    room.chaos.paid("flip", "fan2", room.now)
+    first = room.chaos.active
+    result.check(
+        "a Super Chat's chaos starts at once, cooldown or not",
+        first is not None and first.modifier.key == "quake",
+    )
+    await room.wait(MODIFIERS["quake"].seconds + 1)
+    second = room.chaos.active
+    result.check(
+        "the next one follows when it ends",
+        second is not None and (second.modifier.key, second.by) == ("flip", "fan2"),
+    )
+    del people
+
+
 async def amendments(room: Room, result: Result) -> None:
     people = room.settled(30)
     room.say("u0", "!amend democracy_window 20")
@@ -554,6 +632,7 @@ SCENARIOS: dict[str, Scenario] = {
     "ties": ties,
     "macros": macros,
     "driver": driver,
+    "chaos": chaos,
     "amendments": amendments,
 }
 

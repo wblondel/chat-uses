@@ -16,6 +16,8 @@
        name of who moved the pointer. -->
   <div id="grid" hidden aria-hidden="true"></div>
   <div id="pointer" hidden><div class="dot"></div><div id="pointer-who"></div></div>
+  <!-- Chaos's blackout (game/chaos.py): chat plays blind, the machine runs on. -->
+  <div id="blackout" class="cover" hidden><div class="cover-title">BLACKOUT · chat plays blind</div></div>
   <div id="screen-lost" class="cover" hidden>
     <div class="cover-title">Reconnecting to the machine…</div>
   </div>
@@ -37,6 +39,12 @@
       <div class="meter"><div class="meter-fill" id="meter"></div><div class="meter-tick" id="tick-anarchy"></div><div class="meter-tick" id="tick-democracy"></div><div class="meter-marker" id="meter-marker"></div></div>
       <div class="row meter-legend"><span class="anarchy">Anarchy</span><span class="democracy">Democracy</span></div>
       <div class="row"><span class="value anarchy" id="mode-name">Anarchy</span><span class="muted" id="mode-lock"></span></div>
+    </section>
+    <!-- A chaos modifier (game/chaos.py): shown while one is on. -->
+    <section class="panel" id="chaos-panel" hidden>
+      <div class="row"><span class="label">Chaos</span><span class="value" id="chaos-left"></span></div>
+      <div class="value" id="chaos-name"></div>
+      <div class="muted" id="chaos-by"></div>
     </section>
     <!-- The driver's seat (game/driver.py): shown while someone is offered it or drives. -->
     <section class="panel" id="driver-panel" hidden>

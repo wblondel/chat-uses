@@ -83,6 +83,8 @@ class OverlayHub:
         self._run_at = 0.0
         self._driver: dict[str, Any] | None = None  # the driver's seat (game/driver.py)
         self._driver_at = 0.0
+        self._chaos: dict[str, Any] | None = None  # a chaos modifier (game/chaos.py)
+        self._chaos_at = 0.0
         self._card: dict[str, Any] | None = None
         self._card_until = 0.0
         self._clients: set[asyncio.Queue[str | None]] = set()
@@ -176,6 +178,17 @@ class OverlayHub:
         gone = time.monotonic() - self._driver_at
         return {**self._driver, "ends_in": round(max(0.0, self._driver["ends_in"] - gone), 1)}
 
+    def chaos(self, view: dict[str, Any] | None) -> None:
+        """A chaos modifier: {"key", "name", "by", "source", "ends_in", "grid"?}, or None."""
+        self._chaos, self._chaos_at = view, time.monotonic()
+        self._send({"type": "chaos", "chaos": view})
+
+    def _chaos_now(self) -> dict[str, Any] | None:
+        if self._chaos is None:
+            return None
+        gone = time.monotonic() - self._chaos_at
+        return {**self._chaos, "ends_in": round(max(0.0, self._chaos["ends_in"] - gone), 1)}
+
     def achievement(self, data: dict[str, Any]) -> None:
         self._send({"type": "achievement", **data})
 
@@ -233,6 +246,7 @@ class OverlayHub:
             "run": self._run_now(),
             "card": self._card_now(),
             "driver": self._driver_now(),
+            "chaos": self._chaos_now(),
         }
         queue.put_nowait(json.dumps(hello, ensure_ascii=False))
         self._clients.add(queue)

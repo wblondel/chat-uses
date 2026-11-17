@@ -30,10 +30,11 @@ of its own: `!macro hello = type hello; enter`, then anyone types
 `!hello`. Some laws can be changed by chat too, with `!amend` and three
 quarters of yes: the site's Laws page says which. Every 10 minutes one of
 chat is offered the driver's seat: a minute when only their commands run
-(chat can `!impeach` them). Refused text never reaches the screen; three
-refused slurs in 10 minutes are a 10-minute timeout. Moderators get the
-screen's text read to them (screen OCR) and can stop everything in a
-second.
+(chat can `!impeach` them). Points buy a minute of chaos (`!buy quake`
+shakes the stream): the site lists what's in the shop. Refused text never
+reaches the screen; three refused slurs in 10 minutes are a 10-minute
+timeout. Moderators get the screen's text read to them (screen OCR) and
+can stop everything in a second.
 
 **Your data:** see the [privacy notice](privacy.html). Ask a moderator, or write to
 the contact address there, to have your data deleted.

@@ -34,6 +34,7 @@ Runs (PLAN.md 6.7, Phase 8):
     chat-brain-admin achievements               the run's achievements, unlocked or not
     chat-brain-admin leaderboard                the 10 with the most points
     chat-brain-admin macros                     chat's macros (PLAN.md 6.10)
+    chat-brain-admin chaos [start NAME | stop]  the chaos modifier on, and the shop; start one free, stop it
     chat-brain-admin macro remove NAME          take one away, without a vote
     chat-brain-admin site                       render the public site now: where, and what's left to fill in
     chat-brain-admin site hide RUN              take a run's pictures (last screen, timeline) off the site

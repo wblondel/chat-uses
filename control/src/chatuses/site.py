@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from chatuses.game.achievements import Achievement
+from chatuses.game.chaos import MODIFIERS
 from chatuses.game.runs import uptime_text
 from chatuses.referee import constitution
 from chatuses.referee.laws import ACTIONS, Laws, Ruleset
@@ -721,6 +722,7 @@ def laws_page(d: SiteData) -> bytes:
             ".",
             class_="empty",
         ),
+        _chaos_shop() if "chaos" in ruleset.features else None,
         tag("h2", "Never up for a vote"),
         tag(
             "p",
@@ -736,6 +738,33 @@ def laws_page(d: SiteData) -> bytes:
     if disabled:
         body.insert(2, tag("p", "Turned off in this ruleset: ", ", ".join(f"!{c}" for c in disabled), "."))
     return page("The Laws", body)
+
+
+def _chaos_shop() -> Markup:
+    rows = [
+        tag(
+            "tr",
+            tag("td", tag("strong", m.name)),
+            tag("td", tag("code", f"!buy {m.key}")),
+            tag("td", m.what),
+            tag("td", f"{m.seconds} s", class_="num"),
+            tag("td", f"{m.cost}", class_="num"),
+        )
+        for m in MODIFIERS.values()
+    ]
+    head = tag("tr", [tag("th", h) for h in ("Chaos", "Command", "What it does", "For", "Points")])
+    return tag(
+        "section",
+        tag("h2", "Chaos"),
+        tag(
+            "p",
+            "A minute of mischief, on the stream or in how commands reach the machine, never in the "
+            "machine itself. One at a time, five minutes apart; bought with points, or brought by "
+            "chance or a Super Chat.",
+        ),
+        tag("table", tag("thead", head), tag("tbody", rows), class_="chaos"),
+        class_="plain",
+    )
 
 
 def _amended_value(amendment: dict[str, Any]) -> float:

@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from chatuses.commands import (
     Amend,
     Button,
+    Buy,
     Click,
     Command,
     Drag,
@@ -57,6 +58,7 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
 MACRO_NAME = re.compile(r"[a-z][a-z0-9]{1,11}")
 _LAW = re.compile(r"[a-z][a-z_]{1,31}")
 _AMOUNT = re.compile(r"\d{1,3}(?:\.\d{1,2})?")
+_CHAOS = re.compile(r"[a-z]{2,12}")
 
 _SINGLE_KEYS = {"enter": "enter", "tab": "tab", "esc": "esc", "space": "space"}
 _REPEAT_KEYS = {"bksp": "bksp", "up": "up", "down": "down", "left": "left", "right": "right"}
@@ -276,6 +278,12 @@ def _amend(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
     return Amend(args[0].casefold(), float(args[1]))
 
 
+def _buy(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
+    if len(args) != 1 or not _CHAOS.fullmatch(args[0].casefold()):
+        return ParseError("!buy needs a chaos, like !buy quake: the site's Laws page lists them")
+    return Buy(args[0].casefold())
+
+
 def is_builtin(word: str) -> bool:
     """A command of ours (or one coming): a macro can't take its name."""
     return word in _HANDLERS or word in _LATER or word in ("wait", "buy", "chaos")
@@ -297,4 +305,5 @@ _HANDLERS: dict[str, Handler] = {
     "macro": _macro,
     "unmacro": _unmacro,
     "amend": _amend,
+    "buy": _buy,
 }

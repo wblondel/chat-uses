@@ -62,3 +62,22 @@ class Grid:
         x = (col + (sub % 3 + 0.5) / 3) * cell_w
         y = (row + (sub // 3 + 0.5) / 3) * cell_h
         return int(x), int(y)
+
+
+@dataclass(frozen=True)
+class ShuffledGrid(Grid):
+    """The grid with its labels changed places (a chaos modifier, game/chaos.py): chat aims
+    by the labels the overlay shows, and they're translated back to the real cells."""
+
+    shown_cols: tuple[str, ...] = ()  # the label shown over each real column
+    shown_rows: tuple[str, ...] = ()  # ... and each real row
+
+    def locate(self, ref: str) -> tuple[int, int]:
+        match = _CELL.fullmatch(ref.strip().lower())
+        if not match:
+            raise ValueError("not a grid cell (like F7 or F7.5)")
+        col, row = match[1].upper(), match[2]
+        if col not in self.shown_cols or row not in self.shown_rows:
+            raise ValueError("that cell is off the screen")
+        real = self.column_labels[self.shown_cols.index(col)] + self.row_labels[self.shown_rows.index(row)]
+        return super().locate(real + (f".{match[3]}" if match[3] else ""))

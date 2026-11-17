@@ -8,7 +8,7 @@ in at least one session.
 1. **Macros** (below).
 2. **The constitution: `!amend`** (below).
 3. **The driver's seat and `!impeach`** (below).
-4. Chaos modifiers and the points shop.
+4. **Chaos modifiers and the points shop** (below).
 5. `!click "text"`.
 
 ## Step 1: macros
@@ -207,3 +207,81 @@ it.
 the overlay's Driver panel (between streams: it restarts the stream). In a
 session, after 10 minutes of play: someone gets the seat (a Discord user
 is pinged); `admin status` shows `Driver's seat: NAME drives, … s left`.
+
+## Step 4: chaos
+
+PLAN.md 6.11, `control/src/chatuses/game/chaos.py`. A modifier changes how
+commands reach the machine or what the stream shows, never the machine
+itself, so each is undone the moment it ends and none can break a run:
+
+| `!buy` | Chaos | What it does | Where | For | Points |
+|---|---|---|---|---|---|
+| `mirror` | Inverted mouse | clicks land mirrored across the screen | brain | 60 s | 80 |
+| `azerty` | AZERTY keyboard | typed text comes out as on an AZERTY keyboard | brain | 60 s | 80 |
+| `dvorak` | Dvorak keyboard | ... as on a Dvorak (`hello` types `d.nnr`) | brain | 60 s | 80 |
+| `caps` | Caps Lock glued | letters come out in the other case | brain | 60 s | 40 |
+| `drunk` | Drunk mouse | clicks land up to 20 px off | brain | 60 s | 60 |
+| `lag` | Input lag | 5 s before each command runs | the executor | 60 s | 100 |
+| `shuffle` | Shuffled grid | the grid's labels change places; chat's clicks follow them | overlay and parser | 60 s | 80 |
+| `flip` | Upside down | the stream shows the screen upside down | overlay | 30 s | 60 |
+| `quake` | Earthquake | the stream shakes | overlay | 15 s | 30 |
+| `blackout` | Blackout | the stream shows nothing: chat plays blind | overlay | 30 s | 80 |
+
+**One at a time**, and 5 minutes from one's end to the next one's start.
+Three ways in:
+
+- **`!buy NAME`** spends its price in points (`/me` tells you yours);
+  refused with the reason (`Earthquake costs 30 points: you have 10`,
+  `Inverted mouse is on: 42 s left`, `chaos again in 5 min`), and nothing
+  spent on a refusal. Points still never go down any other way.
+- **Chance:** every 20 minutes, one chance in two of a random one, while
+  the machine is alive and nothing's covering the stream.
+- **A Super Chat** on YouTube: its tier picks one (1 Earthquake, 2 Upside
+  down, 3 Caps Lock, 4 Blackout, 5 Shuffled grid, 6 and up Inverted
+  mouse). Paid triggers buy chaos only, never a vote (PLAN.md 6.11). They
+  skip the cooldown and wait their turn (10 at most). brain reads only the
+  tier: never the amount, nor the Super Chat's message, which isn't a
+  command.
+
+**The filter still decides what's typed.** Keyboard modifiers change a
+command when brain accepts it, and the text it would really type goes
+through the filter again: text aimed to become a slur once remapped is
+refused (`the chaos turned that into something the filter refuses`). The
+overlay's log shows the command as chat sent it.
+
+The overlay shows a Chaos panel (what, how long, from whom or by chance),
+the stream's own effects (upside down, shaking, black), and the shuffled
+labels; chat clicks by the labels it sees. A panic stops chaos at once, as
+does a ruleset without `chaos` in its features (then nothing starts).
+
+Moderators: `chat-brain-admin chaos` (what's on, the shop), `chaos start
+NAME` (free, now), `chaos stop`. The site's Laws page lists the shop.
+
+### What was tested
+
+- `tests/test_chaos.py`: ten modifiers, none in the target; Dvorak, AZERTY
+  and Caps Lock on typed text; mirrored and drunk clicks, moves and drags;
+  a macro changed step by step, the others leaving commands alone; the lag;
+  a shuffled grid that chat aims with, and the real one back after; one at a
+  time and the cooldown; Super Chats queued without a cooldown, 10 at most;
+  chance only when brain allows it; points bought and spent, nothing spent
+  on a refusal. Through brain: a purchase, the overlay's chaos message and
+  the status line, a mirrored click queued while the log shows chat's, one
+  at a time, a panic stopping it; a Dvorak remap refused when the filter
+  refuses what it would type; a shuffled grid's click landing on the real
+  cell; the admin's start and stop; chaos off in a ruleset; a Super Chat's
+  tier from the YouTube adapter (its message not delivered as a command)
+  starting chaos, the next one queued.
+- The simulator's `chaos` scenario: too few points, enough; one at a time;
+  the cooldown; a mirrored click; a shuffled grid's click; Super Chats one
+  after another.
+- The overlay in Chromium from a fake feed: upside down (the screen turned
+  180°), blackout, the shuffled labels and the Chaos panel, all gone when
+  it ends.
+
+### On the server
+
+Brain and bcast: `sudo images/build.sh brain && sudo images/brain/deploy.sh
+--replace`, then `sudo images/build.sh bcast && sudo images/bcast/deploy.sh
+--replace` (between streams). `admin chaos start quake` shakes the stream
+for 15 s; `admin chaos` shows the shop.

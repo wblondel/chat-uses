@@ -320,6 +320,42 @@ function setRun(v) {
   if (runView) runTimer = setInterval(renderRun, 250);
 }
 
+// --- chaos (control/src/chatuses/game/chaos.py) ------------------------------------------
+
+let chaosView = null;
+let chaosAt = 0;
+let chaosTimer = null;
+const CHAOS_LOOKS = ["flip", "quake", "blackout"]; // done here; the rest is brain's
+
+function relabelGrid(grid) {
+  const cols = grid?.cols ?? Array.from({ length: GRID_COLS }, (_, c) => String.fromCharCode(65 + c));
+  const rows = grid?.rows ?? Array.from({ length: GRID_ROWS }, (_, r) => String(r + 1));
+  [...$("cols").children].forEach((span, i) => { span.textContent = cols[i] ?? ""; });
+  [...$("rows").children].forEach((span, i) => { span.textContent = rows[i] ?? ""; });
+}
+
+function renderChaos() {
+  const v = chaosView;
+  const left = v ? Math.max(0, v.ends_in - (performance.now() - chaosAt) / 1000) : 0;
+  const on = v && left > 0 ? v.key : null;
+  for (const look of CHAOS_LOOKS) document.body.classList.toggle(`chaos-${look}`, on === look);
+  $("blackout").hidden = on !== "blackout";
+  $("chaos-panel").hidden = !on;
+  if (!on) return;
+  $("chaos-name").textContent = `🌀 ${v.name}`;
+  $("chaos-left").textContent = `${Math.ceil(left)} s`;
+  $("chaos-by").textContent = v.source === "random" ? "by chance" : `from ${v.by}`;
+}
+
+function setChaos(v) {
+  chaosView = v ?? null;
+  chaosAt = performance.now();
+  relabelGrid(chaosView?.grid ?? null);
+  renderChaos();
+  clearInterval(chaosTimer);
+  if (chaosView) chaosTimer = setInterval(renderChaos, 250);
+}
+
 // --- the driver's seat (control/src/chatuses/game/driver.py) ---------------------------
 
 let driverView = null;
@@ -518,6 +554,10 @@ function onMessage(msg) {
       setRun(msg.run);
       showCard(msg.card);
       setDriver(msg.driver);
+      setChaos(msg.chaos);
+      break;
+    case "chaos":
+      setChaos(msg.chaos);
       break;
     case "driver":
       setDriver(msg.driver);
@@ -593,6 +633,7 @@ function connectBrain(url) {
     setVote(null); // the vote lives in brain
     setRun(null); // so does the run
     setDriver(null); // and the driver's seat
+    setChaos(null); // chaos too: brain ends it
     showCard(null);
     setMode(null); // so does the mode: anarchy's look until it's back
     setControls();

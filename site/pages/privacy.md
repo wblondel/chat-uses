@@ -37,6 +37,8 @@ server's `#control` channel.
 - **Points and achievements:** your points, and which of a run's
   achievements you were credited with. The leaderboard shows the names
   with the most points; a deletion request takes your points and credits.
+- **Super Chats:** that you sent one, and its tier (which picks the
+  chaos it brings), never the amount nor its message.
 
 We don't collect anything the platforms don't already show in chat: no
 email, no IP address, no payment data. This site keeps no log of its

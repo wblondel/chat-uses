@@ -66,23 +66,28 @@ from chatuses.adapters.discord_panel import PanelState
 from chatuses.adapters.youtube import Quota, YouTubeChat, video_id_from
 from chatuses.commands import (
     Amend,
+    Buy,
     Click,
     Drag,
     InputCommand,
     Load,
     MacroDefine,
     MacroRemove,
+    MacroRun,
     Meta,
     Move,
     Rewind,
     Save,
     StepCommand,
+    TypeText,
     describe,
     macro_source,
 )
 from chatuses.executor import Executor, Job, JobResult, connect_to, record_in
 from chatuses.game import achievements as achievements_module
+from chatuses.game import chaos as chaos_module
 from chatuses.game.achievements import CHECK_EVERY, CREDIT, Achievement, AchievementError, Context, passes
+from chatuses.game.chaos import MODIFIERS, SUPER_CHAT, Active, Chaos
 from chatuses.game.driver import ACCEPT, DriverSeat, Event, Seat
 from chatuses.game.points import Points
 from chatuses.game.runs import Death, Runs, uptime_text
@@ -95,7 +100,7 @@ from chatuses.referee import constitution, laws
 from chatuses.referee.laws import DEFAULT, Ruleset, RulesetError
 from chatuses.referee.modes import Winner
 from chatuses.referee.referee import Referee
-from chatuses.referee.votes import OPEN, Proposal
+from chatuses.referee.votes import OPEN, Proposal, Reply
 from chatuses.safety.moderation import MODERATOR_ROLES, Answer, Moderation
 from chatuses.safety.screen_ocr import Hit, ScreenWatch, read_screen, tesseract
 from chatuses.safety.strikes import Strikes
@@ -150,6 +155,7 @@ NO_REBOOT = "the machine didn't shut down within 30 s: !reset forces it"
 _THUMB = re.compile(r"\d{1,9}\.png")
 FORWARDER_STATES = ("ok", "failing", "idle")  # what bcast reports
 MAX_MACROS = 64  # chat's macros at most (PLAN.md 6.10)
+TWISTED = "the chaos turned that into something the filter refuses"
 FORWARDER_ALERT = 60  # seconds of failing before #ops hears it
 BCAST_CHECK = 15.0  # seconds between checks that bcast still reports
 BCAST_SILENT = 180.0  # seconds without a report before #ops hears it
@@ -300,7 +306,9 @@ class Brain:
         self.filter = TextFilter()
         self.strikes = Strikes()
         self.overlay = OverlayHub()
-        self.executor = Executor(connect, report=self._executed, on_status=self.overlay.status)
+        self.executor = Executor(
+            connect, report=self._executed, on_status=self.overlay.status, delay=lambda: self.chaos.delay()
+        )
         self.moderation = Moderation(store, self, self.strikes, self.filter.safe_name)
         self.pipeline = Pipeline(
             store,
@@ -313,6 +321,7 @@ class Brain:
             macros=lambda: self.macros,
         )
         self.macros = self._load_macros()
+        self.chaos = Chaos(self.pipeline.grid, self._chaos_changed)  # game/chaos.py
         self.referee = Referee(
             store,
             self.pipeline.presence,
@@ -415,6 +424,11 @@ class Brain:
                 if not private and self._may_show_refusal(msg):
                     self.overlay.add_line(name, platform, None, "refused", why)
                 return "refused", why
+            shown, command = command, self._chaotic(command)
+            if command is None:  # a keyboard modifier made it something the filter refuses
+                if not private and self._may_show_refusal(msg):
+                    self.overlay.add_line(name, platform, None, "refused", TWISTED)
+                return "refused", TWISTED
             if not self.executor.can_take():
                 # Down or swamped: a refusal like the others, so a busy chat
                 # during a reboot doesn't fill the log with dead lines.
@@ -423,7 +437,7 @@ class Brain:
                 if not private and self._may_show_refusal(msg):
                     self.overlay.add_line(name, platform, None, "refused", BUSY)
                 return "busy", BUSY
-            line = self.overlay.add_line(name, platform, describe(command), "queued")
+            line = self.overlay.add_line(name, platform, describe(shown), "queued")
             self._names[line] = name
             self.executor.submit(
                 Job(msg.user_id, command, ref=line)
@@ -433,10 +447,12 @@ class Brain:
             if command == Meta("grid"):
                 self.overlay.grid()
         elif outcome.kind == "accepted" and isinstance(
-            command, (Meta, Rewind, Load, Save, MacroDefine, MacroRemove, Amend)
+            command, (Meta, Rewind, Load, Save, MacroDefine, MacroRemove, Amend, Buy)
         ):  # referee/
             if isinstance(command, Meta) and command.name in ("revive", "rip"):  # game/runs.py
                 reply = self.runs.ballot(msg.user_id, command.name == "revive", msg.ts)
+            elif isinstance(command, Buy):  # game/chaos.py
+                reply = self.buy_chaos(msg.user_id, name, command.key, msg.ts)
             else:
                 reply = self.referee.handle(msg.user_id, name, command, msg.ts)
             if not reply.ok:
@@ -540,9 +556,13 @@ class Brain:
         if not self.executor.can_take():
             self.overlay.add_line(label, "democracy", winner.text, "refused", BUSY)
             return
+        command = self._chaotic(winner.ballot.command)
+        if command is None:
+            self.overlay.add_line(label, "democracy", winner.text, "refused", TWISTED)
+            return
         line = self.overlay.add_line(label, "democracy", winner.text, "queued")
         self._names[line] = "democracy"
-        self.executor.submit(Job(winner.ballot.user, winner.ballot.command, ref=line))
+        self.executor.submit(Job(winner.ballot.user, command, ref=line))
 
     # --- what a passed vote does (referee.Actions) -------------------------------------
 
@@ -681,6 +701,89 @@ class Brain:
         if not rows:
             return "No macros yet: chat proposes them with !macro NAME = COMMAND; COMMAND."
         return "\n".join(f"!{r['name']} = {r['source']} (since {_clock(r['at'])})" for r in rows)
+
+    # --- chaos (game/chaos.py) ---------------------------------------------------------------
+
+    def _chaotic(self, command: InputCommand) -> InputCommand | None:
+        """An injector modifier at work; None if what it would type is something the filter
+        refuses (chat could aim a keyboard remap at that)."""
+        changed = self.chaos.transform(command)
+        if changed is not command:
+            steps = changed.steps if isinstance(changed, MacroRun) else (changed,)
+            typed = "".join(step.text for step in steps if isinstance(step, TypeText))
+            if typed and self.filter.typed_kind(typed):
+                return None
+        return changed
+
+    def buy_chaos(self, user: str, name: str, key: str, now: float) -> Reply:
+        """!buy NAME: a modifier for points."""
+        if "chaos" not in self.referee.ruleset.features:
+            return Reply(False, "chaos is off in this ruleset")
+        if self.moderation.panicking:
+            return Reply(False, PAUSED)
+        return Reply(*chaos_module.buy(self.chaos, self.store, user, name, key, now))
+
+    def super_chat(self, user: str, display_name: str, tier: int) -> None:
+        """A Super Chat on YouTube: its tier picks a modifier (chaos only, never a vote)."""
+        if "chaos" not in self.referee.ruleset.features or self.moderation.panicking:
+            return
+        key = SUPER_CHAT[max(1, min(tier, max(SUPER_CHAT)))]
+        name = self.filter.safe_name(user, display_name)
+        now = time.time()
+        if self.chaos.paid(key, name, now):
+            self.store.event(now, "chaos", {"user": user, "key": key, "source": "superchat", "tier": tier})
+            if self.chaos.active is None or self.chaos.active.by != name:  # waiting its turn
+                self.overlay.add_line(name, "yt", f"💸 {MODIFIERS[key].name}, next", "done")
+
+    def chaos_tick(self, now: float) -> None:
+        on = "chaos" in self.referee.ruleset.features
+        if self.chaos.active is not None and (self.moderation.panicking or not on):
+            self.chaos.stop(now)
+        chance = (
+            on
+            and not self.moderation.panicking
+            and not self._travelling
+            and not self._ending
+            and self.runs.state == "alive"
+        )
+        self.chaos.tick(now, chance)
+
+    def _chaos_changed(self, old: Active | None, new: Active | None) -> None:
+        self.pipeline.grid = self.chaos.aim_grid()  # shuffled labels: chat aims by what it sees
+        self.overlay.chaos(self.chaos.view(time.time()))
+        if new is not None:
+            m = new.modifier
+            by = "chance" if new.source == "random" else new.by
+            self.overlay.add_line(by, "console", f"🌀 {m.name}: {m.what} ({m.seconds} s)", "done")
+            if new.source != "points":  # a purchase is logged with who paid
+                self.store.event(time.time(), "chaos", {"key": m.key, "source": new.source})
+        elif old is not None:
+            self.overlay.add_line("chaos", "console", f"🌀 {old.modifier.name} is over", "done")
+
+    def chaos_line(self) -> str:
+        if "chaos" not in self.referee.ruleset.features:
+            return "Chaos: off in this ruleset"
+        view = self.chaos.view(time.time())
+        if view is not None:
+            return f"Chaos: {view['name']} (by {view['by']}), {view['ends_in']:.0f} s left"
+        waiting = f", {len(self.chaos.queue)} Super Chats waiting" if self.chaos.queue else ""
+        return f"Chaos: none{waiting}"
+
+    def chaos_admin(self, words: list[str]) -> tuple[str, str]:
+        now = time.time()
+        match words:
+            case []:
+                shop = ", ".join(f"{m.key} ({m.cost})" for m in MODIFIERS.values())
+                return "ok", f"{self.chaos_line()}\nThe shop (points): {shop}"
+            case ["start", key] if key in MODIFIERS:
+                if self.chaos.active is not None:
+                    self.chaos.stop(now)
+                self.chaos.start(key, "a moderator", "moderator", now)
+                return "ok", f"{MODIFIERS[key].name} on."
+            case ["stop"]:
+                return ("ok", "Chaos stopped.") if self.chaos.stop(now) else ("error", "no chaos on")
+            case _:
+                return "error", f"chaos [start {'|'.join(MODIFIERS)} | stop]"
 
     # --- the driver's seat (game/driver.py) ------------------------------------------------
 
@@ -996,7 +1099,9 @@ class Brain:
                 load=lambda: self.store.setting("youtube_quota"),
                 save=lambda value: self.store.set_setting("youtube_quota", value),
             )
-            self.youtube = YouTubeChat(key, self._deliver("yt"), quota=quota, on_quota=self.ops)
+            self.youtube = YouTubeChat(
+                key, self._deliver("yt"), quota=quota, on_quota=self.ops, on_super_chat=self.super_chat
+            )
             if video := self.store.setting("youtube_video"):
                 self.youtube.follow(video)
             log.info(
@@ -1088,6 +1193,7 @@ class Brain:
             )
             lines.append(f"{PLATFORM_NAMES[name]}: {status['state']}{video}{quota}{panel}{detail}")
         lines.append(self.driver_line())
+        lines.append(self.chaos_line())
         lines.append(self.stream_line())
         lines.append(f"Overlay pages: {self.overlay.clients}")
         return "\n".join(lines)
@@ -1191,6 +1297,8 @@ class Brain:
                 return "ok", self.run_line()
             case ["achievements"]:
                 return "ok", self.achievements_text()
+            case ["chaos", *rest]:
+                return self.chaos_admin(rest)
             case ["macros"]:
                 return "ok", self.macros_text()
             case ["macro", "remove", name]:
@@ -1377,6 +1485,7 @@ class Brain:
         while True:
             self.referee.tick()
             self.driver_tick(time.time())
+            self.chaos_tick(time.time())
             if (verdict := self.runs.verdict(time.time())) is not None:
                 self._spawn(self._after_death_vote(verdict))
             await asyncio.sleep(REFEREE_TICK)
