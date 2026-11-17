@@ -55,9 +55,15 @@ class Hit:
 
 async def tesseract(frame: Frame, langs: str = "eng", timeout: float = OCR_TIMEOUT) -> str:
     """The text tesseract reads in the frame (one thread, low priority)."""
+    return await run_tesseract(frame.ppm(), langs, [], timeout)
+
+
+async def run_tesseract(image: bytes, langs: str, configs: list[str], timeout: float = OCR_TIMEOUT) -> str:
+    """tesseract on a Netpbm image (PPM, PGM or PBM bytes): its output (configs: ["tsv"] for
+    word boxes)."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "nice", "-n", "10", "tesseract", "stdin", "stdout", "-l", langs, "--psm", "11",
+            "nice", "-n", "10", "tesseract", "stdin", "stdout", "-l", langs, "--psm", "11", *configs,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -67,7 +73,7 @@ async def tesseract(frame: Frame, langs: str = "eng", timeout: float = OCR_TIMEO
     except OSError as err:
         raise OcrError(f"can't run tesseract: {err}") from err
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(frame.ppm()), timeout)
+        out, _ = await asyncio.wait_for(proc.communicate(image), timeout)
     except TimeoutError as err:
         await _kill(proc)
         raise OcrError(f"tesseract took more than {timeout:.0f} s") from err

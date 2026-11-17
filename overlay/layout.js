@@ -166,10 +166,11 @@ function addLine(line) {
   }
 }
 
-function setLineState(id, state) {
+function setLineState(id, state, reason) {
   const entry = lines.get(id);
   if (!entry) return;
   entry.line.state = state;
+  if (reason) entry.line.reason = reason; // brain's fixed wording, e.g. a !click "text" not found
   const fresh = renderLine(entry.line);
   entry.el.replaceWith(fresh);
   entry.el = fresh;
@@ -591,7 +592,7 @@ function onMessage(msg) {
       addLine(msg);
       break;
     case "log-state":
-      setLineState(msg.id, msg.state);
+      setLineState(msg.id, msg.state, msg.reason);
       break;
     case "pointer":
       showPointer(msg.x, msg.y, msg.user);

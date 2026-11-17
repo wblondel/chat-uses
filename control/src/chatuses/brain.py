@@ -59,7 +59,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from chatuses import console, dashboard
+from chatuses import console, dashboard, textclick
 from chatuses import site as site_module
 from chatuses.adapters.discord_bot import DiscordChat
 from chatuses.adapters.discord_panel import PanelState
@@ -68,6 +68,7 @@ from chatuses.commands import (
     Amend,
     Buy,
     Click,
+    ClickText,
     Drag,
     InputCommand,
     Load,
@@ -307,7 +308,11 @@ class Brain:
         self.strikes = Strikes()
         self.overlay = OverlayHub()
         self.executor = Executor(
-            connect, report=self._executed, on_status=self.overlay.status, delay=lambda: self.chaos.delay()
+            connect,
+            report=self._executed,
+            on_status=self.overlay.status,
+            delay=lambda: self.chaos.delay(),
+            resolve=self.aim_text,
         )
         self.moderation = Moderation(store, self, self.strikes, self.filter.safe_name)
         self.pipeline = Pipeline(
@@ -360,7 +365,8 @@ class Brain:
         self.target_host = target_host
         self.target_instance = target_instance
         self.thumbs = thumbs
-        self.grab = grab  # the screen now (thumbnails, a dead run's last screen)
+        self.grab = grab  # the screen now (thumbnails, a dead run's last screen, !click "text")
+        self.ocr_langs = "eng"  # tesseract's languages (Config.ocr_langs)
         self.snapshots: Snapshots | None = None  # chat's time travel (snapshots.py): needs Incus
         if incus is not None:
             self.snapshots = Snapshots(
@@ -1071,10 +1077,36 @@ class Brain:
         self._last_refusal[msg.user_id] = msg.ts
         return True
 
+    async def aim_text(self, command: ClickText) -> Click | None:
+        """!click "text" when its turn comes (textclick.py): where it is on the screen now, as a
+        click in grid coordinates, chaos's mouse at work on it as on any click. None: not there,
+        or the screen can't be read (a click that can't be aimed is a miss, never a guess)."""
+        if self.grab is None:
+            return None
+        try:
+            frame = await self.grab()
+            if frame is None:
+                return None
+            words = await textclick.read_words(frame, self.ocr_langs)
+        except Exception as err:  # VNC, tesseract: the error never quotes chat's text
+            log.warning("!click on text: can't read the screen: %s", err)
+            return None
+        spot = textclick.nth(textclick.find(words, command.text), command.n)
+        if spot is None:
+            return None
+        grid = self.executor.grid
+        x = min(grid.width - 1, spot[0] * grid.width // frame.width)
+        y = min(grid.height - 1, spot[1] * grid.height // frame.height)
+        click = self.chaos.transform(Click(grid.cell_at(x, y), x, y, command.button, command.double))
+        return click if isinstance(click, Click) else None
+
     def _executed(self, job: Job, result: JobResult, seconds: float) -> None:
         self._record(job, result, seconds)
         name = self._names.pop(job.ref, "?")
-        self.overlay.set_state(job.ref, "done" if result == "done" else "dropped")
+        if result == "missed":
+            self.overlay.set_state(job.ref, "dropped", "not on the screen")
+        else:
+            self.overlay.set_state(job.ref, "done" if result == "done" else "dropped")
         if result != "done":
             return
         self.points.command_ran(job.user_id)
@@ -1938,6 +1970,7 @@ async def amain(config: Config) -> None:
         )
         brain.incus_off_reason = why_not
         brain.bcast_ip = config.bcast_ip
+        brain.ocr_langs = config.ocr_langs
         await brain.serve(config, stop)
 
 

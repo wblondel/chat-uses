@@ -25,6 +25,7 @@ from chatuses.commands import (
     Button,
     Buy,
     Click,
+    ClickText,
     Command,
     Drag,
     InputCommand,
@@ -52,6 +53,7 @@ MAX_COUNT = 10  # !bksp, arrows, !scroll
 MAX_COMBOS = 4  # per !key
 MAX_REWIND = 10
 MAX_STEPS = 8  # input commands in a macro
+MAX_CLICK_TEXT = 40  # characters of !click "text"
 
 _WORD = re.compile(r"[a-z]+")
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
@@ -59,6 +61,8 @@ MACRO_NAME = re.compile(r"[a-z][a-z0-9]{1,11}")
 _LAW = re.compile(r"[a-z][a-z_]{1,31}")
 _AMOUNT = re.compile(r"\d{1,3}(?:\.\d{1,2})?")
 _CHAOS = re.compile(r"[a-z]{2,12}")
+_QUOTES = '"\u201c\u201d'  # straight and curly: phones type curly ones
+_QUOTED = re.compile(f"[{_QUOTES}]([^{_QUOTES}]*)[{_QUOTES}](?:#([1-9]))?")
 
 _SINGLE_KEYS = {"enter": "enter", "tab": "tab", "esc": "esc", "space": "space"}
 _REPEAT_KEYS = {"bksp": "bksp", "up": "up", "down": "down", "left": "left", "right": "right"}
@@ -174,8 +178,8 @@ def _cell(grid: Grid, ref: str) -> tuple[str, tuple[int, int]] | ParseError:
 
 
 def _click(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
-    if rest.startswith('"'):
-        return ParseError("clicking on text isn't available yet (Phase 9)")
+    if rest and rest[0] in _QUOTES:
+        return _click_text(word, rest)
     if len(args) != 1:
         return ParseError(f"!{word} needs one cell, like !{word} F7 or !{word} F7.5")
     cell = _cell(grid, args[0])
@@ -184,6 +188,19 @@ def _click(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
     button, double = _CLICKS[word]
     name, (x, y) = cell
     return Click(name, x, y, button, double)
+
+
+def _click_text(word: str, rest: str) -> Command | ParseError:
+    match = _QUOTED.fullmatch(rest)
+    if not match:
+        return ParseError(f'!{word} on text: the text in quotes, like !{word} "Settings" or "Settings"#2')
+    text = " ".join(match[1].split())
+    if not text or len(text) > MAX_CLICK_TEXT:
+        return ParseError(f"the text to click is 1 to {MAX_CLICK_TEXT} characters")
+    if any(not ch.isprintable() for ch in text):
+        return ParseError("the text to click holds a character that can't be on screen")
+    button, double = _CLICKS[word]
+    return ClickText(text, int(match[2] or 1), button, double)
 
 
 def _move(word: str, args: list[str], rest: str, grid: Grid) -> Command | ParseError:
@@ -260,8 +277,8 @@ def _macro(word: str, args: list[str], rest: str, grid: Grid) -> Command | Parse
         if step is None or isinstance(step, ParseError):
             why = step.reason if step else "not a command"
             return ParseError(f"the macro's command {i}: {why}")
-        if not isinstance(step, InputCommand) or isinstance(step, MacroRun):
-            return ParseError("a macro holds input commands only (type, key, click…)")
+        if not isinstance(step, InputCommand) or isinstance(step, (MacroRun, ClickText)):
+            return ParseError("a macro holds input commands only (type, key, click on a cell…)")
         steps.append(step)
     return MacroDefine(name, tuple(steps))
 

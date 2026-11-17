@@ -15,6 +15,10 @@ target at another resolution still gets clicks where chat aimed.
 
 A macro is one job: its steps run one after the other, MACRO_GAP apart, and
 nothing else runs in between; its time limit is one command's per step.
+
+`!click "text"` is found on the screen when its turn comes, not when chat
+sent it (textclick.py, through `resolve`): the screen it was aimed at is the
+one it lands on. Not there: the job ends "missed", nothing sent.
 """
 
 import asyncio
@@ -22,20 +26,31 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from chatuses.commands import Click, Drag, InputCommand, MacroRun, Move, PressKeys, Scroll, TypeText
+from chatuses.commands import (
+    Click,
+    ClickText,
+    Drag,
+    InputCommand,
+    MacroRun,
+    Move,
+    PressKeys,
+    Scroll,
+    TypeText,
+)
 from chatuses.grid import Grid
 from chatuses.keymap import char_keysym
 from chatuses.store import Store, to_json
 from chatuses.vnc import BUTTONS, VncError, VncInput
 
-JobResult = Literal["done", "offline", "flushed"]  # flushed: dropped by a panic
+JobResult = Literal["done", "offline", "flushed", "missed"]  # flushed: a panic; missed: text not seen
 KEY_DELAY = 0.008  # seconds between keystrokes
 JOB_TIMEOUT = 10.0  # seconds for one command; the longest takes about one
 MACRO_GAP = 0.2  # seconds between a macro's steps: what one opens can take a keypress
 RECONNECT = (1.0, 15.0)  # first and longest wait between connection attempts
+RESOLVE_TIMEOUT = 15.0  # seconds to find !click "text" on the screen (a frame, two OCR readings)
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +66,12 @@ class Job:
 # Called once per job with its result and the seconds from acceptance to the
 # last input event sent (or to giving up).
 Report = Callable[[Job, JobResult, float], None]
+# Where !click "text" lands, in grid coordinates (None: not on the screen).
+Resolve = Callable[[ClickText], Awaitable[Click | None]]
+
+
+async def nowhere(_command: ClickText) -> Click | None:
+    return None
 
 
 def ignore(_job: Job, _result: JobResult, _seconds: float) -> None:
@@ -88,18 +109,20 @@ class Executor:
         report: Report = ignore,
         on_status: Callable[[bool], None] = no_status,
         delay: Callable[[], float] = lambda: 0.0,
+        resolve: Resolve = nowhere,
     ) -> None:
         self._connect = connect
         self.grid = grid or Grid()
         self.report = report
         self.on_status = on_status  # called with True when the target's input is up, False when it goes
         self.delay = delay  # seconds to wait before each command (chaos's input lag)
+        self.resolve = resolve  # brain's: !click "text" on the screen as it is now
         self.queue: asyncio.Queue[Job] = asyncio.Queue(max_pending)
         self.online = asyncio.Event()
         self.vnc: VncInput | None = None
         self.frozen = False
         self.last_input = 0.0  # when a command last reached the target (for the watchdog)
-        self._running: asyncio.Task[None] | None = None
+        self._running: asyncio.Task[tuple[JobResult, InputCommand]] | None = None
 
     def can_take(self) -> bool:
         """Would submit() accept a job right now? (Nothing changes before the next await.)"""
@@ -162,9 +185,11 @@ class Executor:
                     self._finish(job, "flushed")
                     continue
                 wait = self.delay()  # chaos's input lag (game/chaos.py)
-                self._running = asyncio.create_task(_after(wait, execute(vnc, job.command, self.grid)))
+                self._running = asyncio.create_task(_after(wait, self._run(vnc, job.command)))
                 try:
-                    await asyncio.wait_for(asyncio.shield(self._running), _timeout(job.command) + wait)
+                    result, ran = await asyncio.wait_for(
+                        asyncio.shield(self._running), _timeout(job.command) + wait
+                    )
                 except asyncio.CancelledError:
                     me = asyncio.current_task()
                     if not self._running.cancelled() or (me is not None and me.cancelling()):
@@ -179,7 +204,7 @@ class Executor:
                 except (VncError, TimeoutError):
                     self._finish(job, "offline")
                     return
-                self._finish(job, "done")
+                self._finish(replace(job, command=ran), result)  # !click "text": the click it became
         finally:
             lost.cancel()
             if self._running and not self._running.done():
@@ -191,6 +216,19 @@ class Executor:
                 get.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await get
+
+    async def _run(self, vnc: VncInput, command: InputCommand) -> tuple[JobResult, InputCommand]:
+        """The job's result, and what was really sent."""
+        if isinstance(command, ClickText):
+            try:
+                click = await asyncio.wait_for(self.resolve(command), RESOLVE_TIMEOUT)
+            except TimeoutError:
+                click = None
+            if click is None:
+                return "missed", command
+            command = click
+        await execute(vnc, command, self.grid)
+        return "done", command
 
     def _offline(self) -> None:
         """Drop what was waiting: replaying it on a restarted target would be wrong."""
@@ -215,13 +253,15 @@ class Executor:
             log.exception("reporting a job failed")
 
 
-async def _after(seconds: float, job: Coroutine[Any, Any, None]) -> None:
+async def _after[T](seconds: float, job: Coroutine[Any, Any, T]) -> T:
     if seconds > 0:
         await asyncio.sleep(seconds)
-    await job
+    return await job
 
 
 def _timeout(command: InputCommand) -> float:
+    if isinstance(command, ClickText):
+        return RESOLVE_TIMEOUT + JOB_TIMEOUT
     steps = len(command.steps) if isinstance(command, MacroRun) else 1
     return JOB_TIMEOUT * max(1, steps)
 
@@ -259,6 +299,8 @@ async def execute(vnc: VncInput, command: InputCommand, grid: Grid) -> None:
                 if i:
                     await asyncio.sleep(MACRO_GAP)
                 await execute(vnc, step, grid)
+        case ClickText():  # Executor resolves it first; never send a guess
+            pass
 
 
 async def connect_to(host: str, port: int = 5900) -> VncInput:

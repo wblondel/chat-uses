@@ -66,7 +66,17 @@ class MacroRun:
     steps: tuple[StepCommand, ...]
 
 
-InputCommand = TypeText | PressKeys | Click | Move | Drag | Scroll | MacroRun
+@dataclass(frozen=True)
+class ClickText:
+    """!click "Settings"#2: on text read from the screen when its turn comes (textclick.py)."""
+
+    text: str
+    n: int = 1  # the n-th match, in reading order
+    button: Button = "left"
+    double: bool = False
+
+
+InputCommand = TypeText | PressKeys | Click | Move | Drag | Scroll | MacroRun | ClickText
 
 MetaName = Literal[
     "anarchy",
@@ -187,6 +197,8 @@ def describe(command: Command) -> str:
             return f"!save {name}"
         case MacroRun(name=name):
             return f"!{name}"
+        case ClickText(text=text, n=n, button=button, double=double):
+            return f'!{_CLICK_WORDS.get((button, double), "click")} "{text}"' + (f"#{n}" if n > 1 else "")
         case MacroDefine(name=name, steps=steps):
             return f"!macro {name} = {macro_source(steps)}"
         case MacroRemove(name=name):
@@ -224,6 +236,9 @@ def describe_stored(data: dict[str, Any]) -> str:
                 command = Scroll(data["direction"], int(data["amount"]))
             case "MacroRun":
                 return f"!{data['name']}"
+            case "ClickText":
+                command = ClickText(str(data["text"]), int(data.get("n", 1)), data.get("button", "left"),
+                                    bool(data.get("double")))  # fmt: skip
             case _:
                 return "a command"
     except (KeyError, TypeError, ValueError):

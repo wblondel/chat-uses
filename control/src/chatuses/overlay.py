@@ -107,11 +107,16 @@ class OverlayHub:
         self._send({"type": "log", **asdict(line)})
         return line.id
 
-    def set_state(self, line_id: int, state: str) -> None:
+    def set_state(self, line_id: int, state: str, reason: str | None = None) -> None:
+        """A line's command ran, or didn't (reason: why, in brain's fixed wording)."""
         for line in self._lines:
             if line.id == line_id:
                 line.state = state
-        self._send({"type": "log-state", "id": line_id, "state": state})
+                line.reason = reason or line.reason
+        message: dict[str, Any] = {"type": "log-state", "id": line_id, "state": state}
+        if reason:
+            message["reason"] = reason
+        self._send(message)
 
     def pointer(self, x: int, y: int, user: str) -> None:
         self._send({"type": "pointer", "x": x, "y": y, "user": user})
