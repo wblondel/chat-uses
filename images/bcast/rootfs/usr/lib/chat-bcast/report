@@ -16,7 +16,9 @@ PUT http://BRAIN/bcast/forwarder with
 brain alerts #ops after a minute of failing, when the stream is back, and
 when bcast stops reporting (control/src/chatuses/brain.py). BRAIN is the
 host and port of BRAIN_URL (the overlay feed's address). Standard library
-only. REPORT_EVERY can be set in the environment (tests).
+only. For tests: REPORT_EVERY (seconds), and REPORT_CLOCK_SHIFT (seconds
+added to the monotonic clock, so a test doesn't depend on how long its
+machine has been up: systemd's timestamps count from boot).
 """
 
 import json
@@ -30,6 +32,7 @@ from urllib.parse import urlsplit
 KEY = "/etc/chat-uses/secrets/youtube-stream-key"
 UNIT = "chat-bcast-forwarder.service"
 REPORT_EVERY = float(os.environ.get("REPORT_EVERY") or 15)
+CLOCK_SHIFT = float(os.environ.get("REPORT_CLOCK_SHIFT") or 0)
 STABLE = 30.0  # seconds up before the forwarder counts as connected
 
 
@@ -75,7 +78,7 @@ def main() -> int:
     failing_since: float | None = None
     told = ""
     while True:
-        now = time.monotonic()
+        now = time.monotonic() + CLOCK_SHIFT
         restarts = 0
         if not sending():
             state, failing_since = "idle", None
