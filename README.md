@@ -8,6 +8,8 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 
 ## Runbooks
 
+Before each session: `sudo infra/host/golive.sh`. When something goes wrong live: [docs/runbooks/](docs/runbooks/README.md).
+
 | Phase | Runbook | Tools |
 |---|---|---|
 | 0 — Groundwork | [docs/phase0.md](docs/phase0.md) | `infra/host/server-check.sh`, `infra/discord/setup_server.py` |
