@@ -546,7 +546,7 @@ t18() {
 	encoder=$(pid_of bcast "x11grab")
 	forwarder=$(forwarder_pid)
 	if [[ -z $forwarder ]]; then
-		result 18 SKIP "the forwarder isn't sending to YouTube (no stream key?): set one, then --only 18"
+		result 18 SKIP "the forwarder isn't sending to YouTube (off air, or no stream key?): infra/host/onair.sh on, then --only 18"
 		return
 	fi
 	start=$(date +%s)

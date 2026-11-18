@@ -1,6 +1,8 @@
 #!/bin/bash
 # Relay "live" from MediaMTX to YouTube without re-encoding. If YouTube
-# drops, only this restarts; the encoder keeps running.
+# drops, only this restarts; the encoder keeps running. Only on air
+# (chat-bcast-air, air.py): after a server restart, nothing goes to YouTube
+# until someone puts it back on air. A dry run (FORWARD_URL) always runs.
 # Note: ffmpeg may print the ingest URL, key included, in errors. The journal
 # stays inside bcast.
 set -eu
@@ -8,6 +10,11 @@ key_file=/etc/chat-uses/secrets/youtube-stream-key
 if [[ -n ${FORWARD_URL:-} ]]; then
 	url=$FORWARD_URL
 elif [[ -r $key_file && -s $key_file ]]; then
+	if ! python3 /usr/lib/chat-bcast/air.py check; then
+		echo "off air: nothing goes to YouTube ($(python3 /usr/lib/chat-bcast/air.py status)); chat-bcast-air on, or on the host infra/host/onair.sh on"
+		until python3 /usr/lib/chat-bcast/air.py check; do sleep 2; done
+		echo "on air"
+	fi
 	url="$YOUTUBE_INGEST/$(tr -d '[:space:]' <"$key_file")"
 else
 	echo "idle: no stream key in $key_file and no FORWARD_URL"

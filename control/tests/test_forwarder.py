@@ -75,6 +75,20 @@ def test_ops_hears_when_bcast_goes_quiet_once() -> None:
         assert ops(brain)[-1] == "📡 The stream reaches YouTube again."
 
 
+def test_off_air_is_no_outage() -> None:
+    with Store(":memory:") as store:
+        brain = brain_in(store)
+        brain.forwarder_report("off", 0, T)
+        brain.forwarder_report("off", 0, T + 3600)
+        assert ops(brain) == []  # off air on purpose: nothing to tell
+        brain.forwarder_report("failing", 90, T + 3700)  # put on air, YouTube refuses
+        brain.forwarder_report("off", 0, T + 3800)  # taken off again
+        assert (
+            ops(brain)[-1]
+            == "📡 The stream is off air now: nothing goes to YouTube (put off air on purpose)."
+        )
+
+
 def test_the_status_line_says_where_the_stream_is() -> None:
     with Store(":memory:") as store:
         brain = brain_in(store)
@@ -86,6 +100,10 @@ def test_the_status_line_says_where_the_stream_is() -> None:
         assert brain.stream_line() == "Stream: NOT reaching YouTube (the forwarder has failed for 95 s)"
         brain.forwarder_report("idle", 0, now)
         assert brain.stream_line() == "Stream: not sent to YouTube (no stream key in bcast)"
+        brain.forwarder_report("off", 0, now)
+        assert brain.stream_line() == (
+            "Stream: off air, nothing goes to YouTube (on the host: infra/host/onair.sh on)"
+        )
         brain.forwarder_report("ok", 0, now - 600)
         assert brain.stream_line() == "Stream: no word from bcast for 10 min"
 
@@ -179,7 +197,25 @@ def test_bcast_s_reporter_tells_brain_what_systemd_says(tmp_path: Path) -> None:
                 proc.terminate()
                 await proc.wait()
                 await server.close()
-            env["FORWARD_URL"] = ""  # no key file on this machine either: idle
+            key = tmp_path / "stream-key"
+            key.write_text("abcd-efgh\n")
+            env |= {"FORWARD_URL": "", "STREAM_KEY_FILE": str(key), "AIR_FILE": str(tmp_path / "air.json")}
+            proc = await asyncio.create_subprocess_exec(sys.executable, str(REPORTER), env=env)
+            server = test_utils.TestServer(
+                brain.web_app(), port=int(env["BRAIN_URL"].split(":")[2].split("/")[0])
+            )
+            await server.start_server()
+            try:
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    if brain.forwarder["state"] == "off":
+                        break
+                assert brain.forwarder["state"] == "off"  # a key, but never put on air
+            finally:
+                proc.terminate()
+                await proc.wait()
+                await server.close()
+            env["STREAM_KEY_FILE"] = str(tmp_path / "no-key")  # no key, no FORWARD_URL: idle
             proc = await asyncio.create_subprocess_exec(sys.executable, str(REPORTER), env=env)
             server = test_utils.TestServer(
                 brain.web_app(), port=int(env["BRAIN_URL"].split(":")[2].split("/")[0])

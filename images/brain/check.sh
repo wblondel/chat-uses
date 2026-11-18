@@ -166,7 +166,7 @@ log "Stream to YouTube (bcast's report, every 15 s)"
 stream=$(in_brain chat-brain-admin status 2>/dev/null | grep '^Stream: ' || true)
 case $stream in
 "Stream: reaching YouTube") pass "the stream reaches YouTube" ;;
-"Stream: not sent to YouTube"*) info "${stream#Stream: }" ;;
+"Stream: not sent to YouTube"* | "Stream: off air"*) info "${stream#Stream: }" ;;
 "Stream: no report from bcast yet")
 	info "bcast hasn't reported yet: its image reports from Phase 8 on (images/build.sh bcast && images/bcast/deploy.sh --replace)" ;;
 *) fail "${stream#Stream: } (images/bcast/check.sh; #ops says what to do)" ;;

@@ -8,7 +8,7 @@ Everything runs on one KVM server without nested virtualization: Linux targets a
 
 ## Runbooks
 
-Before each session: `sudo infra/host/golive.sh`. When something goes wrong live: [docs/runbooks/](docs/runbooks/README.md).
+Before each session: `sudo infra/host/golive.sh --go` (the checks, then on air; `infra/host/onair.sh off` at the end). When something goes wrong live: [docs/runbooks/](docs/runbooks/README.md).
 
 | Phase | Runbook | Tools |
 |---|---|---|

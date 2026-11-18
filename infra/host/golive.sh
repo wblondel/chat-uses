@@ -3,8 +3,11 @@
 # check, then what only a person can.
 #
 # Usage:
-#   sudo infra/host/golive.sh [--drill] [--redteam]
+#   sudo infra/host/golive.sh [--go] [--drill] [--redteam]
 #
+#   --go        put the stream on air (infra/host/onair.sh on) when every
+#               check passes. After a server restart it's off air: nothing
+#               goes to YouTube until then (PLAN.md D80)
 #   --drill     practise a panic too (images/brain/panic-drill.sh): the stream
 #               shows "We'll be right back" for a few seconds, so do it on the
 #               preview or before going live
@@ -29,12 +32,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 DRILL=0
 REDTEAM=0
+GO=0
 while (($#)); do
 	case $1 in
+	--go) GO=1 ;;
 	--drill) DRILL=1 ;;
 	--redteam) REDTEAM=1 ;;
 	-h | --help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0 ;;
-	*) die "unknown argument $1 (--drill, --redteam)" ;;
+	*) die "unknown argument $1 (--go, --drill, --redteam)" ;;
 	esac
 	shift
 done
@@ -145,6 +150,14 @@ if ((DRILL)); then
 	fi
 fi
 
+log "On air?"
+if air=$(incus exec bcast --project infra -- chat-bcast-air status 2>&1); then
+	ok "the stream is $air"
+else
+	note "bcast doesn't say whether it's on air ($air): an older bcast image? images/build.sh bcast, deploy.sh --replace"
+	air=""
+fi
+
 log "A snapshot to rewind to"
 if made=$(admin snapshot 2>&1); then
 	ok "$made"
@@ -168,9 +181,11 @@ cat <<EOF
   ☐ a moderator in #mod-alerts with the dashboard open
     (http://$BRAIN_IP:$BRAIN_PORT/admin over WireGuard)
   ☐ the announcement in Discord's #announcements, with the link
-  Then, once live:
-    sudo incus exec brain --project infra -- chat-brain-admin youtube https://youtu.be/…
+  Then:
+    sudo infra/host/onair.sh on          (or this script with --go: on air when every check passes)
+    sudo incus exec brain --project infra -- chat-brain-admin youtube https://youtu.be/…   (once YouTube shows it live)
     sudo infra/host/session.py start "NAME"
+  At the end: session.py end, onair.sh off, chat-brain-admin youtube off
 EOF
 
 echo
@@ -179,4 +194,12 @@ if ((${#FAILED[@]})); then
 	printf '  ✗ %s\n' "${FAILED[@]}"
 	exit 1
 fi
+touch "$KEEP/ready" # onair.sh on reads it: the check passed within the hour
 log "Ready to go live: every check passed${WARNED[*]:+, ${#WARNED[@]} to look at (! above)}"
+if ((GO)); then
+	if [[ $air == "on air"* ]]; then
+		info "the stream is on air already"
+	else
+		"$CHAT_USES_REPO/infra/host/onair.sh" on
+	fi
+fi

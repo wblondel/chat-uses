@@ -13,7 +13,15 @@ breaks, from the end.
 admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
 admin status | grep -E '^(Stream|Machine):'
 sudo chat-uses-monitor --check
+sudo infra/host/onair.sh status
 ```
+
+## 0. Off air?
+
+After a server restart, the stream is **off air** until someone puts it
+back: `Stream: off air` in `admin status`, "off air: the server restarted…"
+from `onair.sh status`. Not a breakdown: run the go-live check and put it
+on air (`sudo infra/host/golive.sh --go`, or `sudo infra/host/onair.sh on`).
 
 ## 1. The forwarder (bcast → YouTube)
 

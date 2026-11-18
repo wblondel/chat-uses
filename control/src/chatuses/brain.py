@@ -163,7 +163,7 @@ TRAVELLING = "wait: the machine is travelling in time"
 NO_INCUS = "time travel is off: brain has no Incus access"
 NO_REBOOT = "the machine didn't shut down within 30 s: !reset forces it"
 _THUMB = re.compile(r"\d{1,9}\.png")
-FORWARDER_STATES = ("ok", "failing", "idle")  # what bcast reports
+FORWARDER_STATES = ("ok", "failing", "idle", "off")  # what bcast reports (off: off air, D80)
 MAX_MACROS = 64  # chat's macros at most (PLAN.md 6.10)
 TWISTED = "the chaos turned that into something the filter refuses"
 FORWARDER_ALERT = 60  # seconds of failing before #ops hears it
@@ -1605,9 +1605,10 @@ class Brain:
         elif state != "failing" and self._forwarder_told:
             self._forwarder_told = ""
             self.ops(
-                "📡 The stream reaches YouTube again."
-                if state == "ok"
-                else "📡 bcast sends nothing to YouTube now (no stream key)."
+                {
+                    "ok": "📡 The stream reaches YouTube again.",
+                    "off": "📡 The stream is off air now: nothing goes to YouTube (put off air on purpose).",
+                }.get(state, "📡 bcast sends nothing to YouTube now (no stream key).")
             )
 
     async def _bcast_watch(self) -> None:
@@ -1639,6 +1640,8 @@ class Brain:
                 return "Stream: reaching YouTube"
             case "idle":
                 return "Stream: not sent to YouTube (no stream key in bcast)"
+            case "off":
+                return "Stream: off air, nothing goes to YouTube (on the host: infra/host/onair.sh on)"
             case _:
                 failing = _duration(report["failing_s"])
                 return f"Stream: NOT reaching YouTube (the forwarder has failed for {failing})"
