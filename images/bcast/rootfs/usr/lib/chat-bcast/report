@@ -5,9 +5,11 @@ Every REPORT_EVERY seconds, the forwarder's state as systemd sees it (never
 its log: ffmpeg's errors can hold the stream key) goes to brain, as
 PUT http://BRAIN/bcast/forwarder with
 
-    {"state": "ok" | "failing" | "idle", "failing_s": N, "restarts": N}
+    {"state": "ok" | "failing" | "idle" | "off", "failing_s": N, "restarts": N}
 
 - idle: no stream key and no FORWARD_URL, so nothing goes to YouTube;
+- off: off air (air.py): a stream key, but nobody has put it on air since
+  the server started, or someone took it off;
 - ok: the forwarder has stayed up STABLE seconds: ffmpeg holds its
   connection (when YouTube hangs up, it exits within seconds and systemd
   starts it again 5 s later);
@@ -29,7 +31,10 @@ import time
 import urllib.request
 from urllib.parse import urlsplit
 
-KEY = "/etc/chat-uses/secrets/youtube-stream-key"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from air import on_air  # noqa: E402
+
+KEY = os.environ.get("STREAM_KEY_FILE", "/etc/chat-uses/secrets/youtube-stream-key")
 UNIT = "chat-bcast-forwarder.service"
 REPORT_EVERY = float(os.environ.get("REPORT_EVERY") or 15)
 CLOCK_SHIFT = float(os.environ.get("REPORT_CLOCK_SHIFT") or 0)
@@ -82,6 +87,8 @@ def main() -> int:
         restarts = 0
         if not sending():
             state, failing_since = "idle", None
+        elif not os.environ.get("FORWARD_URL", "").strip() and not on_air():
+            state, failing_since = "off", None
         else:
             try:
                 active, entered, restarts = forwarder()

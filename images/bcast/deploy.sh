@@ -36,6 +36,13 @@ in_bcast() { incus exec "$NAME" --project infra -- "$@"; }
 
 exists=0
 incus info "$NAME" --project infra >/dev/null 2>&1 && exists=1
+# On air or off (air.py) outlives a new container: a redeploy doesn't put the
+# stream on YouTube, nor take it off.
+air=$(mktemp)
+trap 'rm -f "$air"' EXIT
+if ((exists)); then
+	in_bcast cat /var/lib/chat-bcast/control/air.json >"$air" 2>/dev/null || true
+fi
 if ((exists && REPLACE)); then
 	log "Removing the old $NAME"
 	incus delete --force "$NAME" --project infra >/dev/null
@@ -68,6 +75,9 @@ else
 	info "no stream key at $key: the forwarder stays idle"
 fi
 
+if [[ -s $air ]]; then
+	incus file push "$air" "$NAME/var/lib/chat-bcast/control/air.json" --project infra --mode 0644
+fi
 log "Restarting the pipeline"
 if wait_booted "$NAME" infra; then
 	in_bcast systemctl restart chat-bcast.target
@@ -76,4 +86,5 @@ if wait_booted "$NAME" infra; then
 else
 	warn "systemd is not running in $NAME; services were not restarted"
 fi
-info "check: images/bcast/check.sh"
+info "$(in_bcast chat-bcast-air status 2>/dev/null || echo "on air or off: unknown (an older image)")"
+info "check: images/bcast/check.sh; on air: infra/host/onair.sh on"

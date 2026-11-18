@@ -203,8 +203,8 @@ screen.
 ### Before each session (15 minutes)
 
 ```bash
-sudo infra/host/golive.sh          # every check a script can do, a snapshot, then what's left by hand
-                                   # (--drill: a panic drill too; --redteam: after a change)
+sudo infra/host/golive.sh --go     # every check a script can do, a snapshot, what's left by hand,
+                                   # then on air (--drill: a panic drill too; --redteam: after a change)
 admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
 admin status                       # YouTube: quota units left? Discord: panel shown?
 admin youtube https://youtu.be/…   # the session's video, once it's live
@@ -232,6 +232,7 @@ When something goes wrong during the session: `docs/runbooks/`.
 
 ```bash
 sudo infra/host/session.py end     # the report: #ops gets brain's part, the whole is saved
+sudo infra/host/onair.sh off       # nothing goes to YouTube any more
 admin youtube off                  # stop spending YouTube quota
 admin ocr                          # hits still "not marked"? mark them now
 ```

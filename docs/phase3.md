@@ -22,7 +22,7 @@ container **`bcast`** in project `infra` at `BCAST_IP` (10.20.0.10):
 | `chat-bcast-audio-in` | Pulls the target's raw PCM (port 4712) into sink `target`, never more than ~0.1 s late |
 | `chat-bcast-encoder` | x11grab + `mix` → x264 1080p30 CBR 7 Mbps, keyframe every 2 s, AAC 128k through a limiter → RTMP `live` on MediaMTX. Restarts itself if it stops producing frames |
 | `chat-bcast-mediamtx` | MediaMTX v1.21.3: RTMP and RTSP on loopback only, HLS preview on port **8888** |
-| `chat-bcast-forwarder` | Copies `live` to YouTube (RTMPS) without re-encoding; idle until a stream key or `FORWARD_URL` is set |
+| `chat-bcast-forwarder` | Copies `live` to YouTube (RTMPS) without re-encoding; idle until a stream key or `FORWARD_URL` is set, and only **on air** (below) |
 | `chat-bcast-report` | Tells brain every 15 s whether the forwarder holds its connection to YouTube (brain alerts `#ops`) |
 
 They all belong to `chat-bcast.target` and restart on their own. If one dies,
@@ -206,6 +206,17 @@ To stop sending to YouTube, delete the key file on the host and run
   starved, and a bigger `AUDIO_BUFFER_MS` would cover it.
 - **Restart everything:** `sudo incus exec bcast --project infra -- systemctl restart chat-bcast.target`.
   Stop a single service the same way; it stays stopped until you start it again.
+- **On air or off** (D80): the stream goes to YouTube only on air. After a
+  server restart it's off air (`AIR_AT_BOOT=off`): bcast runs, the preview
+  and `check.sh` work, nothing reaches YouTube until someone puts it on air.
+  From the host: `sudo infra/host/onair.sh status|on|off` (`golive.sh --go`
+  puts it on air once every check passes). Inside bcast:
+  `chat-bcast-air status|on|off`. The state is
+  `/var/lib/chat-bcast/control/air.json`, kept by `deploy.sh --replace`.
+  `AIR_AT_BOOT=last` in `host.env` (then `images/build.sh bcast`,
+  `deploy.sh --replace`) comes back as it was after a restart: for 24/7. A
+  dry run (`FORWARD_URL`) isn't YouTube: it runs on air or off. Off air,
+  brain says `Stream: off air` and `#ops` hears nothing.
 - **Stream down:** `#ops` says so. bcast tells brain every 15 s whether the
   forwarder holds its connection to YouTube (`chat-bcast-report`, from
   systemd's view of it, never its log, which can hold the stream key), and
