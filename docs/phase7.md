@@ -203,12 +203,15 @@ screen.
 ### Before each session (15 minutes)
 
 ```bash
+sudo infra/host/golive.sh          # every check a script can do, a snapshot, then what's left by hand
+                                   # (--drill: a panic drill too; --redteam: after a change)
 admin() { sudo incus exec brain --project infra -- chat-brain-admin "$@"; }
-sudo images/brain/check.sh && sudo images/bcast/check.sh
 admin status                       # YouTube: quota units left? Discord: panel shown?
 admin youtube https://youtu.be/…   # the session's video, once it's live
 sudo infra/host/session.py start "Beta 1"
 ```
+
+When something goes wrong during the session: `docs/runbooks/`.
 
 - A moderator is in `#mod-alerts` and has the dashboard open
   (`http://10.20.0.11:8080/admin` over WireGuard).
